@@ -10,6 +10,8 @@
 - 管理员操作必须留痕。
 - 儿童个人信息最小化，敏感字段分级可见。
 - 关键约束尽量下沉到数据库唯一索引、外键、检查约束和事务中。
+- 裁决用时间由服务端或数据库生成，客户端时间不能入库为业务裁决依据。
+- 文件访问、搜索可见性、导出和日志默认脱敏并失败关闭。
 
 ## 2. 账号与身份
 
@@ -103,6 +105,71 @@
 | `allow_favorite` | 是否允许收藏 |
 | `notification_policy` | 通知配置 JSON |
 
+### 2.7 `trusted_devices`
+
+家长、管理员和机构联系人可信设备记录。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `user_id` | 用户 |
+| `device_fingerprint_hash` | 设备指纹哈希 |
+| `device_label` | 展示名称 |
+| `trust_level` | normal / sensitive_allowed / revoked |
+| `last_seen_at` | 最近使用时间 |
+| `created_at` | 创建时间 |
+
+### 2.8 `sensitive_operation_challenges`
+
+敏感操作二次验证和冷却期。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `actor_user_id` | 操作者 |
+| `operation_type` | 操作类型 |
+| `target_type` | 目标类型 |
+| `target_id` | 目标 ID |
+| `status` | pending / passed / failed / expired / cooling_down |
+| `risk_labels` | 风险标签 JSON |
+| `passed_at` | 通过时间 |
+| `expires_at` | 过期时间 |
+| `created_at` | 创建时间 |
+
+### 2.9 `admin_security_profiles`
+
+管理员安全配置。
+
+| 字段 | 说明 |
+| --- | --- |
+| `user_id` | 主键/外键 |
+| `mfa_enabled` | 是否启用 MFA |
+| `mfa_enrolled_at` | MFA 启用时间 |
+| `last_mfa_at` | 最近 MFA 验证时间 |
+| `risk_status` | normal / elevated / locked |
+| `allowed_ip_policy` | IP 策略 JSON |
+
+### 2.10 `guardian_disputes`
+
+监护关系争议和冻结模式。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `child_id` | 孩子 |
+| `submitted_by_guardian_id` | 提交家长 |
+| `dispute_type` | guardian_change / unlink / deletion / consent / transaction |
+| `status` | pending_platform_review / frozen / resolved / rejected |
+| `freeze_started_at` | 冻结开始时间 |
+| `resolved_at` | 解决时间 |
+| `resolution` | 处理结果 |
+| `created_at` | 创建时间 |
+
+约束：
+
+- 同一孩子最多一个未解决的 active/frozen 监护争议。
+- 争议未解决时，服务层必须阻断发布、出价、成交确认、交付方式变更、导出和注销。
+
 ## 3. 社区
 
 ### 3.1 `auction_communities`
@@ -184,6 +251,37 @@
 | `admin_reviewed_at` | 审核时间 |
 | `reject_reason` | 拒绝原因 |
 
+### 3.6 `community_rule_versions`
+
+社区规则版本，用于追溯家长看到和确认过的规则。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `community_id` | 社区 |
+| `version_no` | 版本号 |
+| `rules_snapshot` | 规则快照 JSON |
+| `change_reason` | 变更原因 |
+| `created_by_user_id` | 创建人 |
+| `effective_at` | 生效时间 |
+| `created_at` | 创建时间 |
+
+### 3.7 `member_risk_signals`
+
+社区准入和成年人伪装风险信号。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `community_id` | 社区 |
+| `child_id` | 孩子，可空 |
+| `user_id` | 用户，可空 |
+| `signal_type` | adult_impersonation / abnormal_join / abnormal_browse / contact_seeking / off_hours_activity |
+| `severity` | low / medium / high / severe |
+| `source_type` | system / admin / appeal |
+| `status` | open / reviewed / dismissed / restricted |
+| `created_at` | 创建时间 |
+
 ## 4. 内容与文件
 
 ### 4.1 `media_assets`
@@ -199,7 +297,15 @@
 | `size_bytes` | 大小 |
 | `checksum` | 校验 |
 | `ai_review_status` | pending / low / medium / high / severe / passed |
+| `metadata_stripped_at` | EXIF/元数据清理时间 |
+| `access_policy_version` | 文件访问策略版本 |
+| `revoked_at` | 访问撤销时间，可空 |
 | `created_at` | 创建时间 |
+
+约束：
+
+- 未审核、拒绝、下架或删除文件不得产生公开访问地址。
+- `storage_key` 不得出现在通知正文、导出文件和普通日志中。
 
 ### 4.2 `items`
 
@@ -283,6 +389,10 @@
 | `version_no` | 版本号，从 1 递增 |
 | `public_payload` | 孩子端可见文本、分类和展示字段 JSON |
 | `media_payload` | 图片或头像资源引用 JSON |
+| `payload_hash` | 公开字段摘要 |
+| `ocr_text_ref` | OCR 结果引用 |
+| `qr_detected` | 是否识别到二维码/条码 |
+| `metadata_findings` | 图片元数据检查结果 JSON |
 | `status` | draft / pending_ai / pending_manual / approved / rejected / hidden / superseded |
 | `risk_level` | none / low / medium / high / severe |
 | `created_by_user_id` | 创建人 |
@@ -323,6 +433,9 @@
 | `risk_level` | 风险等级 |
 | `labels` | 风险标签 JSON |
 | `raw_result_ref` | 原始结果引用 |
+| `ocr_text_ref` | OCR 结果引用 |
+| `qr_labels` | 二维码/条码识别标签 JSON |
+| `provider_status` | success / timeout / failed / invalid_response |
 | `created_at` | 创建时间 |
 
 ### 5.3 `manual_review_records`
@@ -336,6 +449,20 @@
 | `reason` | 原因 |
 | `content_version_id` | 审核的内容版本，可空；内容类审核必须填写 |
 | `created_at` | 审核时间 |
+
+### 5.4 `moderation_quality_reviews`
+
+审核抽检和质量记录。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `manual_review_record_id` | 被抽检审核记录 |
+| `reviewer_user_id` | 复核人 |
+| `quality_result` | correct / false_approve / false_reject / missed_escalation |
+| `severity` | low / medium / high / severe |
+| `notes` | 说明 |
+| `created_at` | 创建时间 |
 
 ## 6. 拍卖与出价
 
@@ -356,6 +483,8 @@
 | `current_highest_bid_id` | 当前最高出价 |
 | `current_highest_child_id` | 当前最高出价孩子 |
 | `settled_at` | 结算时间 |
+| `settlement_attempt_count` | 结算尝试次数 |
+| `last_settlement_error` | 最近结算错误摘要 |
 | `version` | 乐观版本，可选 |
 
 约束：
@@ -365,6 +494,7 @@
 - `start_points > 0`。
 - `min_increment_points > 0`。
 - `current_price_points >= 0`。
+- `start_at`、`end_at`、`settled_at` 只能由服务端或数据库写入。
 
 ### 6.2 `bids`
 
@@ -376,12 +506,16 @@
 | `amount_points` | 出价积分 |
 | `status` | active_highest / outbid / retracted / winning / cancelled |
 | `point_hold_id` | 对应冻结记录 |
+| `idempotency_key` | 出价请求幂等键 |
+| `server_received_at` | 服务端接收时间 |
 | `created_at` | 出价时间 |
 | `retract_deadline_at` | 可撤销截止时间 |
 
 约束：
 
 - `amount_points > 0`。
+- `idempotency_key` 在出价业务范围内唯一。
+- `created_at` 和 `retract_deadline_at` 由服务端或数据库计算。
 - 服务层必须拒绝卖家孩子对自己的拍品出价。
 - 服务层必须拒绝默认禁止的同一主监护人名下孩子互拍。
 
@@ -620,6 +754,37 @@
 - 同一范围同一控制类型最多一个 active 记录。
 - 启用和解除都必须写入审计日志。
 
+### 9.5 `abuse_rate_limits`
+
+投诉、收藏、浏览、出价等滥用风险计数。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `actor_user_id` | 用户 |
+| `child_id` | 孩子，可空 |
+| `action_type` | complaint / view / favorite / bid / join / publish |
+| `scope_type` | platform / community / item |
+| `scope_id` | 范围 ID |
+| `window_start_at` | 窗口开始 |
+| `count` | 次数 |
+| `risk_score` | 风险分 |
+| `status` | normal / throttled / blocked |
+
+### 9.6 `product_safety_flags`
+
+儿童商品安全风险标签。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `item_id` | 拍品 |
+| `flag_type` | recall / battery_damage / magnet / choking_hazard / sharp_part / laser / unknown_origin |
+| `severity` | low / medium / high / severe |
+| `source_type` | rule / admin / appeal |
+| `status` | open / cleared / delisted |
+| `created_at` | 创建时间 |
+
 ## 10. 通知
 
 ### 10.1 `notifications`
@@ -634,8 +799,15 @@
 | `body` | 内容 |
 | `related_type` | 关联类型 |
 | `related_id` | 关联 ID |
+| `event_id` | 对应 outbox 事件，可空 |
+| `target_version` | 目标版本号，可空 |
+| `delivery_status` | pending / sent / failed / suppressed |
 | `read_at` | 阅读时间 |
 | `created_at` | 创建时间 |
+
+约束：
+
+- 通知正文不得包含明文手机号、地址、对象 key、签名 URL、快递信息或儿童身份信息。
 
 ### 10.2 `notification_preferences`
 
@@ -648,6 +820,28 @@
 | `in_app_enabled` | 站内通知 |
 | `wechat_subscribe_enabled` | 微信订阅消息 |
 | `child_visible` | 是否给孩子可见 |
+
+### 10.3 `search_index_documents`
+
+搜索索引用的非事实源文档。搜索命中后仍必须回源权限校验。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `target_type` | item / wanted_post |
+| `target_id` | 目标 ID |
+| `content_version_id` | 已审核内容版本 |
+| `community_id` | 社区 |
+| `visibility_status` | searchable / hidden / delisted |
+| `search_payload` | 脱敏搜索字段 JSON |
+| `indexed_at` | 索引时间 |
+| `source_version` | 源业务版本 |
+
+约束：
+
+- 只索引已审核、可见、未下架内容。
+- `search_payload` 不得包含原价、手机号、地址、对象 key、快递信息或家长身份信息。
+- 搜索返回前必须按 PostgreSQL 当前状态回源校验成员、内容版本、下架、暂停和限制状态。
 
 ## 11. 审计与异步事件
 
@@ -663,6 +857,8 @@
 | `target_id` | 目标 ID |
 | `before_snapshot` | 变更前摘要 JSON |
 | `after_snapshot` | 变更后摘要 JSON |
+| `impact_summary` | 危险操作影响摘要 JSON |
+| `redaction_status` | none / redacted / blocked |
 | `reason` | 操作原因 |
 | `ip_hash` | IP 哈希 |
 | `created_at` | 时间 |
@@ -690,6 +886,143 @@
 - `retry_count >= 0`。
 - processing 状态必须有可过期租约，租约过期后可被重新领取。
 
+### 11.3 `idempotency_records`
+
+记录关键写请求的幂等状态，避免弱网、重复点击和重试造成重复业务事实。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `idempotency_key` | 客户端或服务端生成的幂等键 |
+| `actor_user_id` | 操作者 |
+| `child_id` | 关联孩子，可空 |
+| `action` | 业务动作 |
+| `target_type` | 目标类型 |
+| `target_id` | 目标 ID |
+| `request_hash` | 请求摘要 |
+| `status` | processing / succeeded / failed / unknown |
+| `response_ref` | 原响应引用，可空 |
+| `expires_at` | 过期时间 |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+
+约束：
+
+- `(idempotency_key, actor_user_id, action, target_type, target_id)` 唯一。
+- 同一幂等键不同 `request_hash` 必须拒绝。
+
+### 11.4 `admin_operation_previews`
+
+危险后台操作的影响预览和二次确认记录。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `actor_user_id` | 管理员 |
+| `operation_type` | cancel_auction / delist_item / release_points / transfer_points / pause_scope / adjust_end_time / export_data |
+| `target_type` | 目标类型 |
+| `target_id` | 目标 ID |
+| `impact_summary` | 影响拍卖、交易、冻结积分、通知对象 JSON |
+| `status` | generated / confirmed / expired / cancelled |
+| `generated_at` | 生成时间 |
+| `confirmed_at` | 确认时间，可空 |
+| `expires_at` | 过期时间 |
+
+约束：
+
+- 危险操作必须引用未过期且已确认的 preview。
+- preview 过期后必须重新计算影响。
+
+### 11.5 `file_access_grants`
+
+受控文件访问授权，用于签名 URL 或访问网关鉴权。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `media_asset_id` | 文件 |
+| `grantee_user_id` | 被授权用户 |
+| `purpose` | item_view / review / export / appeal |
+| `status` | active / expired / revoked |
+| `signed_token_hash` | 签名令牌哈希 |
+| `expires_at` | 过期时间 |
+| `revoked_at` | 撤销时间 |
+| `created_at` | 创建时间 |
+
+约束：
+
+- 文件当前不可见、被下架、被删除或用户权限不匹配时，不能创建 active grant。
+- grant 到期、撤销或文件策略版本变化后必须拒绝访问。
+
+### 11.6 `security_events`
+
+账号盗用、管理员异常、越权访问和敏感操作风险事件。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `actor_user_id` | 用户，可空 |
+| `event_type` | login_risk / mfa_failed / admin_anomaly / scope_denied / session_revoked / credential_rotation |
+| `severity` | low / medium / high / severe |
+| `target_type` | 目标类型，可空 |
+| `target_id` | 目标 ID，可空 |
+| `risk_labels` | 风险标签 JSON |
+| `status` | open / mitigated / dismissed |
+| `created_at` | 创建时间 |
+
+### 11.7 `release_migration_runs`
+
+数据库迁移、灰度发布和回滚演练记录。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `release_version` | 发布版本 |
+| `migration_name` | 迁移名称 |
+| `strategy` | expand_contract / backward_compatible / blocking |
+| `status` | planned / running / succeeded / failed / rolled_back |
+| `compatibility_checked` | 是否完成双版本兼容检查 |
+| `rollback_plan_ref` | 回滚方案引用 |
+| `started_at` | 开始时间 |
+| `finished_at` | 完成时间 |
+
+### 11.8 `backup_restore_runs`
+
+备份恢复演练和事故恢复记录。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `restore_type` | drill / incident |
+| `backup_ref` | 备份引用 |
+| `status` | planned / restoring / verifying / completed / failed |
+| `ledger_diff_count` | 账本差异数 |
+| `hold_diff_count` | 冻结差异数 |
+| `outbox_replay_blocked_count` | 阻断重放事件数 |
+| `search_rebuild_status` | 搜索重建状态 |
+| `started_at` | 开始时间 |
+| `completed_at` | 完成时间 |
+
+### 11.9 `vendor_integrations`
+
+第三方供应商和外部接口治理。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `vendor_name` | 供应商 |
+| `integration_type` | content_safety / object_storage / notification / logging / analytics |
+| `data_categories` | 传输数据类型 JSON |
+| `pii_allowed` | 是否允许个人信息 |
+| `status` | active / suspended / disabled |
+| `last_reviewed_at` | 最近审查时间 |
+| `credential_rotated_at` | 最近密钥轮换时间 |
+
+约束：
+
+- 供应商调用必须记录最小化后的数据类别。
+- 未审查或 suspended 供应商不能处理儿童相关数据。
+
 ## 12. 导出与注销
 
 ### 12.1 `data_export_requests`
@@ -702,9 +1035,24 @@
 | `export_type` | child_activity / platform_audit |
 | `status` | pending / processing / ready / expired / failed |
 | `file_asset_id` | 导出文件 |
+| `redaction_profile` | 脱敏规则 |
+| `expires_at` | 导出文件过期时间 |
 | `created_at` | 创建时间 |
 
-### 12.2 `account_deletion_requests`
+### 12.2 `data_export_access_logs`
+
+导出文件访问留痕。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `export_request_id` | 导出请求 |
+| `actor_user_id` | 访问用户 |
+| `action` | download / view / expire / revoke |
+| `ip_hash` | IP 哈希 |
+| `created_at` | 创建时间 |
+
+### 12.3 `account_deletion_requests`
 
 | 字段 | 说明 |
 | --- | --- |
@@ -719,6 +1067,22 @@
 阻断条件：
 
 - 存在活跃拍卖、当前最高出价、有效冻结积分、待确认交易、待交付交易、待审核内容或未结申诉时，不得完成注销。
+
+### 12.4 `deletion_jobs`
+
+全链路删除、匿名化和保留任务。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `child_id` | 孩子，可空 |
+| `target_type` | child_profile / media / export / search_index / notification / log / backup |
+| `target_id` | 目标 ID |
+| `action` | delete / anonymize / retain_until_expiry |
+| `status` | pending / processing / completed / failed / retained |
+| `retention_reason` | 保留原因 |
+| `completed_at` | 完成时间 |
+| `created_at` | 创建时间 |
 
 ## 13. 关键状态枚举
 
@@ -762,11 +1126,17 @@ blocked
 - `wechat_identities(openid)` unique。
 - `guardian_child_links(child_id, role)` partial unique where active and role = primary。
 - `guardian_child_links(child_id)` count guard in service for max 2 active guardians。
+- `trusted_devices(user_id, device_fingerprint_hash)` unique。
+- `sensitive_operation_challenges(actor_user_id, operation_type, target_type, target_id, status)`。
+- `guardian_disputes(child_id)` partial unique where status in pending/frozen states。
 - `community_members(community_id, child_id)` unique。
 - `community_invite_codes(code)` unique。
+- `community_rule_versions(community_id, version_no)` unique。
+- `member_risk_signals(community_id, child_id, status)`。
 - `auction_sessions(item_id)` partial unique for active/pending states。
 - `auction_sessions(status, end_at)` for settlement scan。
 - `bids(auction_session_id, created_at)`。
+- `bids(idempotency_key)` unique。
 - `content_versions(target_type, target_id, version_no)` unique。
 - `moderation_tasks(content_version_id)` for content review。
 - `point_accounts(child_id)` unique。
@@ -774,9 +1144,21 @@ blocked
 - `point_ledger_entries(idempotency_key)` unique。
 - `guardian_decisions(transaction_id, phase, side)` partial unique where effective = true。
 - `governance_controls(scope_type, scope_id, control_type)` partial unique where status = active。
+- `abuse_rate_limits(actor_user_id, action_type, scope_type, scope_id, window_start_at)` unique。
+- `product_safety_flags(item_id, flag_type, status)`。
 - `notifications(recipient_user_id, read_at, created_at)`。
+- `search_index_documents(community_id, visibility_status, indexed_at)`。
 - `outbox_events(status, available_at)`。
 - `outbox_events(idempotency_key)` unique。
+- `idempotency_records(idempotency_key, actor_user_id, action, target_type, target_id)` unique。
+- `admin_operation_previews(actor_user_id, operation_type, target_type, target_id, status)`。
+- `file_access_grants(media_asset_id, grantee_user_id, status, expires_at)`。
+- `data_export_access_logs(export_request_id, created_at)`。
+- `security_events(event_type, severity, created_at)`。
+- `release_migration_runs(release_version, migration_name)`。
+- `backup_restore_runs(status, started_at)`。
+- `vendor_integrations(integration_type, status)`。
+- `deletion_jobs(child_id, status, target_type)`。
 
 ## 15. 关键事务
 
@@ -803,3 +1185,27 @@ blocked
 ### 15.6 管理员争议处理
 
 事务内锁定交易和相关账户；根据处理决定退回买家、转给卖家或继续冻结；写原因、审计、流水和通知事件。
+
+### 15.7 受控文件访问
+
+事务内校验用户权限、文件状态、内容版本、下架/删除/注销状态和访问目的；创建短期 `file_access_grants`；访问网关按 grant、文件策略版本和过期时间拒绝旧 URL。
+
+### 15.8 搜索回源校验
+
+搜索索引只返回候选结果；API 在 PostgreSQL 中重新校验社区成员、内容版本、审核状态、下架状态、暂停开关和限制记录后才返回给客户端。
+
+### 15.9 危险管理员操作
+
+先生成 `admin_operation_previews` 并展示影响；管理员二次确认后，事务内重新计算关键影响是否仍一致，再执行下架、取消、解冻、转积分、暂停或导出。
+
+### 15.10 账号风险冻结
+
+当出现疑似盗号、管理员异常或监护争议时，事务内写入 `security_events` 或 `guardian_disputes`，撤销相关会话，阻断敏感操作，并根据风险范围暂停孩子、家长或管理员能力。
+
+### 15.11 备份恢复校验
+
+恢复后进入只读或受限模式，运行账本重算、冻结核对、交易状态扫描、outbox 去重和搜索索引重建；差异归零前不得恢复出价和结算。
+
+### 15.12 全链路删除
+
+注销完成后创建 `deletion_jobs`，覆盖主库、搜索索引、对象存储、导出文件、通知、缓存和备份保留策略；必要保留数据必须记录保留原因。
