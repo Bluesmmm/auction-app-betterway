@@ -1,0 +1,502 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  active
+  restricted
+  closed
+}
+
+enum GuardianStatus {
+  active
+  restricted
+  closed
+}
+
+enum ChildStatus {
+  pending_guardian
+  active
+  restricted
+  closed
+}
+
+enum GuardianRole {
+  primary
+  secondary
+}
+
+enum LinkStatus {
+  pending
+  active
+  revoked
+}
+
+enum CommunityStatus {
+  draft
+  pending_review
+  active
+  suspended
+  closed
+  rejected
+}
+
+enum InviteCodeStatus {
+  active
+  disabled
+  expired
+}
+
+enum CommunityMemberStatus {
+  pending_guardian
+  pending_admin
+  active
+  removed
+  banned
+}
+
+enum ContentTargetType {
+  item
+  wanted_request
+  wanted_response
+  avatar
+}
+
+enum ContentVersionStatus {
+  pending_ai
+  pending_manual
+  approved
+  rejected
+  escalated
+  blocked
+}
+
+enum ModerationTaskStatus {
+  pending
+  processing
+  needs_manual_review
+  approved
+  rejected
+  escalated
+  failed
+}
+
+enum MediaVisibility {
+  temp_private
+  formal_private
+  deleted
+}
+
+enum ItemStatus {
+  draft
+  ai_reviewing
+  manual_reviewing
+  approved
+  rejected
+  listed
+  withdrawn
+  delisted
+}
+
+enum AuctionSessionStatus {
+  pending_start
+  active
+  pending_settlement
+  settled
+  cancelled
+  unsold
+  delisted
+}
+
+enum BidStatus {
+  active
+  outbid
+  withdrawn
+  invalidated
+}
+
+enum PointHoldStatus {
+  active
+  released
+  transferred
+  cancelled
+  disputed
+}
+
+enum PointLedgerEntryType {
+  initial_grant
+  admin_adjustment
+  hold
+  release
+  transfer_out
+  transfer_in
+  reversal
+}
+
+enum TransactionStatus {
+  pending_guardian_confirm
+  pending_delivery_confirm
+  completed
+  cancelled
+  disputed
+  platform_review
+}
+
+enum DecisionPhase {
+  guardian_confirm
+  delivery_confirm
+}
+
+enum DecisionValue {
+  confirmed
+  rejected
+}
+
+enum IdempotencyStatus {
+  processing
+  completed
+  failed
+  conflict
+}
+
+enum OutboxStatus {
+  pending
+  processing
+  sent
+  failed
+  cancelled
+}
+
+model User {
+  id               String            @id @default(cuid())
+  status           UserStatus        @default(active)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  wechatIdentities WechatIdentity[]
+  guardianProfile  GuardianProfile?
+  childProfile     ChildProfile?
+  auditLogs        AuditLog[]
+}
+
+model WechatIdentity {
+  id          String    @id @default(cuid())
+  userId      String
+  openid      String    @unique
+  unionid     String?
+  avatarUrl   String?
+  nickname    String?
+  lastLoginAt DateTime?
+  user        User      @relation(fields: [userId], references: [id])
+}
+
+model GuardianProfile {
+  id             String              @id @default(cuid())
+  userId         String              @unique
+  phoneHash      String
+  phoneLast4     String
+  consentVersion String
+  consentedAt    DateTime
+  status         GuardianStatus      @default(active)
+  user           User                @relation(fields: [userId], references: [id])
+  childLinks     GuardianChildLink[]
+}
+
+model ChildProfile {
+  id                     String              @id @default(cuid())
+  userId                 String?             @unique
+  displayName            String
+  avatarAssetId          String?
+  gradeBand              String
+  status                 ChildStatus         @default(pending_guardian)
+  createdByGuardianId    String?
+  initialPointsGrantedAt DateTime?
+  createdAt              DateTime            @default(now())
+  user                   User?               @relation(fields: [userId], references: [id])
+  guardianLinks          GuardianChildLink[]
+  memberships            CommunityMember[]
+  pointAccount           PointAccount?
+  items                  Item[]
+  bids                   Bid[]
+}
+
+model GuardianChildLink {
+  id          String          @id @default(cuid())
+  guardianId  String
+  childId     String
+  role        GuardianRole
+  status      LinkStatus      @default(pending)
+  confirmedAt DateTime?
+  guardian    GuardianProfile @relation(fields: [guardianId], references: [id])
+  child       ChildProfile    @relation(fields: [childId], references: [id])
+
+  @@unique([guardianId, childId])
+  @@index([childId, role, status])
+}
+
+model AuctionCommunity {
+  id                            String                @id @default(cuid())
+  name                          String
+  description                   String?
+  creatorGuardianId             String
+  status                        CommunityStatus       @default(draft)
+  defaultAuctionDurationMinutes Int
+  createdAt                     DateTime              @default(now())
+  inviteCodes                   CommunityInviteCode[]
+  members                       CommunityMember[]
+  items                         Item[]
+}
+
+model CommunityInviteCode {
+  id          String           @id @default(cuid())
+  communityId String
+  code        String           @unique
+  status      InviteCodeStatus @default(active)
+  maxUses     Int?
+  usedCount   Int              @default(0)
+  expiresAt   DateTime?
+  community   AuctionCommunity @relation(fields: [communityId], references: [id])
+
+  @@index([communityId, status])
+}
+
+model CommunityMember {
+  id          String                @id @default(cuid())
+  communityId String
+  childId     String
+  status      CommunityMemberStatus @default(pending_guardian)
+  joinedAt    DateTime?
+  community   AuctionCommunity      @relation(fields: [communityId], references: [id])
+  child       ChildProfile          @relation(fields: [childId], references: [id])
+
+  @@unique([communityId, childId])
+  @@index([childId, status])
+}
+
+model MediaAsset {
+  id                  String          @id @default(cuid())
+  ownerUserId          String
+  storageBucket        String
+  storageKey           String
+  visibility           MediaVisibility @default(temp_private)
+  mimeType             String
+  sizeBytes            Int
+  checksum             String
+  accessPolicyVersion  Int             @default(1)
+  revokedAt            DateTime?
+  createdAt            DateTime        @default(now())
+
+  @@index([ownerUserId, visibility])
+}
+
+model Item {
+  id                     String           @id @default(cuid())
+  communityId            String
+  sellerChildId          String
+  status                 ItemStatus       @default(draft)
+  startPoints            Int
+  minIncrementPoints     Int
+  currentPublicVersionId String?
+  latestVersionId        String?
+  version                Int              @default(1)
+  createdAt              DateTime         @default(now())
+  community              AuctionCommunity @relation(fields: [communityId], references: [id])
+  sellerChild            ChildProfile     @relation(fields: [sellerChildId], references: [id])
+  auctionSessions        AuctionSession[]
+
+  @@index([communityId, status])
+  @@index([sellerChildId])
+}
+
+model ContentVersion {
+  id          String               @id @default(cuid())
+  targetType  ContentTargetType
+  targetId    String
+  versionNo   Int
+  status      ContentVersionStatus @default(pending_ai)
+  title       String?
+  description String?
+  payloadJson Json
+  riskLevel   String?
+  approvedAt  DateTime?
+  createdAt   DateTime             @default(now())
+  task        ModerationTask?
+
+  @@unique([targetType, targetId, versionNo])
+  @@index([targetType, targetId, status])
+}
+
+model ModerationTask {
+  id                String               @id @default(cuid())
+  contentVersionId  String               @unique
+  status            ModerationTaskStatus @default(pending)
+  providerRiskLevel String?
+  ruleTagsJson      Json?
+  reviewerUserId    String?
+  reviewedAt        DateTime?
+  failureReason     String?
+  contentVersion    ContentVersion       @relation(fields: [contentVersionId], references: [id])
+}
+
+model AuctionSession {
+  id                   String               @id @default(cuid())
+  itemId               String
+  status               AuctionSessionStatus @default(active)
+  startAt              DateTime
+  endAt                DateTime
+  startPoints          Int
+  minIncrementPoints   Int
+  currentPricePoints   Int                  @default(0)
+  highestBidId         String?
+  highestBidderChildId String?
+  version              Int                  @default(1)
+  item                 Item                 @relation(fields: [itemId], references: [id])
+  bids                 Bid[]
+  pointHolds           PointHold[]
+  transaction          Transaction?
+
+  @@index([status, endAt])
+  @@index([itemId, status])
+}
+
+model Bid {
+  id               String         @id @default(cuid())
+  auctionSessionId String
+  bidderChildId    String
+  amountPoints     Int
+  status           BidStatus      @default(active)
+  idempotencyKey   String         @unique
+  createdAt        DateTime       @default(now())
+  auctionSession   AuctionSession @relation(fields: [auctionSessionId], references: [id])
+  bidderChild      ChildProfile   @relation(fields: [bidderChildId], references: [id])
+  pointHold        PointHold?
+
+  @@index([auctionSessionId, createdAt])
+}
+
+model PointAccount {
+  id                String             @id @default(cuid())
+  childId           String             @unique
+  availablePoints   Int                @default(0)
+  frozenPoints      Int                @default(0)
+  totalEarnedPoints Int                @default(0)
+  totalSpentPoints  Int                @default(0)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  child             ChildProfile       @relation(fields: [childId], references: [id])
+  holds             PointHold[]
+  ledgerEntries     PointLedgerEntry[]
+}
+
+model PointHold {
+  id               String          @id @default(cuid())
+  accountId        String
+  auctionSessionId String
+  bidId            String?         @unique
+  amountPoints     Int
+  status           PointHoldStatus @default(active)
+  createdAt        DateTime        @default(now())
+  releasedAt       DateTime?
+  transferredAt    DateTime?
+  account          PointAccount    @relation(fields: [accountId], references: [id])
+  auctionSession   AuctionSession  @relation(fields: [auctionSessionId], references: [id])
+  bid              Bid?            @relation(fields: [bidId], references: [id])
+
+  @@index([auctionSessionId, status])
+}
+
+model PointLedgerEntry {
+  id             String               @id @default(cuid())
+  accountId      String
+  type           PointLedgerEntryType
+  amountPoints   Int
+  availableAfter Int
+  frozenAfter    Int
+  relatedType    String
+  relatedId      String
+  idempotencyKey String               @unique
+  createdAt      DateTime             @default(now())
+  account        PointAccount         @relation(fields: [accountId], references: [id])
+
+  @@index([accountId, createdAt])
+}
+
+model Transaction {
+  id                        String             @id @default(cuid())
+  auctionSessionId          String             @unique
+  buyerChildId              String
+  sellerChildId             String
+  pointHoldId               String
+  pointsAmount              Int
+  status                    TransactionStatus  @default(pending_guardian_confirm)
+  guardianConfirmDeadlineAt DateTime
+  deliveryConfirmDeadlineAt DateTime?
+  version                   Int                @default(1)
+  createdAt                 DateTime           @default(now())
+  auctionSession            AuctionSession     @relation(fields: [auctionSessionId], references: [id])
+  decisions                 GuardianDecision[]
+}
+
+model GuardianDecision {
+  id            String        @id @default(cuid())
+  transactionId String
+  guardianId    String
+  phase         DecisionPhase
+  value         DecisionValue
+  effective     Boolean       @default(true)
+  createdAt     DateTime      @default(now())
+  transaction   Transaction   @relation(fields: [transactionId], references: [id])
+
+  @@index([transactionId, phase, effective])
+}
+
+model IdempotencyRecord {
+  id           String            @id @default(cuid())
+  key          String
+  actorUserId  String
+  action       String
+  targetType   String
+  targetId     String
+  requestHash  String
+  status       IdempotencyStatus @default(processing)
+  responseJson Json?
+  createdAt    DateTime          @default(now())
+
+  @@unique([key, actorUserId, action, targetType, targetId])
+}
+
+model OutboxEvent {
+  id             String       @id @default(cuid())
+  eventType      String
+  targetType     String
+  targetId       String
+  idempotencyKey String       @unique
+  payloadJson    Json
+  status         OutboxStatus @default(pending)
+  availableAt    DateTime     @default(now())
+  lockedAt       DateTime?
+  lockedBy       String?
+  attempts       Int          @default(0)
+  createdAt      DateTime     @default(now())
+
+  @@index([status, availableAt])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  actorUserId String?
+  action      String
+  targetType  String
+  targetId    String
+  reason      String?
+  beforeJson  Json?
+  afterJson   Json?
+  createdAt   DateTime @default(now())
+  actor       User?    @relation(fields: [actorUserId], references: [id])
+
+  @@index([targetType, targetId, createdAt])
+}

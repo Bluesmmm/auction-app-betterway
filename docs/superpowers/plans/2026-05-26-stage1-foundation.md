@@ -64,7 +64,7 @@ Create `package.json`:
   "devDependencies": {
     "@types/node": "^20.12.12",
     "typescript": "^5.4.5",
-    "vitest": "^1.6.0"
+    "vitest": "^4.1.7"
   }
 }
 ```
@@ -145,9 +145,9 @@ Create `apps/api/package.json`:
     "test": "vitest run"
   },
   "dependencies": {
-    "@nestjs/common": "^10.3.8",
-    "@nestjs/core": "^10.3.8",
-    "@nestjs/platform-express": "^10.3.8",
+    "@nestjs/common": "^11.1.24",
+    "@nestjs/core": "^11.1.24",
+    "@nestjs/platform-express": "^11.1.24",
     "@prisma/client": "^5.14.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
@@ -924,7 +924,7 @@ model AuditLog {
 
 - [ ] **Step 2: Validate schema**
 
-Run: `npx prisma validate --schema apps/api/prisma/schema.prisma`
+Run: `env DATABASE_URL=postgresql://postgres:postgres@localhost:5432/auction_app npx prisma validate --schema apps/api/prisma/schema.prisma`
 
 Expected: PASS.
 
@@ -1215,7 +1215,7 @@ Run: `npm run typecheck`
 
 Expected: PASS.
 
-Run: `npx prisma validate --schema apps/api/prisma/schema.prisma`
+Run: `env DATABASE_URL=postgresql://postgres:postgres@localhost:5432/auction_app npx prisma validate --schema apps/api/prisma/schema.prisma`
 
 Expected: PASS.
 
