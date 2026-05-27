@@ -8,7 +8,23 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
+    "build:runtime": "npm run build -w @auction/api && npm run build -w @auction/worker",
+    "db:generate": "npm run prisma:generate -w @auction/api",
+    "db:deploy": "npm run prisma:deploy -w @auction/api",
+    "db:migrate": "npm run prisma:migrate -w @auction/api",
+    "db:seed": "npm run prisma:seed -w @auction/api",
+    "db:status": "npm run prisma:status -w @auction/api",
+    "db:validate": "npm run prisma:validate -w @auction/api",
+    "runtime:down": "docker compose -f docker-compose.yml -f docker-compose.staging.yml down --remove-orphans",
+    "runtime:staging": "docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d postgres redis api worker",
+    "runtime:up": "docker compose up -d postgres redis",
+    "stage1:connectivity": "node scripts/stage1/check-connectivity.mjs",
+    "stage1:rehearse": "node scripts/stage1/check-connectivity.mjs && node scripts/stage1/rehearse-migration.mjs && node scripts/stage1/rehearse-backup-restore.mjs && node scripts/stage1/rehearse-key-rotation.mjs",
+    "stage1:verify": "npm run db:generate && npm run build && npm run runtime:staging && npm run db:deploy && npm run db:status && npm test && npm run typecheck && npm run db:validate && npm run stage1:connectivity",
+    "start:api": "npm run start -w @auction/api",
+    "start:worker": "npm run start -w @auction/worker",
     "test": "vitest run",
+    "test:runtime": "vitest run apps/api/test/runtime",
     "typecheck": "tsc -p tsconfig.base.json --noEmit"
   },
   "devDependencies": {

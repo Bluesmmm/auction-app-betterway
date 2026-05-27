@@ -1,0 +1,15 @@
+{
+  "name": "@auction/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "bullmq": "^5.34.2",
+    "ioredis": "^5.4.2"
+  }
+}

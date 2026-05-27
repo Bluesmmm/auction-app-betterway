@@ -4,7 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p ../../tsconfig.base.json --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "prisma:deploy": "DATABASE_URL=${DATABASE_URL:-postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public} prisma migrate deploy --schema prisma/schema.prisma",
+    "prisma:generate": "DATABASE_URL=${DATABASE_URL:-postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public} prisma generate --schema prisma/schema.prisma",
+    "prisma:migrate": "DATABASE_URL=${DATABASE_URL:-postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public} prisma migrate dev --schema prisma/schema.prisma",
+    "prisma:seed": "DATABASE_URL=${DATABASE_URL:-postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public} prisma db seed --schema prisma/schema.prisma",
+    "prisma:status": "DATABASE_URL=${DATABASE_URL:-postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public} prisma migrate status --schema prisma/schema.prisma",
+    "prisma:validate": "DATABASE_URL=${DATABASE_URL:-postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public} prisma validate --schema prisma/schema.prisma",
+    "start": "node dist/main.js",
     "test": "vitest run"
   },
   "dependencies": {
@@ -12,10 +19,14 @@
     "@nestjs/core": "^11.1.24",
     "@nestjs/platform-express": "^11.1.24",
     "@prisma/client": "^5.14.0",
+    "ioredis": "^5.4.2",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },
   "devDependencies": {
     "prisma": "^5.14.0"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.mjs"
   }
 }

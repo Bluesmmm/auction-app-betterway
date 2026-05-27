@@ -1,0 +1,30 @@
+services:
+  api:
+    image: node:24-bookworm
+    working_dir: /workspace
+    command: ["npm", "run", "start:api"]
+    env_file:
+      - .env.staging.example
+    volumes:
+      - .:/workspace
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: node:24-bookworm
+    working_dir: /workspace
+    command: ["npm", "run", "start:worker"]
+    env_file:
+      - .env.staging.example
+    volumes:
+      - .:/workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
