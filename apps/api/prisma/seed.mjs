@@ -63,6 +63,40 @@ async function main() {
     }
   });
 
+  const adminProfile = await prisma.adminProfile.upsert({
+    where: {
+      userId: user.id
+    },
+    update: {
+      role: "activity_admin",
+      mfaEnabled: true,
+      status: "active"
+    },
+    create: {
+      userId: user.id,
+      role: "activity_admin",
+      mfaEnabled: true,
+      status: "active"
+    }
+  });
+
+  await prisma.adminCommunityScope.upsert({
+    where: {
+      adminProfileId_communityId: {
+        adminProfileId: adminProfile.id,
+        communityId: community.id
+      }
+    },
+    update: {
+      status: "active"
+    },
+    create: {
+      adminProfileId: adminProfile.id,
+      communityId: community.id,
+      status: "active"
+    }
+  });
+
   await prisma.communityInviteCode.upsert({
     where: {
       code: "LOCALDEV"

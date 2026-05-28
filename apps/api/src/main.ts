@@ -10,6 +10,12 @@ async function bootstrap() {
   });
   app.useLogger(new RedactingNestLogger());
   const config = app.get(AppConfigService);
+  const corsAllowedOrigins = config.corsAllowedOrigins;
+  if (corsAllowedOrigins.length > 0) {
+    app.enableCors({
+      origin: corsAllowedOrigins
+    });
+  }
   await app.listen(config.port);
 }
 

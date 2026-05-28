@@ -10,7 +10,9 @@ const CHINESE_ADDRESS_PATTERN =
 const COURIER_TRACKING_PATTERN =
   /\b(?:SF|EMS|JD|JDL|YT|YTO|ZTO|STO|YD|YUNDA|DBL|JT)[A-Z0-9-]{6,24}\b/gi;
 
-export type RedactedJson =
+export type WorkerLogLevel = "info" | "warn" | "error";
+
+type RedactedJson =
   | string
   | number
   | boolean
@@ -18,8 +20,29 @@ export type RedactedJson =
   | RedactedJson[]
   | { [key: string]: RedactedJson };
 
-export function redactForStructuredLog(value: unknown): RedactedJson {
-  return redactValue(value);
+export class RedactingWorkerLogger {
+  serialize(input: {
+    level: WorkerLogLevel;
+    event: string;
+    payload?: unknown;
+    now?: Date;
+  }): string {
+    return JSON.stringify({
+      time: (input.now ?? new Date()).toISOString(),
+      level: input.level,
+      event: input.event,
+      payload:
+        input.payload === undefined ? undefined : redactValue(input.payload)
+    });
+  }
+
+  info(event: string, payload?: unknown): void {
+    console.log(this.serialize({ level: "info", event, payload }));
+  }
+
+  error(event: string, payload?: unknown): void {
+    console.error(this.serialize({ level: "error", event, payload }));
+  }
 }
 
 function redactValue(value: unknown, keyName = ""): RedactedJson {

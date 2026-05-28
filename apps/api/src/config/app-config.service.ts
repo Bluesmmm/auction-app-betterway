@@ -1,8 +1,3 @@
-const DEFAULT_DATABASE_URL =
-  "postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public";
-const DEFAULT_REDIS_URL = "redis://localhost:6379/0";
-const DEFAULT_WORKER_NAME = "auction-worker-local";
-
 export class AppConfigService {
   constructor(private readonly env: NodeJS.ProcessEnv = process.env) {}
 
@@ -15,15 +10,15 @@ export class AppConfigService {
   }
 
   get databaseUrl(): string {
-    return this.env.DATABASE_URL ?? DEFAULT_DATABASE_URL;
+    return requireEnv(this.env, "DATABASE_URL");
   }
 
   get redisUrl(): string {
-    return this.env.REDIS_URL ?? DEFAULT_REDIS_URL;
+    return requireEnv(this.env, "REDIS_URL");
   }
 
   get workerName(): string {
-    return this.env.WORKER_NAME ?? DEFAULT_WORKER_NAME;
+    return requireEnv(this.env, "WORKER_NAME");
   }
 
   get workerHeartbeatKey(): string {
@@ -36,6 +31,19 @@ export class AppConfigService {
       30
     ) * 1000;
   }
+
+  get corsAllowedOrigins(): string[] {
+    return parseStringList(this.env.CORS_ALLOWED_ORIGINS);
+  }
+}
+
+function requireEnv(env: NodeJS.ProcessEnv, key: string): string {
+  const value = env[key];
+  if (!value) {
+    throw new Error(`${key} must be configured`);
+  }
+
+  return value;
 }
 
 function parsePort(rawPort: string | undefined, defaultPort: number): number {
@@ -65,4 +73,15 @@ function parsePositiveInteger(
   }
 
   return value;
+}
+
+function parseStringList(rawValue: string | undefined): string[] {
+  if (!rawValue) {
+    return [];
+  }
+
+  return rawValue
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
 }

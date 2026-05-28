@@ -1,0 +1,8 @@
+{
+  "pages": ["pages/health/index"],
+  "window": {
+    "navigationBarTitleText": "积分拍卖",
+    "navigationBarBackgroundColor": "#ffffff",
+    "navigationBarTextStyle": "black"
+  }
+}

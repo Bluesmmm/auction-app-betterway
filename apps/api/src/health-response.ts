@@ -12,6 +12,7 @@ export function buildHealthResponse(
   config: Pick<AppConfigService, "nodeEnv" | "redisUrl">,
   serverTime: Date = new Date()
 ) {
+  const adjudicatedServerTime = serverTime.toISOString();
   const status =
     database.status === "ready" &&
     redis.status === "ready" &&
@@ -21,10 +22,14 @@ export function buildHealthResponse(
 
   return {
     status,
+    serverTime: adjudicatedServerTime,
+    targetType: "runtime_health",
+    targetId: "stage1-runtime",
+    targetVersion: 1,
     api: {
       status: "alive",
       environment: config.nodeEnv,
-      serverTime: serverTime.toISOString()
+      serverTime: adjudicatedServerTime
     },
     database,
     redis,

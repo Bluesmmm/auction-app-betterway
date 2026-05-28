@@ -13,19 +13,26 @@ export type WorkerRuntimeConfig = {
   redis: RedisConnectionConfig;
 };
 
-const DEFAULT_REDIS_URL = "redis://localhost:6379/0";
-
 export function loadWorkerRuntimeConfig(
   env: NodeJS.ProcessEnv = process.env
 ): WorkerRuntimeConfig {
-  const redisUrl = env.REDIS_URL ?? DEFAULT_REDIS_URL;
+  const redisUrl = requireEnv(env, "REDIS_URL");
 
   return {
     redisUrl,
-    workerName: env.WORKER_NAME ?? "auction-worker-local",
+    workerName: requireEnv(env, "WORKER_NAME"),
     concurrency: parseConcurrency(env.WORKER_CONCURRENCY),
     redis: parseRedisUrl(redisUrl)
   };
+}
+
+function requireEnv(env: NodeJS.ProcessEnv, key: string): string {
+  const value = env[key];
+  if (!value) {
+    throw new Error(`${key} must be configured`);
+  }
+
+  return value;
 }
 
 export function parseRedisUrl(redisUrl: string): RedisConnectionConfig {

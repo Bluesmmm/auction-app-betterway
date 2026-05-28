@@ -68,6 +68,11 @@ type ConsumedInviteCode = {
   communityId: string;
 };
 
+type InviteCodeCandidate = {
+  id: string;
+  communityId: string;
+};
+
 export class CommunityAccessService {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -97,13 +102,12 @@ export class CommunityAccessService {
       };
     }
 
-    const creator = await this.prisma.guardianProfile.findUnique({
-      where: {
-        id: community.creatorGuardianId
-      }
-    });
+    const scopedAdmin = await this.findActiveScopedAdmin(
+      input.actorUserId,
+      community.id
+    );
 
-    if (!creator || creator.userId !== input.actorUserId) {
+    if (!scopedAdmin) {
       return {
         result: "rejected",
         errorCode: "COMMUNITY_ADMIN_REQUIRED"
@@ -155,18 +159,16 @@ export class CommunityAccessService {
     }
 
     return this.prisma.$transaction(async (tx) => {
-      const inviteCodes = await tx.$queryRaw<ConsumedInviteCode[]>`
-        UPDATE "CommunityInviteCode"
-        SET "usedCount" = "usedCount" + 1
+      const inviteCandidates = await tx.$queryRaw<InviteCodeCandidate[]>`
+        SELECT "id", "communityId"
+        FROM "CommunityInviteCode"
         WHERE "code" = ${input.code}
           AND "status" = 'active'
           AND ("expiresAt" IS NULL OR "expiresAt" > ${now})
-          AND ("maxUses" IS NULL OR "usedCount" < "maxUses")
-        RETURNING "id", "communityId"
       `;
-      const inviteCode = inviteCodes[0];
+      const inviteCandidate = inviteCandidates[0];
 
-      if (!inviteCode) {
+      if (!inviteCandidate) {
         return {
           result: "rejected",
           errorCode: "INVITE_CODE_UNAVAILABLE"
@@ -176,7 +178,7 @@ export class CommunityAccessService {
       const existingMember = await tx.communityMember.findUnique({
         where: {
           communityId_childId: {
-            communityId: inviteCode.communityId,
+            communityId: inviteCandidate.communityId,
             childId: input.childId
           }
         }
@@ -188,6 +190,22 @@ export class CommunityAccessService {
           communityId: existingMember.communityId,
           childId: existingMember.childId,
           memberStatus: existingMember.status
+        };
+      }
+
+      const inviteCodes = await tx.$queryRaw<ConsumedInviteCode[]>`
+        UPDATE "CommunityInviteCode"
+        SET "usedCount" = "usedCount" + 1
+        WHERE "id" = ${inviteCandidate.id}
+          AND ("maxUses" IS NULL OR "usedCount" < "maxUses")
+        RETURNING "id", "communityId"
+      `;
+      const inviteCode = inviteCodes[0];
+
+      if (!inviteCode) {
+        return {
+          result: "rejected",
+          errorCode: "INVITE_CODE_UNAVAILABLE"
         };
       }
 
@@ -311,13 +329,12 @@ export class CommunityAccessService {
       };
     }
 
-    const creator = await this.prisma.guardianProfile.findUnique({
-      where: {
-        id: community.creatorGuardianId
-      }
-    });
+    const scopedAdmin = await this.findActiveScopedAdmin(
+      input.actorUserId,
+      community.id
+    );
 
-    if (!creator || creator.userId !== input.actorUserId) {
+    if (!scopedAdmin) {
       return {
         result: "rejected",
         errorCode: "COMMUNITY_ADMIN_REQUIRED"
@@ -372,6 +389,25 @@ export class CommunityAccessService {
         childId: member.childId,
         memberStatus: member.status
       };
+    });
+  }
+
+  private async findActiveScopedAdmin(actorUserId: string, communityId: string) {
+    return this.prisma.adminProfile.findFirst({
+      where: {
+        userId: actorUserId,
+        status: "active",
+        mfaEnabled: true,
+        communityScopes: {
+          some: {
+            communityId,
+            status: "active"
+          }
+        }
+      },
+      select: {
+        id: true
+      }
     });
   }
 }

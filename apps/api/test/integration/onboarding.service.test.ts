@@ -112,10 +112,13 @@ describe("OnboardingService", () => {
     expect(persistedChild.pointAccount?.ledgerEntries).toEqual([
       expect.objectContaining({
         type: "initial_grant",
+        childId: child.childId,
         amountPoints: 100,
         availableAfter: 100,
         frozenAfter: 0,
-        idempotencyKey: `initial_child_points_${suffix}`
+        idempotencyKey: `initial_child_points_${suffix}`,
+        reason: "initial_child_points",
+        createdByUserId: login.userId
       })
     ]);
   });

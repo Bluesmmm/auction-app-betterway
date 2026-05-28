@@ -1,5 +1,6 @@
 {
   "appid": "touristappid",
+  "miniprogramRoot": ".",
   "projectname": "auction-app-betterway",
   "setting": {
     "urlCheck": false,

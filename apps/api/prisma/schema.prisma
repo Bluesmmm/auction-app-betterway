@@ -31,6 +31,12 @@ enum GuardianRole {
   secondary
 }
 
+enum AdminRole {
+  activity_admin
+  platform_admin
+  institution_admin
+}
+
 enum LinkStatus {
   pending
   active
@@ -58,6 +64,12 @@ enum CommunityMemberStatus {
   active
   removed
   banned
+}
+
+enum AdminScopeStatus {
+  active
+  suspended
+  revoked
 }
 
 enum ContentTargetType {
@@ -130,6 +142,9 @@ enum PointHoldStatus {
 
 enum PointLedgerEntryType {
   initial_grant
+  admin_award
+  admin_penalty
+  correction
   admin_adjustment
   hold
   release
@@ -173,14 +188,16 @@ enum OutboxStatus {
 }
 
 model User {
-  id               String            @id @default(cuid())
-  status           UserStatus        @default(active)
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  wechatIdentities WechatIdentity[]
-  guardianProfile  GuardianProfile?
-  childProfile     ChildProfile?
-  auditLogs        AuditLog[]
+  id                   String             @id @default(cuid())
+  status               UserStatus         @default(active)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  wechatIdentities     WechatIdentity[]
+  guardianProfile      GuardianProfile?
+  adminProfile         AdminProfile?
+  childProfile         ChildProfile?
+  auditLogs            AuditLog[]
+  createdLedgerEntries PointLedgerEntry[]
 }
 
 model WechatIdentity {
@@ -206,6 +223,17 @@ model GuardianProfile {
   childLinks     GuardianChildLink[]
 }
 
+model AdminProfile {
+  id              String                @id @default(cuid())
+  userId          String                @unique
+  role            AdminRole
+  mfaEnabled      Boolean               @default(false)
+  status          UserStatus            @default(active)
+  createdAt       DateTime              @default(now())
+  user            User                  @relation(fields: [userId], references: [id])
+  communityScopes AdminCommunityScope[]
+}
+
 model ChildProfile {
   id                     String              @id @default(cuid())
   userId                 String?             @unique
@@ -220,6 +248,7 @@ model ChildProfile {
   guardianLinks          GuardianChildLink[]
   memberships            CommunityMember[]
   pointAccount           PointAccount?
+  ledgerEntries          PointLedgerEntry[]
   items                  Item[]
   bids                   Bid[]
 }
@@ -248,7 +277,21 @@ model AuctionCommunity {
   createdAt                     DateTime              @default(now())
   inviteCodes                   CommunityInviteCode[]
   members                       CommunityMember[]
+  adminScopes                   AdminCommunityScope[]
   items                         Item[]
+}
+
+model AdminCommunityScope {
+  id             String           @id @default(cuid())
+  adminProfileId String
+  communityId    String
+  status         AdminScopeStatus @default(active)
+  createdAt      DateTime         @default(now())
+  adminProfile   AdminProfile     @relation(fields: [adminProfileId], references: [id])
+  community      AuctionCommunity @relation(fields: [communityId], references: [id])
+
+  @@unique([adminProfileId, communityId])
+  @@index([communityId, status])
 }
 
 model CommunityInviteCode {
@@ -279,16 +322,16 @@ model CommunityMember {
 
 model MediaAsset {
   id                  String          @id @default(cuid())
-  ownerUserId          String
-  storageBucket        String
-  storageKey           String
-  visibility           MediaVisibility @default(temp_private)
-  mimeType             String
-  sizeBytes            Int
-  checksum             String
-  accessPolicyVersion  Int             @default(1)
-  revokedAt            DateTime?
-  createdAt            DateTime        @default(now())
+  ownerUserId         String
+  storageBucket       String
+  storageKey          String
+  visibility          MediaVisibility @default(temp_private)
+  mimeType            String
+  sizeBytes           Int
+  checksum            String
+  accessPolicyVersion Int             @default(1)
+  revokedAt           DateTime?
+  createdAt           DateTime        @default(now())
 
   @@index([ownerUserId, visibility])
 }
@@ -410,19 +453,25 @@ model PointHold {
 }
 
 model PointLedgerEntry {
-  id             String               @id @default(cuid())
-  accountId      String
-  type           PointLedgerEntryType
-  amountPoints   Int
-  availableAfter Int
-  frozenAfter    Int
-  relatedType    String
-  relatedId      String
-  idempotencyKey String               @unique
-  createdAt      DateTime             @default(now())
-  account        PointAccount         @relation(fields: [accountId], references: [id])
+  id              String               @id @default(cuid())
+  accountId       String
+  childId         String
+  type            PointLedgerEntryType
+  amountPoints    Int
+  availableAfter  Int
+  frozenAfter     Int
+  relatedType     String
+  relatedId       String
+  idempotencyKey  String               @unique
+  reason          String
+  createdByUserId String?
+  createdAt       DateTime             @default(now())
+  account         PointAccount         @relation(fields: [accountId], references: [id])
+  child           ChildProfile         @relation(fields: [childId], references: [id])
+  createdBy       User?                @relation(fields: [createdByUserId], references: [id])
 
   @@index([accountId, createdAt])
+  @@index([childId, createdAt])
 }
 
 model Transaction {

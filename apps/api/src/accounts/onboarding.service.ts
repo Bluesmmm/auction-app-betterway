@@ -216,13 +216,24 @@ export class OnboardingService {
           totalSpentPoints: 0,
           ledgerEntries: {
             create: {
+              child: {
+                connect: {
+                  id: child.id
+                }
+              },
               type: "initial_grant",
               amountPoints: input.initialPoints,
               availableAfter: input.initialPoints,
               frozenAfter: 0,
               relatedType: "child_profile",
               relatedId: child.id,
-              idempotencyKey: input.idempotencyKey
+              idempotencyKey: input.idempotencyKey,
+              reason: "initial_child_points",
+              createdBy: {
+                connect: {
+                  id: input.actorUserId
+                }
+              }
             }
           }
         }

@@ -2,12 +2,25 @@ import { describe, expect, it } from "vitest";
 import { loadWorkerRuntimeConfig, parseRedisUrl } from "../src/worker-config.js";
 
 describe("worker runtime config", () => {
-  it("uses local Redis defaults", () => {
-    const config = loadWorkerRuntimeConfig({});
+  it("requires Redis and worker identity env vars", () => {
+    expect(() => loadWorkerRuntimeConfig({})).toThrow(
+      "REDIS_URL must be configured"
+    );
+    expect(() =>
+      loadWorkerRuntimeConfig({ REDIS_URL: "redis://redis:6379/0" })
+    ).toThrow("WORKER_NAME must be configured");
+  });
 
-    expect(config.redisUrl).toBe("redis://localhost:6379/0");
+  it("parses runtime Redis settings from env", () => {
+    const config = loadWorkerRuntimeConfig({
+      REDIS_URL: "redis://redis:6379/0",
+      WORKER_NAME: "auction-worker-runtime"
+    });
+
+    expect(config.redisUrl).toBe("redis://redis:6379/0");
+    expect(config.workerName).toBe("auction-worker-runtime");
     expect(config.redis).toEqual({
-      host: "localhost",
+      host: "redis",
       port: 6379,
       db: 0,
       password: undefined,
@@ -30,7 +43,11 @@ describe("worker runtime config", () => {
 
   it("rejects unsafe worker concurrency", () => {
     expect(() =>
-      loadWorkerRuntimeConfig({ WORKER_CONCURRENCY: "100" })
+      loadWorkerRuntimeConfig({
+        REDIS_URL: "redis://redis:6379/0",
+        WORKER_NAME: "auction-worker-runtime",
+        WORKER_CONCURRENCY: "100"
+      })
     ).toThrow("WORKER_CONCURRENCY must be an integer between 1 and 50");
   });
 });

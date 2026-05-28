@@ -1,25 +1,35 @@
 import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
-const composeFiles = ["-f", "docker-compose.yml", "-f", "docker-compose.staging.yml"];
-const stagingEnv = readEnvFile(".env.staging.example");
-const port = process.env.PORT ?? stagingEnv.PORT ?? "3000";
+const composeFiles = ["-f", "docker-compose.yml", "-f", "docker-compose.runtime.yml"];
+const port = process.env.PORT ?? "3000";
 const apiHealthUrl =
   process.env.STAGE1_API_HEALTH_URL ?? `http://localhost:${port}/health`;
-const workerName =
-  process.env.WORKER_NAME ?? stagingEnv.WORKER_NAME ?? "auction-worker-local";
+const apiBaseUrl = buildApiBaseUrl(apiHealthUrl);
+const workerName = process.env.WORKER_NAME ?? "auction-worker-runtime";
 const workerHeartbeatKey = `auction:worker:${workerName}:heartbeat`;
 const workerHeartbeatStaleAfterSeconds = Number(
   process.env.WORKER_HEARTBEAT_STALE_AFTER_SECONDS ??
-    stagingEnv.WORKER_HEARTBEAT_STALE_AFTER_SECONDS ??
     "30"
 );
 
 const requiredFiles = [
   "apps/api/dist/main.js",
   "apps/worker/dist/main.js",
+  "apps/admin/dist/main.js",
+  "apps/admin/dist/web/index.html",
   "apps/admin/package.json",
+  "apps/admin/src/main.ts",
+  "apps/admin/src/main.tsx",
+  "apps/admin/src/App.tsx",
+  "apps/admin/src/stage1-shell.ts",
   "apps/admin/src/api-connectivity.ts",
+  "apps/admin/tsconfig.build.json",
+  "apps/admin/vite.config.ts",
+  "apps/miniprogram/app.json",
+  "apps/miniprogram/app.ts",
+  "apps/miniprogram/pages/health/index.json",
+  "apps/miniprogram/pages/health/index.ts",
   "apps/miniprogram/project.config.json",
   "apps/miniprogram/src/api-connectivity.ts"
 ];
@@ -29,6 +39,17 @@ for (const filePath of requiredFiles) {
     fail(`missing required runtime artifact: ${filePath}`);
   }
 }
+
+const clientRuntimeEnv = {
+  API_BASE_URL: apiBaseUrl,
+  VITE_API_BASE_URL: apiBaseUrl,
+  MINIPROGRAM_API_BASE_URL: apiBaseUrl
+};
+
+assertAdminSkeleton(
+  run(["node", "apps/admin/dist/main.js"], undefined, clientRuntimeEnv).stdout
+);
+assertMiniprogramSkeleton();
 
 run(["docker", "compose", ...composeFiles, "ps"]);
 run([
@@ -59,6 +80,11 @@ run(
 );
 
 const health = await waitForApiHealth(apiHealthUrl);
+run(
+  ["npm", "test", "--", "apps/api/test/runtime/client-connectivity.test.ts"],
+  undefined,
+  clientRuntimeEnv
+);
 const heartbeat = run([
   "docker",
   "compose",
@@ -89,6 +115,14 @@ async function waitForApiHealth(url) {
         lastError = `API health returned HTTP ${response.status}`;
       } else if (payload.status !== "ok") {
         lastError = `API health is ${payload.status}: ${JSON.stringify(payload)}`;
+      } else if (!payload.serverTime) {
+        lastError = "API health serverTime is missing";
+      } else if (payload.targetType !== "runtime_health") {
+        lastError = `API health targetType is ${payload.targetType}`;
+      } else if (payload.targetId !== "stage1-runtime") {
+        lastError = `API health targetId is ${payload.targetId}`;
+      } else if (!Number.isInteger(payload.targetVersion)) {
+        lastError = "API health targetVersion is missing";
       } else if (payload.database?.status !== "ready") {
         lastError = `database is ${payload.database?.status}`;
       } else if (!payload.database?.serverTime) {
@@ -128,34 +162,61 @@ function assertFreshHeartbeat(rawHeartbeat) {
   }
 }
 
-function readEnvFile(filePath) {
-  if (!existsSync(filePath)) {
-    return {};
+function assertAdminSkeleton(rawOutput) {
+  try {
+    const payload = JSON.parse(rawOutput);
+    if (
+      payload.app !== "admin" ||
+      payload.surface !== "stage1-admin-react-shell" ||
+      payload.highRiskGate !== "mfa_required" ||
+      typeof payload.healthUrl !== "string" ||
+      !payload.healthUrl.endsWith("/health")
+    ) {
+      fail(`admin stage1 shell returned unexpected payload: ${rawOutput}`);
+    }
+    if (
+      payload.surface !== "stage1-admin-react-shell" ||
+      payload.stack?.ui !== "react" ||
+      payload.stack?.bundler !== "vite" ||
+      payload.stack?.designSystem !== "antd" ||
+      payload.stack?.routing !== "react-router" ||
+      payload.stack?.serverState !== "tanstack-query" ||
+      payload.stack?.validation !== "zod"
+    ) {
+      fail(`admin stage1 shell does not expose the required web stack: ${rawOutput}`);
+    }
+  } catch {
+    fail(`admin stage1 shell did not emit JSON: ${rawOutput}`);
   }
-
-  return Object.fromEntries(
-    readFileSync(filePath, "utf8")
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith("#"))
-      .map((line) => {
-        const separatorIndex = line.indexOf("=");
-        if (separatorIndex === -1) {
-          return [line, ""];
-        }
-
-        return [
-          line.slice(0, separatorIndex),
-          line.slice(separatorIndex + 1)
-        ];
-      })
-  );
 }
 
-function run(command, expectStdout) {
+function assertMiniprogramSkeleton() {
+  const appConfig = JSON.parse(readFileSync("apps/miniprogram/app.json", "utf8"));
+  const projectConfig = JSON.parse(
+    readFileSync("apps/miniprogram/project.config.json", "utf8")
+  );
+
+  if (!appConfig.pages?.includes("pages/health/index")) {
+    fail("miniprogram skeleton does not declare the health page");
+  }
+
+  if (projectConfig.miniprogramRoot !== ".") {
+    fail("miniprogram project config must point at the local skeleton root");
+  }
+}
+
+function run(command, expectStdout, env = {}) {
   const result = spawnSync(command[0], command.slice(1), {
-    encoding: "utf8"
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      ...env
+    }
   });
+
+  if (result.error) {
+    fail(`${command.join(" ")} failed: ${result.error.message}`);
+  }
 
   if (result.status !== 0) {
     fail(`${command.join(" ")} failed: ${result.stderr || result.stdout}`);
@@ -166,6 +227,14 @@ function run(command, expectStdout) {
   }
 
   return result;
+}
+
+function buildApiBaseUrl(healthUrl) {
+  const url = new URL(healthUrl);
+  url.pathname = url.pathname.replace(/\/health\/?$/, "");
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/$/, "");
 }
 
 function sleep(ms) {

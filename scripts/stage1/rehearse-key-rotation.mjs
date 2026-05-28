@@ -6,7 +6,7 @@ const requiredPairs = [
   ["LOG_EXPORT_SIGNING_KEY_CURRENT", "LOG_EXPORT_SIGNING_KEY_NEXT"]
 ];
 
-const envFiles = [".env.example", ".env.staging.example"];
+const envFiles = [".env.example"];
 
 for (const envFile of envFiles) {
   const content = readFileSync(envFile, "utf8");

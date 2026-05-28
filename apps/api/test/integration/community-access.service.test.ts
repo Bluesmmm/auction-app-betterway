@@ -33,6 +33,27 @@ async function createGuardian(service: OnboardingService, label: string) {
   };
 }
 
+async function grantCommunityAdminScope(
+  actorUserId: string,
+  communityId: string,
+  mfaEnabled = true
+) {
+  return prisma.adminProfile.create({
+    data: {
+      userId: actorUserId,
+      role: "activity_admin",
+      mfaEnabled,
+      status: "active",
+      communityScopes: {
+        create: {
+          communityId,
+          status: "active"
+        }
+      }
+    }
+  });
+}
+
 describe("CommunityAccessService", () => {
   afterAll(async () => {
     await prisma.$disconnect();
@@ -65,6 +86,7 @@ describe("CommunityAccessService", () => {
         defaultAuctionDurationMinutes: 1440
       }
     });
+    await grantCommunityAdminScope(admin.userId, community.id);
     const invite = await access.createInviteCode({
       actorUserId: admin.userId,
       communityId: community.id,
@@ -175,6 +197,7 @@ describe("CommunityAccessService", () => {
         defaultAuctionDurationMinutes: 1440
       }
     });
+    await grantCommunityAdminScope(admin.userId, community.id);
     const invite = await access.createInviteCode({
       actorUserId: admin.userId,
       communityId: community.id,
@@ -221,5 +244,72 @@ describe("CommunityAccessService", () => {
 
     expect(usedInvite.usedCount).toBe(1);
     expect(members).toHaveLength(1);
+  });
+
+  it("does not consume another invite slot when the same child repeats a join request", async () => {
+    const onboarding = new OnboardingService(prisma, new FakeWechatAuthProvider());
+    const access = new CommunityAccessService(prisma);
+    const admin = await createGuardian(onboarding, "repeat_admin");
+    const childGuardian = await createGuardian(onboarding, "repeat_child");
+    const child = await onboarding.createChildWithPrimaryGuardian({
+      actorUserId: childGuardian.userId,
+      guardianId: childGuardian.guardianId,
+      displayName: `Repeat Child ${Date.now()}`,
+      gradeBand: "grade_3_4",
+      initialPoints: 100,
+      idempotencyKey: `repeat_child_initial_${Date.now()}`,
+      now: new Date("2026-05-27T16:00:00.000Z")
+    });
+
+    if (child.result !== "accepted") {
+      throw new Error("expected child creation to succeed");
+    }
+
+    const community = await prisma.auctionCommunity.create({
+      data: {
+        name: `Repeat Community ${Date.now()}`,
+        creatorGuardianId: admin.guardianId,
+        status: "active",
+        defaultAuctionDurationMinutes: 1440
+      }
+    });
+    await grantCommunityAdminScope(admin.userId, community.id);
+    const invite = await access.createInviteCode({
+      actorUserId: admin.userId,
+      communityId: community.id,
+      code: `REPEAT${Date.now()}`,
+      maxUses: 1
+    });
+
+    if (invite.result !== "accepted") {
+      throw new Error("expected invite creation to succeed");
+    }
+
+    const first = await access.requestJoinWithInvite({
+      childId: child.childId,
+      code: invite.code,
+      now: new Date("2026-05-27T16:01:00.000Z")
+    });
+    const second = await access.requestJoinWithInvite({
+      childId: child.childId,
+      code: invite.code,
+      now: new Date("2026-05-27T16:02:00.000Z")
+    });
+
+    expect(first.result).toBe("accepted");
+    expect(second).toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        memberStatus: "pending_guardian"
+      })
+    );
+
+    const usedInvite = await prisma.communityInviteCode.findUniqueOrThrow({
+      where: {
+        code: invite.code
+      }
+    });
+
+    expect(usedInvite.usedCount).toBe(1);
   });
 });

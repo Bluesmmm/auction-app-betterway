@@ -1,8 +1,10 @@
 import { createOutboxNotificationWorker } from "./outbox-worker.js";
+import { RedactingWorkerLogger } from "./redacting-worker-logger.js";
 import { startWorkerHeartbeat } from "./worker-heartbeat.js";
 import { loadWorkerRuntimeConfig } from "./worker-config.js";
 
 const config = loadWorkerRuntimeConfig();
+const logger = new RedactingWorkerLogger();
 const heartbeat = await startWorkerHeartbeat({
   connection: config.redis,
   workerName: config.workerName
@@ -23,24 +25,16 @@ const worker = createOutboxNotificationWorker({
 });
 
 worker.on("ready", () => {
-  console.log(
-    JSON.stringify({
-      level: "info",
-      event: "worker.ready",
-      workerName: config.workerName
-    })
-  );
+  logger.info("worker.ready", {
+    workerName: config.workerName
+  });
 });
 
 worker.on("failed", (job, error) => {
-  console.log(
-    JSON.stringify({
-      level: "error",
-      event: "worker.job_failed",
-      jobId: job?.id,
-      message: error.message
-    })
-  );
+  logger.error("worker.job_failed", {
+    jobId: job?.id,
+    message: error.message
+  });
 });
 
 process.on("SIGINT", () => {

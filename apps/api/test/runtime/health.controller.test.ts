@@ -15,7 +15,7 @@ describe("HealthController", () => {
       },
       {
         status: "ready",
-        workerName: "auction-worker-local",
+        workerName: "auction-worker-test",
         heartbeatAgeMs: 100
       },
       {
@@ -26,6 +26,10 @@ describe("HealthController", () => {
     );
 
     expect(result.status).toBe("ok");
+    expect(result.serverTime).toBe("2026-05-27T00:00:00.000Z");
+    expect(result.targetType).toBe("runtime_health");
+    expect(result.targetId).toBe("stage1-runtime");
+    expect(result.targetVersion).toBe(1);
     expect(result.api.status).toBe("alive");
     expect(result.api.serverTime).toBe("2026-05-27T00:00:00.000Z");
     expect(result.database.status).toBe("ready");
@@ -46,7 +50,7 @@ describe("HealthController", () => {
       },
       {
         status: "ready",
-        workerName: "auction-worker-local",
+        workerName: "auction-worker-test",
         heartbeatAgeMs: 100
       },
       {
@@ -78,7 +82,7 @@ describe("HealthController", () => {
       },
       {
         status: "unready",
-        workerName: "auction-worker-local",
+        workerName: "auction-worker-test",
         errorCode: "WORKER_HEARTBEAT_STALE",
         heartbeatAgeMs: 60_000
       },

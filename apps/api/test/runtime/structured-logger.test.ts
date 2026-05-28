@@ -20,7 +20,9 @@ describe("StructuredLogger", () => {
           "https://cdn.example.com/private/children/raw/object-key-123456789.jpg?signature=abc",
         nested: {
           courierTrackingNo: "SF123456789"
-        }
+        },
+        message: "请送到上海市浦东新区测试路 1 号",
+        note: "快递单号 SF987654321"
       }
     });
 
@@ -30,5 +32,7 @@ describe("StructuredLogger", () => {
     expect(serialized).not.toContain("object-key-123456789");
     expect(serialized).not.toContain("signature=abc");
     expect(serialized).not.toContain("SF123456789");
+    expect(serialized).not.toContain("上海市浦东新区测试路");
+    expect(serialized).not.toContain("SF987654321");
   });
 });
