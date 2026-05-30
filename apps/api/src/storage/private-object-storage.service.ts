@@ -44,10 +44,11 @@ export type VerifyPrivateReadGrantResult =
     };
 
 export class PrivateObjectStorageService {
-  constructor(
-    private readonly signingKey =
-      process.env.OBJECT_STORAGE_KEY_CURRENT ?? "local-object-storage-current"
-  ) {}
+  constructor(private readonly signingKey: string) {
+    if (!signingKey) {
+      throw new Error("OBJECT_STORAGE_KEY_CURRENT must be configured");
+    }
+  }
 
   createReadGrant(input: CreatePrivateReadGrantInput): PrivateReadGrantResult {
     if (

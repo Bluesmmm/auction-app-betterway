@@ -12,8 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const rehearsalDatabase =
-  process.env.STAGE1_MIGRATION_REHEARSAL_DATABASE ??
-  "auction_app_migration_rehearsal";
+  assertSafeRehearsalDatabaseName(
+    process.env.STAGE1_MIGRATION_REHEARSAL_DATABASE ??
+      "auction_app_migration_rehearsal"
+  );
 const rehearsalDatabaseUrl = `postgresql://auction_app:auction_app@localhost:5432/${rehearsalDatabase}?schema=public`;
 const rollbackSnapshotPath = "/tmp/auction-app-stage1-migration-rollback.sql";
 const prismaDir = "apps/api/prisma";
@@ -84,6 +86,25 @@ function prepareBaselinePrismaProject() {
     root,
     schemaPath: join(baselinePrismaDir, "schema.prisma")
   };
+}
+
+function assertSafeRehearsalDatabaseName(databaseName) {
+  const reservedDatabaseNames = new Set([
+    "auction_app",
+    "postgres",
+    "template0",
+    "template1"
+  ]);
+  const safePattern = /^auction_app_migration_rehearsal(?:_[a-z0-9_]+)?$/;
+
+  if (reservedDatabaseNames.has(databaseName) || !safePattern.test(databaseName)) {
+    throw new Error(
+      `Unsafe migration rehearsal database name: ${databaseName}. ` +
+        "Use auction_app_migration_rehearsal or an auction_app_migration_rehearsal_* database."
+    );
+  }
+
+  return databaseName;
 }
 
 function deployBaselineDatabase(schemaPath) {

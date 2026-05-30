@@ -122,4 +122,61 @@ describe("OnboardingService", () => {
       })
     ]);
   });
+
+  it("rejects a second active primary guardian at the database boundary", async () => {
+    const service = new OnboardingService(prisma, new FakeWechatAuthProvider());
+    const suffix = Date.now();
+    const firstLogin = await service.loginWithWechatCode({
+      code: `mock_openid_primary_guardian_${suffix}`,
+      now: new Date("2026-05-27T13:10:00.000Z")
+    });
+    const secondLogin = await service.loginWithWechatCode({
+      code: `mock_openid_second_primary_guardian_${suffix}`,
+      now: new Date("2026-05-27T13:10:00.000Z")
+    });
+
+    if (firstLogin.result !== "accepted" || secondLogin.result !== "accepted") {
+      throw new Error("expected both logins to succeed");
+    }
+
+    const firstGuardian = await service.ensureGuardianProfile({
+      userId: firstLogin.userId,
+      phoneHash: `primary_phone_hash_${suffix}`,
+      phoneLast4: "1111",
+      consentVersion: "guardian-consent-v1",
+      consentedAt: new Date("2026-05-27T13:11:00.000Z")
+    });
+    const secondGuardian = await service.ensureGuardianProfile({
+      userId: secondLogin.userId,
+      phoneHash: `second_primary_phone_hash_${suffix}`,
+      phoneLast4: "2222",
+      consentVersion: "guardian-consent-v1",
+      consentedAt: new Date("2026-05-27T13:11:00.000Z")
+    });
+    const child = await service.createChildWithPrimaryGuardian({
+      actorUserId: firstLogin.userId,
+      guardianId: firstGuardian.guardianId,
+      displayName: `Primary Guarded Child ${suffix}`,
+      gradeBand: "grade_3_4",
+      initialPoints: 100,
+      idempotencyKey: `primary_guarded_child_initial_${suffix}`,
+      now: new Date("2026-05-27T13:12:00.000Z")
+    });
+
+    if (child.result !== "accepted") {
+      throw new Error("expected child creation to succeed");
+    }
+
+    await expect(
+      prisma.guardianChildLink.create({
+        data: {
+          guardianId: secondGuardian.guardianId,
+          childId: child.childId,
+          role: "primary",
+          status: "active",
+          confirmedAt: new Date("2026-05-27T13:13:00.000Z")
+        }
+      })
+    ).rejects.toThrow();
+  });
 });

@@ -35,6 +35,10 @@ export class AppConfigService {
   get corsAllowedOrigins(): string[] {
     return parseStringList(this.env.CORS_ALLOWED_ORIGINS);
   }
+
+  get objectStorageSigningKey(): string {
+    return requireEnv(this.env, "OBJECT_STORAGE_KEY_CURRENT");
+  }
 }
 
 function requireEnv(env: NodeJS.ProcessEnv, key: string): string {

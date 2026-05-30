@@ -67,6 +67,10 @@ describe("stage 1 rehearsal scripts", () => {
     const script = readFileSync("scripts/stage1/rehearse-migration.mjs", "utf8");
 
     expect(script).toContain("auction_app_migration_rehearsal");
+    expect(script).toContain("assertSafeRehearsalDatabaseName");
+    expect(script).toContain('"auction_app"');
+    expect(script).toContain('"postgres"');
+    expect(script).toContain("auction_app_migration_rehearsal(?:_[a-z0-9_]+)?");
     expect(script).toContain("/tmp/auction-app-stage1-migration-rollback.sql");
     expect(script).toContain("prepareBaselinePrismaProject");
     expect(script).toContain("deployBaselineDatabase");

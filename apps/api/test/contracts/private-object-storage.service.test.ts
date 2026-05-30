@@ -45,7 +45,7 @@ describe("PrivateObjectStorageService", () => {
   });
 
   it("rejects permanent or invalid grant durations", () => {
-    const service = new PrivateObjectStorageService();
+    const service = new PrivateObjectStorageService("test-signing-key");
 
     expect(
       service.createReadGrant({
@@ -62,6 +62,12 @@ describe("PrivateObjectStorageService", () => {
       result: "rejected",
       errorCode: "INVALID_TTL"
     });
+  });
+
+  it("fails fast when the signing key is not configured", () => {
+    expect(() => new PrivateObjectStorageService("")).toThrow(
+      "OBJECT_STORAGE_KEY_CURRENT must be configured"
+    );
   });
 
   it("rejects tampered or expired private grants", () => {
