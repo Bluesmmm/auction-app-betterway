@@ -2,6 +2,8 @@ import { PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { FakeWechatAuthProvider } from "../../src/providers/fake-providers.js";
 import { OnboardingService } from "../../src/accounts/onboarding.service.js";
+import { SessionService } from "../../src/accounts/session.service.js";
+import { SessionTokenService } from "../../src/accounts/session-token.service.js";
 
 process.env.DATABASE_URL ??=
   "postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public";
@@ -46,6 +48,64 @@ describe("OnboardingService", () => {
     expect(identities[0]?.lastLoginAt?.toISOString()).toBe(
       "2026-05-27T12:05:00.000Z"
     );
+  });
+
+  it("can complete WeChat login and issue an access/refresh token session grant", async () => {
+    const sessions = new SessionService(
+      prisma,
+      new SessionTokenService("onboarding-session-contract-signing-key")
+    );
+    const service = new OnboardingService(
+      prisma,
+      new FakeWechatAuthProvider(),
+      sessions
+    );
+    const suffix = Date.now();
+    const deviceFingerprintHash = `device_login_grant_${suffix}`;
+
+    const grant = await service.loginWithWechatCodeAndCreateSession({
+      code: `mock_openid_login_grant_${suffix}`,
+      deviceFingerprintHash,
+      ipHash: `ip_login_grant_${suffix}`,
+      userAgentHash: `ua_login_grant_${suffix}`,
+      now: new Date("2026-05-27T12:10:00.000Z")
+    });
+
+    expect(grant).toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        userId: expect.any(String),
+        openid: `mock_openid_login_grant_${suffix}`,
+        isNewUser: true,
+        sessionId: expect.any(String),
+        accessToken: expect.any(String),
+        accessTokenExpiresAt: "2026-05-27T12:25:00.000Z",
+        refreshToken: expect.any(String),
+        refreshTokenExpiresAt: "2026-06-26T12:10:00.000Z"
+      })
+    );
+
+    if (grant.result !== "accepted") {
+      throw new Error("expected login grant to succeed");
+    }
+
+    await expect(
+      prisma.trustedDevice.findUniqueOrThrow({
+        where: {
+          userId_deviceFingerprintHash: {
+            userId: grant.userId,
+            deviceFingerprintHash
+          }
+        },
+        select: {
+          trustLevel: true,
+          lastSeenAt: true
+        }
+      })
+    ).resolves.toEqual({
+      trustLevel: "normal",
+      lastSeenAt: new Date("2026-05-27T12:10:00.000Z")
+    });
   });
 
   it("creates an active child with a primary guardian and one initial grant", async () => {

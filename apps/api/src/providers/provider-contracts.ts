@@ -46,3 +46,24 @@ export type SendSubscriptionMessageResult =
 export interface SubscriptionMessageProvider {
   send(input: SendSubscriptionMessageInput): Promise<SendSubscriptionMessageResult>;
 }
+
+export type SendSensitiveOperationVerificationInput = {
+  recipientUserId: string;
+  challengeId: string;
+  operationType: string;
+  targetType: string;
+  targetId: string;
+  code: string;
+  expiresAt: Date;
+  ttlSeconds: number;
+};
+
+export type SensitiveOperationVerificationResult =
+  | { ok: true; providerMessageId: string; mutatesBusinessState: false }
+  | { ok: false; errorCode: string; mutatesBusinessState: false };
+
+export interface SensitiveOperationVerificationProvider {
+  send(
+    input: SendSensitiveOperationVerificationInput
+  ): Promise<SensitiveOperationVerificationResult>;
+}

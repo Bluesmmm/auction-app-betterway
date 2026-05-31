@@ -1,11 +1,14 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const schema = readFileSync("apps/api/prisma/schema.prisma", "utf8");
-const migration = readFileSync(
-  "apps/api/prisma/migrations/20260531000000_stage2_accounts_community/migration.sql",
-  "utf8"
-);
+const migration = readdirSync("apps/api/prisma/migrations")
+  .filter((entry) => entry.includes("stage2"))
+  .sort()
+  .map((entry) =>
+    readFileSync(`apps/api/prisma/migrations/${entry}/migration.sql`, "utf8")
+  )
+  .join("\n");
 const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
 const schemaNormalized = normalize(schema);
 const migrationNormalized = normalize(migration);
@@ -153,6 +156,7 @@ describe("Stage 2 schema", () => {
     expect(schemaNormalized).toContain("guardianConfirmedAt DateTime?");
     expect(schemaNormalized).toContain("targetUserId String?");
     expect(schemaNormalized).toContain("communityMemberId String?");
+    expect(schemaNormalized).toContain("riskSignalId String?");
     expect(schemaNormalized).toContain(
       "rosterVerificationStatus RosterVerificationStatus @default(pending)"
     );
@@ -167,6 +171,7 @@ describe("Stage 2 schema", () => {
     );
     expect(schemaNormalized).toContain(`@relation("RiskSignalTargetUser"`);
     expect(schemaNormalized).toContain(`@relation("RiskRestrictionTargetUser"`);
+    expect(schemaNormalized).toContain(`@relation("RiskSignalRestrictions"`);
     expect(schemaNormalized).toContain(
       '@relation(fields: [ruleVersionId, communityId], references: [id, communityId], onDelete: Restrict)'
     );
@@ -185,6 +190,7 @@ describe("Stage 2 schema", () => {
     expect(schemaNormalized).toContain(
       '@@index([scope, targetId, status], map: "RiskRestriction_scope_target_status_idx")'
     );
+    expect(schemaNormalized).toContain("@@index([riskSignalId, status])");
     expect(schemaNormalized).toContain("model AdminCommunityScope {");
     expect(communityCreationRequestModel).toContain("applicantGuardian");
     expect(communityCreationRequestModel).toContain("reviewedBy");
@@ -222,6 +228,7 @@ describe("Stage 2 schema", () => {
     );
     expect(migrationNormalized).toContain("RiskSignal_guardianId_fkey");
     expect(migrationNormalized).toContain("RiskRestriction_targetUserId_fkey");
+    expect(migrationNormalized).toContain("RiskRestriction_riskSignalId_fkey");
     expect(migrationNormalized).toContain(
       "RiskRestriction_communityMember_target_fkey"
     );
@@ -260,6 +267,9 @@ describe("Stage 2 schema", () => {
       getIndexBlock("RiskRestriction_communityMemberId_communityId_childId_idx")
     ).toContain(
       'ON "RiskRestriction"("communityMemberId", "communityId", "childId")'
+    );
+    expect(getIndexBlock("RiskRestriction_riskSignalId_status_idx")).toContain(
+      'ON "RiskRestriction"("riskSignalId", "status")'
     );
     expect(getIndexBlock("CommunityInviteCode_ruleVersionId_communityId_idx")).toContain(
       'ON "CommunityInviteCode"("ruleVersionId", "communityId")'
@@ -354,6 +364,11 @@ describe("Stage 2 schema", () => {
       riskRestrictionModel,
       'guardian GuardianProfile? @relation(fields: [guardianId], references: [id], onDelete: Restrict)',
       'ALTER TABLE "RiskRestriction" ADD CONSTRAINT "RiskRestriction_guardianId_fkey" FOREIGN KEY ("guardianId") REFERENCES "GuardianProfile"("id") ON DELETE RESTRICT ON UPDATE CASCADE;'
+    );
+    expectModelAndMigrationPair(
+      riskRestrictionModel,
+      'riskSignal RiskSignal? @relation("RiskSignalRestrictions", fields: [riskSignalId], references: [id], onDelete: Restrict)',
+      'ALTER TABLE "RiskRestriction" ADD CONSTRAINT "RiskRestriction_riskSignalId_fkey" FOREIGN KEY ("riskSignalId") REFERENCES "RiskSignal"("id") ON DELETE RESTRICT ON UPDATE CASCADE;'
     );
   });
 

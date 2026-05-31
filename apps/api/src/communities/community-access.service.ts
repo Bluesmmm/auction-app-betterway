@@ -5,6 +5,7 @@ import type {
   PrismaClient,
   RosterVerificationStatus
 } from "@prisma/client";
+import { createHash } from "node:crypto";
 import { CommunityAdminAuthorizationService } from "./community-admin-authorization.service.js";
 
 export type CreateInviteCodeInput = {
@@ -33,8 +34,10 @@ export type CreateInviteCodeResult =
     };
 
 export type RequestJoinWithInviteInput = {
+  actorUserId: string;
   childId: string;
   code: string;
+  idempotencyKey: string;
   now?: Date;
 };
 
@@ -54,8 +57,36 @@ export type CommunityMemberTransitionResult =
         | "COMMUNITY_ADMIN_REQUIRED"
         | "PLATFORM_ADMIN_REQUIRED"
         | "RISK_RESTRICTED"
+        | "JOIN_ACTOR_NOT_AUTHORIZED"
+        | "IDEMPOTENCY_KEY_REQUIRED"
+        | "IDEMPOTENCY_CONFLICT"
         | "COMMUNITY_NOT_OPEN_FOR_ADMISSION"
-        | "ROSTER_VERIFICATION_REQUIRED";
+        | "ROSTER_VERIFICATION_REQUIRED"
+        | "GUARDIAN_DISPUTE_FROZEN";
+    };
+
+type CommunityMemberTransitionErrorCode = Extract<
+  CommunityMemberTransitionResult,
+  { result: "rejected" }
+>["errorCode"];
+
+export type ListMemberReviewQueueResult =
+  | {
+      result: "accepted";
+      members: Array<{
+        key: string;
+        communityId: string;
+        childId: string;
+        guardianId: string;
+        memberStatus: CommunityMemberStatus;
+        rosterVerificationStatus: RosterVerificationStatus;
+        riskState: "clear" | "restricted";
+        requestedAt: string;
+      }>;
+    }
+  | {
+      result: "rejected";
+      errorCode: "PLATFORM_ADMIN_REQUIRED";
     };
 
 export type ConfirmJoinByPrimaryGuardianInput = {
@@ -93,6 +124,19 @@ type InviteCodeCandidate = {
   ruleVersionId: string | null;
 };
 
+type JoinRequestIdempotencyReservation =
+  | {
+      result: "reserved";
+      id: string;
+    }
+  | {
+      result: "replay";
+      response: CommunityMemberTransitionResult;
+    }
+  | {
+      result: "conflict";
+    };
+
 export class CommunityAccessService {
   constructor(
     private readonly prisma: PrismaClient,
@@ -100,6 +144,117 @@ export class CommunityAccessService {
       prisma
     )
   ) {}
+
+  async listMemberReviewQueue(input: {
+    platformAdminUserId: string;
+    now?: Date;
+  }): Promise<ListMemberReviewQueueResult> {
+    const now = input.now ?? new Date();
+    if (!(await this.isActiveMfaPlatformAdmin(input.platformAdminUserId))) {
+      return {
+        result: "rejected",
+        errorCode: "PLATFORM_ADMIN_REQUIRED"
+      };
+    }
+
+    const members = await this.prisma.communityMember.findMany({
+      where: {
+        status: {
+          in: ["pending_guardian", "pending_admin"]
+        }
+      },
+      orderBy: [
+        {
+          guardianConfirmedAt: "asc"
+        },
+        {
+          communityId: "asc"
+        },
+        {
+          childId: "asc"
+        }
+      ],
+      take: 100,
+      include: {
+        child: {
+          select: {
+            guardianLinks: {
+              where: {
+                role: "primary",
+                status: "active"
+              },
+              select: {
+                guardianId: true
+              },
+              take: 1
+            }
+          }
+        }
+      }
+    });
+
+    const rows = await Promise.all(
+      members.map(async (member) => {
+        const riskRestriction = await this.prisma.riskRestriction.findFirst({
+          where: {
+            status: "active",
+            type: {
+              in: ["suspended", "no_join"]
+            },
+            startsAt: {
+              lte: now
+            },
+            AND: [
+              {
+                OR: [{ expiresAt: null }, { expiresAt: { gt: now } }]
+              },
+              {
+                OR: [
+                  {
+                    scope: "community_member",
+                    targetId: member.id
+                  },
+                  {
+                    scope: "community_member",
+                    communityMemberId: member.id,
+                    communityId: member.communityId,
+                    childId: member.childId
+                  },
+                  {
+                    scope: "child",
+                    targetId: member.childId
+                  },
+                  {
+                    scope: "community",
+                    targetId: member.communityId
+                  }
+                ]
+              }
+            ]
+          },
+          select: {
+            id: true
+          }
+        });
+
+        return {
+          key: member.id,
+          communityId: member.communityId,
+          childId: member.childId,
+          guardianId: member.child.guardianLinks[0]?.guardianId ?? "",
+          memberStatus: member.status,
+          rosterVerificationStatus: member.rosterVerificationStatus,
+          riskState: riskRestriction ? ("restricted" as const) : ("clear" as const),
+          requestedAt: member.guardianConfirmedAt?.toISOString() ?? ""
+        };
+      })
+    );
+
+    return {
+      result: "accepted",
+      members: rows
+    };
+  }
 
   async createInviteCode(
     input: CreateInviteCodeInput
@@ -200,6 +355,13 @@ export class CommunityAccessService {
   ): Promise<CommunityMemberTransitionResult> {
     const now = input.now ?? new Date();
 
+    if (!input.idempotencyKey) {
+      return {
+        result: "rejected",
+        errorCode: "IDEMPOTENCY_KEY_REQUIRED"
+      };
+    }
+
     const activePrimaryGuardian = await this.prisma.guardianChildLink.findFirst({
       where: {
         childId: input.childId,
@@ -214,6 +376,11 @@ export class CommunityAccessService {
       },
       select: {
         guardianId: true,
+        child: {
+          select: {
+            userId: true
+          }
+        },
         guardian: {
           select: {
             userId: true
@@ -229,8 +396,51 @@ export class CommunityAccessService {
       };
     }
 
+    const childActorUserId = activePrimaryGuardian.child.userId;
+    if (
+      input.actorUserId !== activePrimaryGuardian.guardian.userId &&
+      input.actorUserId !== childActorUserId
+    ) {
+      return {
+        result: "rejected",
+        errorCode: "JOIN_ACTOR_NOT_AUTHORIZED"
+      };
+    }
+
+    const requestHash = createStableHash({
+      childId: input.childId,
+      code: input.code
+    });
+
     return this.prisma.$transaction(async (tx) => {
       await lockChild(tx, input.childId);
+
+      if (await hasFrozenGuardianDispute(tx, input.childId)) {
+        return {
+          result: "rejected",
+          errorCode: "GUARDIAN_DISPUTE_FROZEN"
+        };
+      }
+
+      const idempotency = await reserveIdempotencyRecord(tx, {
+        key: input.idempotencyKey,
+        actorUserId: input.actorUserId,
+        action: "community_member.request_with_invite",
+        targetType: "child_profile",
+        targetId: input.childId,
+        requestHash
+      });
+
+      if (idempotency.result === "conflict") {
+        return {
+          result: "rejected",
+          errorCode: "IDEMPOTENCY_CONFLICT"
+        };
+      }
+
+      if (idempotency.result === "replay") {
+        return idempotency.response;
+      }
 
       const inviteCandidates = await tx.$queryRaw<InviteCodeCandidate[]>`
         SELECT "id", "communityId", "ruleVersionId"
@@ -242,26 +452,26 @@ export class CommunityAccessService {
       const inviteCandidate = inviteCandidates[0];
 
       if (!inviteCandidate) {
-        return {
+        return completeIdempotentJoinRequest(tx, idempotency.id, {
           result: "rejected",
           errorCode: "INVITE_CODE_UNAVAILABLE"
-        };
+        });
       }
 
       if (
         !(await isCommunityOpenForAdmission(tx, inviteCandidate.communityId))
       ) {
-        return {
+        return completeIdempotentJoinRequest(tx, idempotency.id, {
           result: "rejected",
           errorCode: "COMMUNITY_NOT_OPEN_FOR_ADMISSION"
-        };
+        });
       }
 
       if (!inviteCandidate.ruleVersionId) {
-        return {
+        return completeIdempotentJoinRequest(tx, idempotency.id, {
           result: "rejected",
           errorCode: "INVITE_CODE_UNAVAILABLE"
-        };
+        });
       }
 
       if (
@@ -273,10 +483,10 @@ export class CommunityAccessService {
           now
         })
       ) {
-        return {
+        return completeIdempotentJoinRequest(tx, idempotency.id, {
           result: "rejected",
           errorCode: "RISK_RESTRICTED"
-        };
+        });
       }
 
       const existingMember = await tx.communityMember.findUnique({
@@ -289,12 +499,12 @@ export class CommunityAccessService {
       });
 
       if (existingMember) {
-        return {
+        return completeIdempotentJoinRequest(tx, idempotency.id, {
           result: "accepted",
           communityId: existingMember.communityId,
           childId: existingMember.childId,
           memberStatus: existingMember.status
-        };
+        });
       }
 
       const inviteCodes = await tx.$queryRaw<ConsumedInviteCode[]>`
@@ -307,10 +517,10 @@ export class CommunityAccessService {
       const inviteCode = inviteCodes[0];
 
       if (!inviteCode) {
-        return {
+        return completeIdempotentJoinRequest(tx, idempotency.id, {
           result: "rejected",
           errorCode: "INVITE_CODE_UNAVAILABLE"
-        };
+        });
       }
 
       const member = await tx.communityMember.create({
@@ -325,23 +535,27 @@ export class CommunityAccessService {
 
       await tx.auditLog.create({
         data: {
+          actorUserId: input.actorUserId,
           action: "community_member.request_with_invite",
           targetType: "community_member",
           targetId: member.id,
           afterJson: {
             inviteCodeId: inviteCode.id,
             communityId: inviteCode.communityId,
-            childId: input.childId
+            childId: input.childId,
+            idempotencyKey: input.idempotencyKey,
+            requestHash,
+            requestedAt: now.toISOString()
           }
         }
       });
 
-      return {
+      return completeIdempotentJoinRequest(tx, idempotency.id, {
         result: "accepted",
         communityId: member.communityId,
         childId: member.childId,
         memberStatus: member.status
-      };
+      });
     });
   }
 
@@ -376,6 +590,13 @@ export class CommunityAccessService {
         return {
           result: "rejected",
           errorCode: "ACTIVE_PRIMARY_GUARDIAN_REQUIRED"
+        };
+      }
+
+      if (await hasFrozenGuardianDispute(tx, input.childId)) {
+        return {
+          result: "rejected",
+          errorCode: "GUARDIAN_DISPUTE_FROZEN"
         };
       }
 
@@ -471,13 +692,33 @@ export class CommunityAccessService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      await lockCommunity(tx, input.communityId);
       await lockChild(tx, input.childId);
+
+      const scopedAdmin = await findActiveScopedActivityAdmin(
+        tx,
+        input.actorUserId,
+        input.communityId
+      );
+      if (!scopedAdmin) {
+        return {
+          result: "rejected",
+          errorCode: "COMMUNITY_ADMIN_REQUIRED"
+        };
+      }
 
       const primaryGuardian = await findActivePrimaryGuardian(tx, input.childId);
       if (!primaryGuardian) {
         return {
           result: "rejected",
           errorCode: "ACTIVE_PRIMARY_GUARDIAN_REQUIRED"
+        };
+      }
+
+      if (await hasFrozenGuardianDispute(tx, input.childId)) {
+        return {
+          result: "rejected",
+          errorCode: "GUARDIAN_DISPUTE_FROZEN"
         };
       }
 
@@ -672,6 +913,131 @@ async function lockCommunity(tx: Prisma.TransactionClient, communityId: string) 
   `;
 }
 
+async function reserveIdempotencyRecord(
+  tx: Prisma.TransactionClient,
+  input: {
+    key: string;
+    actorUserId: string;
+    action: string;
+    targetType: string;
+    targetId: string;
+    requestHash: string;
+  }
+): Promise<JoinRequestIdempotencyReservation> {
+  const existing = await tx.idempotencyRecord.findUnique({
+    where: {
+      key_actorUserId_action_targetType_targetId: {
+        key: input.key,
+        actorUserId: input.actorUserId,
+        action: input.action,
+        targetType: input.targetType,
+        targetId: input.targetId
+      }
+    },
+    select: {
+      id: true,
+      requestHash: true,
+      status: true,
+      responseJson: true
+    }
+  });
+
+  if (existing) {
+    if (existing.requestHash !== input.requestHash) {
+      return {
+        result: "conflict"
+      };
+    }
+
+    const response = parseCommunityMemberTransitionResult(
+      existing.responseJson
+    );
+    if (existing.status === "completed" && response) {
+      return {
+        result: "replay",
+        response
+      };
+    }
+
+    return {
+      result: "conflict"
+    };
+  }
+
+  const created = await tx.idempotencyRecord.create({
+    data: {
+      key: input.key,
+      actorUserId: input.actorUserId,
+      action: input.action,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      requestHash: input.requestHash,
+      status: "processing"
+    },
+    select: {
+      id: true
+    }
+  });
+
+  return {
+    result: "reserved",
+    id: created.id
+  };
+}
+
+async function completeIdempotentJoinRequest(
+  tx: Prisma.TransactionClient,
+  idempotencyRecordId: string,
+  response: CommunityMemberTransitionResult
+): Promise<CommunityMemberTransitionResult> {
+  await tx.idempotencyRecord.update({
+    where: {
+      id: idempotencyRecordId
+    },
+    data: {
+      status: "completed",
+      responseJson: response
+    }
+  });
+
+  return response;
+}
+
+function parseCommunityMemberTransitionResult(
+  value: Prisma.JsonValue | null
+): CommunityMemberTransitionResult | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const response = value as Record<string, unknown>;
+  if (response.result === "accepted") {
+    return typeof response.communityId === "string" &&
+      typeof response.childId === "string" &&
+      typeof response.memberStatus === "string"
+      ? {
+          result: "accepted",
+          communityId: response.communityId,
+          childId: response.childId,
+          memberStatus: response.memberStatus as CommunityMemberStatus
+        }
+      : null;
+  }
+
+  if (response.result === "rejected" && typeof response.errorCode === "string") {
+    return {
+      result: "rejected",
+      errorCode: response.errorCode as CommunityMemberTransitionErrorCode
+    };
+  }
+
+  return null;
+}
+
+function createStableHash(value: Record<string, string>): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
 async function lockChild(tx: Prisma.TransactionClient, childId: string) {
   await tx.$queryRaw<Array<{ id: string }>>`
     SELECT "id"
@@ -729,6 +1095,23 @@ async function findActivePrimaryGuardian(
   });
 }
 
+async function hasFrozenGuardianDispute(
+  tx: Prisma.TransactionClient,
+  childId: string
+): Promise<boolean> {
+  const dispute = await tx.guardianDispute.findFirst({
+    where: {
+      childId,
+      status: "frozen"
+    },
+    select: {
+      id: true
+    }
+  });
+
+  return Boolean(dispute);
+}
+
 async function hasActiveJoinRiskRestriction(
   tx: Prisma.TransactionClient,
   input: {
@@ -759,14 +1142,8 @@ async function hasActiveJoinRiskRestriction(
               targetId: input.childId
             },
             {
-              childId: input.childId
-            },
-            {
               scope: "guardian",
               targetId: input.primaryGuardianId
-            },
-            {
-              guardianId: input.primaryGuardianId
             },
             {
               scope: "user",
@@ -777,6 +1154,8 @@ async function hasActiveJoinRiskRestriction(
               targetId: input.communityId
             },
             {
+              scope: "community_member",
+              childId: input.childId,
               communityId: input.communityId
             }
           ]

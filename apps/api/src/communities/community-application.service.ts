@@ -24,6 +24,7 @@ export type SubmitCreationRequestResult =
         | "EXPECTED_CHILD_COUNT_INVALID"
         | "SENSITIVE_CHALLENGE_REQUIRED"
         | "SENSITIVE_CHALLENGE_EXPIRED"
+        | "DEVICE_NOT_TRUSTED"
         | "SESSION_REVOKED"
         | "RISK_RESTRICTED";
     };
@@ -44,11 +45,73 @@ export type ReviewCreationRequestResult =
         | "DEFAULT_AUCTION_DURATION_INVALID";
     };
 
+export type ListCreationRequestsResult =
+  | {
+      result: "accepted";
+      requests: Array<{
+        requestId: string;
+        guardianId: string;
+        requestedName: string;
+        gradeBand: string;
+        expectedChildCount: number;
+        status: CommunityCreationRequestStatus;
+        submittedAt: string;
+      }>;
+    }
+  | {
+      result: "rejected";
+      errorCode: "PLATFORM_ADMIN_REQUIRED";
+    };
+
 export class CommunityApplicationService {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly sensitiveOperations: SensitiveOperationService
   ) {}
+
+  async listCreationRequests(input: {
+    platformAdminUserId: string;
+  }): Promise<ListCreationRequestsResult> {
+    if (!(await this.isActiveMfaPlatformAdmin(input.platformAdminUserId))) {
+      return {
+        result: "rejected",
+        errorCode: "PLATFORM_ADMIN_REQUIRED"
+      };
+    }
+
+    const requests = await this.prisma.communityCreationRequest.findMany({
+      orderBy: [
+        {
+          status: "asc"
+        },
+        {
+          createdAt: "asc"
+        }
+      ],
+      select: {
+        id: true,
+        applicantGuardianId: true,
+        requestedName: true,
+        requestedGradeBand: true,
+        expectedMemberSize: true,
+        status: true,
+        createdAt: true
+      }
+    });
+
+    return {
+      result: "accepted",
+      requests: requests.map((request) => ({
+        requestId: request.id,
+        guardianId: request.applicantGuardianId,
+        requestedName: request.requestedName,
+        gradeBand: request.requestedGradeBand,
+        expectedChildCount: request.expectedMemberSize,
+        status: request.status,
+        submittedAt: request.createdAt.toISOString()
+      }))
+    };
+  }
 
   async submitCreationRequest(input: {
     actorUserId: string;

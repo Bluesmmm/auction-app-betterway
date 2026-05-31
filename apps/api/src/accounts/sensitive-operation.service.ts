@@ -1,4 +1,6 @@
 import type { Prisma, PrismaClient, RiskRestrictionType } from "@prisma/client";
+import { createHash, randomInt } from "node:crypto";
+import type { SensitiveOperationVerificationProvider } from "../providers/provider-contracts.js";
 import { SessionService } from "./session.service.js";
 
 export const SensitiveOperationType = {
@@ -15,6 +17,7 @@ export type SensitiveOperationType =
 
 const REQUIRED_OPERATIONS = new Set<string>(Object.values(SensitiveOperationType));
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const CHALLENGE_TTL_SECONDS = CHALLENGE_TTL_MS / 1000;
 
 export type CreateSensitiveOperationChallengeInput = {
   actorUserId: string;
@@ -39,13 +42,14 @@ export type CreateSensitiveOperationChallengeResult =
     }
   | {
       result: "rejected";
-      errorCode: "SESSION_REVOKED";
+      errorCode: "SESSION_REVOKED" | "SENSITIVE_CHALLENGE_DELIVERY_FAILED";
     };
 
 export type MarkSensitiveOperationChallengePassedInput = {
   challengeId: string;
   actorUserId: string;
   sessionId: string;
+  verificationCode: string;
   now?: Date;
 };
 
@@ -63,6 +67,7 @@ export type MarkSensitiveOperationChallengePassedResult =
       errorCode:
         | "SENSITIVE_CHALLENGE_REQUIRED"
         | "SENSITIVE_CHALLENGE_EXPIRED"
+        | "SENSITIVE_CHALLENGE_VERIFICATION_FAILED"
         | "SESSION_REVOKED";
     };
 
@@ -90,6 +95,7 @@ export type AuthorizeSensitiveOperationResult =
         | "SENSITIVE_CHALLENGE_REQUIRED"
         | "SENSITIVE_CHALLENGE_EXPIRED"
         | "SESSION_REVOKED"
+        | "DEVICE_NOT_TRUSTED"
         | "RISK_RESTRICTED"
         | "GUARDIAN_DISPUTE_FROZEN";
     };
@@ -109,7 +115,10 @@ export type ExpireActorChallengesResult = {
 export class SensitiveOperationService {
   constructor(
     private readonly prisma: PrismaClient,
-    private readonly sessionService: SessionService
+    private readonly sessionService: SessionService,
+    private readonly verificationProvider: SensitiveOperationVerificationProvider,
+    private readonly verificationCodeGenerator: () => string =
+      generateSensitiveOperationVerificationCode
   ) {}
 
   async createChallenge(
@@ -129,6 +138,13 @@ export class SensitiveOperationService {
     }
 
     const expiresAt = new Date(now.getTime() + CHALLENGE_TTL_MS);
+    const verificationCode = this.verificationCodeGenerator();
+    const riskLabelsJson = {
+      labels: input.riskLabels,
+      sessionId: input.sessionId,
+      verificationCodeHash:
+        hashSensitiveOperationVerificationCode(verificationCode)
+    };
     const challenge = await this.prisma.sensitiveOperationChallenge.create({
       data: {
         actorUserId: input.actorUserId,
@@ -136,11 +152,47 @@ export class SensitiveOperationService {
         targetType: input.targetType,
         targetId: input.targetId,
         status: "pending",
-        riskLabelsJson: {
-          labels: input.riskLabels,
-          sessionId: input.sessionId
-        },
+        riskLabelsJson,
         expiresAt
+      }
+    });
+
+    const delivery = await this.verificationProvider.send({
+      recipientUserId: input.actorUserId,
+      challengeId: challenge.id,
+      operationType: input.operationType,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      code: verificationCode,
+      expiresAt,
+      ttlSeconds: CHALLENGE_TTL_SECONDS
+    });
+
+    if (!delivery.ok) {
+      await this.prisma.sensitiveOperationChallenge.updateMany({
+        where: {
+          id: challenge.id,
+          status: "pending"
+        },
+        data: {
+          status: "failed"
+        }
+      });
+      return {
+        result: "rejected",
+        errorCode: "SENSITIVE_CHALLENGE_DELIVERY_FAILED"
+      };
+    }
+
+    await this.prisma.sensitiveOperationChallenge.update({
+      where: {
+        id: challenge.id
+      },
+      data: {
+        riskLabelsJson: {
+          ...riskLabelsJson,
+          verificationProviderMessageId: delivery.providerMessageId
+        }
       }
     });
 
@@ -210,6 +262,33 @@ export class SensitiveOperationService {
       };
     }
 
+    if (challenge.status !== "pending") {
+      return {
+        result: "rejected",
+        errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
+      };
+    }
+
+    if (
+      getChallengeVerificationCodeHash(challenge.riskLabelsJson) !==
+      hashSensitiveOperationVerificationCode(input.verificationCode)
+    ) {
+      await this.prisma.sensitiveOperationChallenge.updateMany({
+        where: {
+          id: challenge.id,
+          status: "pending"
+        },
+        data: {
+          status: "failed"
+        }
+      });
+
+      return {
+        result: "rejected",
+        errorCode: "SENSITIVE_CHALLENGE_VERIFICATION_FAILED"
+      };
+    }
+
     const passed = await this.prisma.sensitiveOperationChallenge.updateMany({
       where: {
         id: challenge.id,
@@ -256,6 +335,11 @@ export class SensitiveOperationService {
           id: challenge.id
         }
       });
+    await this.trustSessionDeviceForSensitiveOperations({
+      actorUserId: input.actorUserId,
+      sessionId: input.sessionId,
+      now
+    });
 
     return {
       result: "accepted",
@@ -280,6 +364,20 @@ export class SensitiveOperationService {
       return {
         result: "rejected",
         errorCode: "SESSION_REVOKED"
+      };
+    }
+
+    if (
+      REQUIRED_OPERATIONS.has(input.operationType) &&
+      !(await this.isSessionDeviceUsableForSensitiveOperations(
+        input.actorUserId,
+        input.sessionId,
+        now
+      ))
+    ) {
+      return {
+        result: "rejected",
+        errorCode: "DEVICE_NOT_TRUSTED"
       };
     }
 
@@ -448,6 +546,108 @@ export class SensitiveOperationService {
     };
   }
 
+  private async trustSessionDeviceForSensitiveOperations(input: {
+    actorUserId: string;
+    sessionId: string;
+    now: Date;
+  }): Promise<void> {
+    const session = await this.prisma.userSession.findFirst({
+      where: {
+        id: input.sessionId,
+        userId: input.actorUserId,
+        status: "active"
+      },
+      select: {
+        deviceFingerprintHash: true
+      }
+    });
+
+    if (!session) {
+      return;
+    }
+
+    const currentDevice = await this.prisma.trustedDevice.findUnique({
+      where: {
+        userId_deviceFingerprintHash: {
+          userId: input.actorUserId,
+          deviceFingerprintHash: session.deviceFingerprintHash
+        }
+      },
+      select: {
+        trustLevel: true
+      }
+    });
+
+    if (currentDevice?.trustLevel === "revoked") {
+      return;
+    }
+
+    await this.prisma.trustedDevice.upsert({
+      where: {
+        userId_deviceFingerprintHash: {
+          userId: input.actorUserId,
+          deviceFingerprintHash: session.deviceFingerprintHash
+        }
+      },
+      update: {
+        trustLevel: "sensitive_allowed",
+        trustedAt: input.now,
+        revokedAt: null,
+        lastSeenAt: input.now
+      },
+      create: {
+        userId: input.actorUserId,
+        deviceFingerprintHash: session.deviceFingerprintHash,
+        trustLevel: "sensitive_allowed",
+        trustedAt: input.now,
+        lastSeenAt: input.now
+      }
+    });
+  }
+
+  private async isSessionDeviceUsableForSensitiveOperations(
+    actorUserId: string,
+    sessionId: string,
+    now: Date
+  ): Promise<boolean> {
+    const session = await this.prisma.userSession.findFirst({
+      where: {
+        id: sessionId,
+        userId: actorUserId,
+        status: "active",
+        expiresAt: {
+          gt: now
+        }
+      },
+      select: {
+        deviceFingerprintHash: true
+      }
+    });
+
+    if (!session) {
+      return false;
+    }
+
+    const device = await this.prisma.trustedDevice.findUnique({
+      where: {
+        userId_deviceFingerprintHash: {
+          userId: actorUserId,
+          deviceFingerprintHash: session.deviceFingerprintHash
+        }
+      },
+      select: {
+        trustLevel: true,
+        revokedAt: true
+      }
+    });
+
+    if (!device || device.trustLevel === "revoked") {
+      return false;
+    }
+
+    return !device.revokedAt || device.revokedAt.getTime() > now.getTime();
+  }
+
   private async hasActiveRiskRestriction(
     actorUserId: string,
     operationType: string,
@@ -488,18 +688,12 @@ export class SensitiveOperationService {
         scope: "guardian",
         targetId: actor.guardianProfile.id
       });
-      filters.push({
-        guardianId: actor.guardianProfile.id
-      });
     }
 
     if (actor?.childProfile?.id) {
       filters.push({
         scope: "child",
         targetId: actor.childProfile.id
-      });
-      filters.push({
-        childId: actor.childProfile.id
       });
     }
 
@@ -515,9 +709,6 @@ export class SensitiveOperationService {
         scope: "guardian",
         targetId: guardianId
       });
-      filters.push({
-        guardianId
-      });
     }
 
     for (const childId of targetContext.childIds) {
@@ -525,18 +716,12 @@ export class SensitiveOperationService {
         scope: "child",
         targetId: childId
       });
-      filters.push({
-        childId
-      });
     }
 
     for (const communityId of targetContext.communityIds) {
       filters.push({
         scope: "community",
         targetId: communityId
-      });
-      filters.push({
-        communityId
       });
     }
 
@@ -718,6 +903,26 @@ export function getChallengeSessionId(value: Prisma.JsonValue | null): string | 
 
   const sessionId = (value as { sessionId?: unknown }).sessionId;
   return typeof sessionId === "string" ? sessionId : null;
+}
+
+export function hashSensitiveOperationVerificationCode(code: string): string {
+  return createHash("sha256").update(code).digest("hex");
+}
+
+export function generateSensitiveOperationVerificationCode(): string {
+  return randomInt(0, 1_000_000).toString().padStart(6, "0");
+}
+
+function getChallengeVerificationCodeHash(
+  value: Prisma.JsonValue | null
+): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const verificationCodeHash = (value as { verificationCodeHash?: unknown })
+    .verificationCodeHash;
+  return typeof verificationCodeHash === "string" ? verificationCodeHash : null;
 }
 
 function riskRestrictionTypesForOperation(

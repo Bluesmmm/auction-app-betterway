@@ -58,12 +58,17 @@ export type RevokeSessionInput = {
   now?: Date;
 };
 
-export type RevokeSessionResult = {
-  result: "accepted";
-  sessionId: string;
-  status: SessionStatus;
-  revokedAt: string | null;
-};
+export type RevokeSessionResult =
+  | {
+      result: "accepted";
+      sessionId: string;
+      status: SessionStatus;
+      revokedAt: string | null;
+    }
+  | {
+      result: "rejected";
+      errorCode: "SESSION_NOT_OWNED_BY_ACTOR";
+    };
 
 export type RevokeUserSessionsInput = {
   actorUserId: string;
@@ -133,6 +138,23 @@ export class SessionService {
         ipHash: input.ipHash,
         userAgentHash: input.userAgentHash,
         expiresAt: refreshTokenExpiresAt,
+        lastSeenAt: now
+      }
+    });
+    await this.prisma.trustedDevice.upsert({
+      where: {
+        userId_deviceFingerprintHash: {
+          userId: input.userId,
+          deviceFingerprintHash: input.deviceFingerprintHash
+        }
+      },
+      update: {
+        lastSeenAt: now
+      },
+      create: {
+        userId: input.userId,
+        deviceFingerprintHash: input.deviceFingerprintHash,
+        trustLevel: "normal",
         lastSeenAt: now
       }
     });
@@ -283,6 +305,13 @@ export class SessionService {
         sessionId: input.sessionId,
         status: "revoked",
         revokedAt: now.toISOString()
+      };
+    }
+
+    if (existing.userId !== input.actorUserId) {
+      return {
+        result: "rejected",
+        errorCode: "SESSION_NOT_OWNED_BY_ACTOR"
       };
     }
 

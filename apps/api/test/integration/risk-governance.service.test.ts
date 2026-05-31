@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { ChildParticipationService } from "../../src/accounts/child-participation.service.js";
 import { OnboardingService } from "../../src/accounts/onboarding.service.js";
@@ -10,7 +10,10 @@ import {
 import { SessionService } from "../../src/accounts/session.service.js";
 import { SessionTokenService } from "../../src/accounts/session-token.service.js";
 import { CommunityAccessService } from "../../src/communities/community-access.service.js";
-import { FakeWechatAuthProvider } from "../../src/providers/fake-providers.js";
+import {
+  FakeSensitiveOperationVerificationProvider,
+  FakeWechatAuthProvider
+} from "../../src/providers/fake-providers.js";
 
 process.env.DATABASE_URL ??=
   "postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public";
@@ -21,7 +24,11 @@ const sessions = new SessionService(
   prisma,
   new SessionTokenService("risk-governance-test-signing-key")
 );
-const sensitiveOperations = new SensitiveOperationService(prisma, sessions);
+const sensitiveOperations = new SensitiveOperationService(
+  prisma,
+  sessions,
+  new FakeSensitiveOperationVerificationProvider()
+);
 const participation = new ChildParticipationService(prisma, sessions);
 const access = new CommunityAccessService(prisma);
 const riskGovernance = new RiskGovernanceService(prisma);
@@ -180,6 +187,26 @@ describe("RiskGovernanceService", () => {
     }
 
     await expect(
+      prisma.$queryRaw<Array<{ riskSignalId: string | null }>>`
+        SELECT "riskSignalId"
+        FROM "RiskRestriction"
+        WHERE "id" IN (${Prisma.join(signal.restrictionIds)})
+      `
+    ).resolves.toEqual([{ riskSignalId: signal.signalId }]);
+
+    const decoyRestriction = await prisma.riskRestriction.create({
+      data: {
+        type: "no_bid",
+        scope: "child",
+        targetId: child.childId,
+        childId: child.childId,
+        status: "active",
+        reason: `risk_signal:${signal.signalId}:manual_decoy`,
+        startsAt: new Date("2026-05-31T18:10:30.000Z")
+      }
+    });
+
+    await expect(
       participation.evaluateChildParticipation({
         childId: child.childId,
         action: "join_community",
@@ -233,6 +260,19 @@ describe("RiskGovernanceService", () => {
     });
 
     await expect(
+      prisma.riskRestriction.findUniqueOrThrow({
+        where: {
+          id: decoyRestriction.id
+        },
+        select: {
+          status: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "active"
+    });
+
+    await expect(
       participation.evaluateChildParticipation({
         childId: child.childId,
         action: "join_community",
@@ -241,6 +281,36 @@ describe("RiskGovernanceService", () => {
     ).resolves.toEqual({
       result: "accepted"
     });
+  });
+
+  it("rejects ordinary users who try to create risk signals", async () => {
+    const child = await createChild("ordinary_risk_target");
+    const ordinaryGuardian = await createGuardian("ordinary_risk_actor");
+
+    await expect(
+      riskGovernance.recordRiskSignal({
+        actorUserId: ordinaryGuardian.userId,
+        type: "adult_impersonation_suspected",
+        scope: "child",
+        targetId: child.childId,
+        evidenceJson: {
+          attemptedBy: "ordinary_user"
+        },
+        now: new Date("2026-05-31T18:16:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "RISK_SIGNAL_ACTOR_NOT_AUTHORIZED"
+    });
+
+    await expect(
+      prisma.riskRestriction.findMany({
+        where: {
+          childId: child.childId,
+          status: "active"
+        }
+      })
+    ).resolves.toEqual([]);
   });
 
   it("blocks restricted children before invite consumption and before admin member approval", async () => {
@@ -259,7 +329,7 @@ describe("RiskGovernanceService", () => {
     }
 
     const joinRisk = await riskGovernance.recordRiskSignal({
-      actorUserId: admin.userId,
+      actorUserId: platformAdmin.userId,
       type: "abnormal_join_pattern",
       scope: "child",
       targetId: child.childId,
@@ -275,8 +345,10 @@ describe("RiskGovernanceService", () => {
 
     await expect(
       access.requestJoinWithInvite({
+        actorUserId: child.userId,
         childId: child.childId,
         code: invite.code,
+        idempotencyKey: `risk_blocked_join_${child.childId}`,
         now: new Date("2026-05-31T18:21:00.000Z")
       })
     ).resolves.toEqual({
@@ -305,8 +377,10 @@ describe("RiskGovernanceService", () => {
     });
 
     await access.requestJoinWithInvite({
+      actorUserId: child.userId,
       childId: child.childId,
       code: invite.code,
+      idempotencyKey: `risk_allowed_join_${child.childId}`,
       now: new Date("2026-05-31T18:23:00.000Z")
     });
     await access.confirmJoinByPrimaryGuardian({
@@ -349,11 +423,26 @@ describe("RiskGovernanceService", () => {
       result: "accepted",
       signalId: expect.any(String),
       status: "under_review",
-      restrictionIds: [expect.any(String), expect.any(String)]
+      restrictionIds: [expect.any(String), expect.any(String), expect.any(String)]
     });
     if (memberRisk.result !== "accepted") {
       throw new Error("expected member risk signal creation to succeed");
     }
+
+    const otherChild = await createChild("join_risk_other_child");
+    const otherJoin = await access.requestJoinWithInvite({
+      actorUserId: otherChild.userId,
+      childId: otherChild.childId,
+      code: invite.code,
+      idempotencyKey: `risk_unaffected_join_${otherChild.childId}`,
+      now: new Date("2026-05-31T18:26:30.000Z")
+    });
+    expect(otherJoin).toEqual({
+      result: "accepted",
+      communityId: community.id,
+      childId: otherChild.childId,
+      memberStatus: "pending_guardian"
+    });
 
     await expect(
       access.approveCommunityMember({
@@ -387,6 +476,50 @@ describe("RiskGovernanceService", () => {
       communityId: community.id,
       childId: child.childId,
       memberStatus: "active"
+    });
+  });
+
+  it("treats guardian account takeover as a full account restriction before platform review", async () => {
+    const child = await createChild("guardian_takeover");
+    const platformAdmin = await createPlatformAdmin("guardian_takeover_admin");
+
+    const signal = await riskGovernance.recordRiskSignal({
+      actorUserId: platformAdmin.userId,
+      type: "guardian_account_takeover_suspected",
+      scope: "guardian",
+      targetId: child.guardianId,
+      evidenceJson: {
+        abnormalLogin: true,
+        newDeviceCount: 2
+      },
+      now: new Date("2026-05-31T18:40:00.000Z")
+    });
+
+    expect(signal).toEqual({
+      result: "accepted",
+      signalId: expect.any(String),
+      status: "under_review",
+      restrictionIds: [
+        expect.any(String),
+        expect.any(String),
+        expect.any(String),
+        expect.any(String),
+        expect.any(String)
+      ]
+    });
+
+    await expect(
+      sensitiveOperations.authorize({
+        actorUserId: child.userId,
+        operationType: SensitiveOperationType.changeChildPermissions,
+        targetType: "child_profile",
+        targetId: child.childId,
+        sessionId: child.sessionId,
+        now: new Date("2026-05-31T18:41:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "RISK_RESTRICTED"
     });
   });
 });

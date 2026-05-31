@@ -7,7 +7,10 @@ import {
 } from "../../src/accounts/sensitive-operation.service.js";
 import { SessionService } from "../../src/accounts/session.service.js";
 import { SessionTokenService } from "../../src/accounts/session-token.service.js";
-import { FakeWechatAuthProvider } from "../../src/providers/fake-providers.js";
+import {
+  FakeSensitiveOperationVerificationProvider,
+  FakeWechatAuthProvider
+} from "../../src/providers/fake-providers.js";
 
 process.env.DATABASE_URL ??=
   "postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public";
@@ -18,7 +21,14 @@ const sessions = new SessionService(
   prisma,
   new SessionTokenService("sensitive-operation-contract-signing-key")
 );
-const service = new SensitiveOperationService(prisma, sessions);
+const verificationCode = "246810";
+const verificationProvider = new FakeSensitiveOperationVerificationProvider();
+const service = new SensitiveOperationService(
+  prisma,
+  sessions,
+  verificationProvider,
+  () => verificationCode
+);
 
 type GuardianFixture = {
   userId: string;
@@ -86,9 +96,10 @@ async function createChildFixture(label: string): Promise<ChildFixture> {
 
 async function createAuthorizedActor(label: string) {
   const actor = await createChildFixture(label);
+  const deviceFingerprintHash = `device_${label}_${Date.now()}`;
   const session = await sessions.createSession({
     userId: actor.userId,
-    deviceFingerprintHash: `device_${label}_${Date.now()}`,
+    deviceFingerprintHash,
     ipHash: `ip_${label}_${Date.now()}`,
     userAgentHash: `ua_${label}_${Date.now()}`,
     now: new Date("2026-05-31T11:03:00.000Z")
@@ -100,7 +111,8 @@ async function createAuthorizedActor(label: string) {
 
   return {
     ...actor,
-    sessionId: session.sessionId
+    sessionId: session.sessionId,
+    deviceFingerprintHash
   };
 }
 
@@ -245,6 +257,7 @@ describe("SensitiveOperationService", () => {
       challengeId: created.challengeId,
       actorUserId: actor.userId,
       sessionId: actor.sessionId,
+      verificationCode,
       now: new Date("2026-05-31T11:10:30.000Z")
     });
 
@@ -291,6 +304,90 @@ describe("SensitiveOperationService", () => {
     });
   });
 
+  it("does not mark a challenge passed without the out-of-band verification code", async () => {
+    const actor = await createAuthorizedActor("wrong_verification_code_actor");
+    const created = await createAcceptedChallenge({
+      actorUserId: actor.userId,
+      sessionId: actor.sessionId,
+      operationType: SensitiveOperationType.exportChildData,
+      targetType: "child_profile",
+      targetId: actor.childId,
+      riskLabels: ["manual_review"],
+      now: new Date("2026-05-31T11:17:00.000Z")
+    });
+
+    await expect(
+      service.markPassed({
+        challengeId: created.challengeId,
+        actorUserId: actor.userId,
+        sessionId: actor.sessionId,
+        verificationCode: "000000",
+        now: new Date("2026-05-31T11:17:30.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SENSITIVE_CHALLENGE_VERIFICATION_FAILED"
+    });
+
+    await expect(
+      service.authorize({
+        actorUserId: actor.userId,
+        operationType: SensitiveOperationType.exportChildData,
+        targetType: "child_profile",
+        targetId: actor.childId,
+        sessionId: actor.sessionId,
+        now: new Date("2026-05-31T11:18:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
+    });
+  });
+
+  it("fails closed when out-of-band verification delivery fails", async () => {
+    const failingService = new SensitiveOperationService(
+      prisma,
+      sessions,
+      new FakeSensitiveOperationVerificationProvider({ mode: "failure" }),
+      () => verificationCode
+    );
+    const actor = await createAuthorizedActor("verification_delivery_actor");
+
+    await expect(
+      failingService.createChallenge({
+        actorUserId: actor.userId,
+        sessionId: actor.sessionId,
+        operationType: SensitiveOperationType.exportChildData,
+        targetType: "child_profile",
+        targetId: actor.childId,
+        riskLabels: ["manual_review"],
+        now: new Date("2026-05-31T11:18:30.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SENSITIVE_CHALLENGE_DELIVERY_FAILED"
+    });
+
+    await expect(
+      prisma.sensitiveOperationChallenge.findFirst({
+        where: {
+          actorUserId: actor.userId,
+          operation: SensitiveOperationType.exportChildData,
+          targetType: "child_profile",
+          targetId: actor.childId
+        },
+        orderBy: {
+          createdAt: "desc"
+        },
+        select: {
+          status: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "failed"
+    });
+  });
+
   it("a passed challenge does not authorize a different target", async () => {
     const actor = await createAuthorizedActor("different_target_actor");
     const otherChild = await createChildFixture("different_target_other_child");
@@ -308,6 +405,7 @@ describe("SensitiveOperationService", () => {
       challengeId: created.challengeId,
       actorUserId: actor.userId,
       sessionId: actor.sessionId,
+      verificationCode,
       now: new Date("2026-05-31T11:20:10.000Z")
     });
 
@@ -371,6 +469,7 @@ describe("SensitiveOperationService", () => {
         challengeId: created.challengeId,
         actorUserId: actor.userId,
         sessionId: otherSession.sessionId,
+        verificationCode,
         now: new Date("2026-05-31T11:22:15.000Z")
       })
     ).resolves.toEqual({
@@ -382,6 +481,7 @@ describe("SensitiveOperationService", () => {
       challengeId: created.challengeId,
       actorUserId: actor.userId,
       sessionId: actor.sessionId,
+      verificationCode,
       now: new Date("2026-05-31T11:22:20.000Z")
     });
 
@@ -397,6 +497,53 @@ describe("SensitiveOperationService", () => {
     ).resolves.toEqual({
       result: "rejected",
       errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
+    });
+  });
+
+  it("rejects sensitive operations from a revoked or missing trusted device even after challenge verification", async () => {
+    const actor = await createAuthorizedActor("revoked_device_actor");
+    const created = await createAcceptedChallenge({
+      actorUserId: actor.userId,
+      sessionId: actor.sessionId,
+      operationType: SensitiveOperationType.exportChildData,
+      targetType: "child_profile",
+      targetId: actor.childId,
+      riskLabels: ["new_device"],
+      now: new Date("2026-05-31T11:23:10.000Z")
+    });
+
+    await service.markPassed({
+      challengeId: created.challengeId,
+      actorUserId: actor.userId,
+      sessionId: actor.sessionId,
+      verificationCode,
+      now: new Date("2026-05-31T11:23:20.000Z")
+    });
+    await prisma.trustedDevice.update({
+      where: {
+        userId_deviceFingerprintHash: {
+          userId: actor.userId,
+          deviceFingerprintHash: actor.deviceFingerprintHash
+        }
+      },
+      data: {
+        trustLevel: "revoked",
+        revokedAt: new Date("2026-05-31T11:23:25.000Z")
+      }
+    });
+
+    await expect(
+      service.authorize({
+        actorUserId: actor.userId,
+        operationType: SensitiveOperationType.exportChildData,
+        targetType: "child_profile",
+        targetId: actor.childId,
+        sessionId: actor.sessionId,
+        now: new Date("2026-05-31T11:23:30.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "DEVICE_NOT_TRUSTED"
     });
   });
 
@@ -435,6 +582,7 @@ describe("SensitiveOperationService", () => {
         challengeId: failed.challengeId,
         actorUserId: actor.userId,
         sessionId: actor.sessionId,
+        verificationCode,
         now: new Date("2026-05-31T11:25:30.000Z")
       })
     ).resolves.toEqual({
@@ -446,6 +594,7 @@ describe("SensitiveOperationService", () => {
         challengeId: coolingDown.challengeId,
         actorUserId: actor.userId,
         sessionId: actor.sessionId,
+        verificationCode,
         now: new Date("2026-05-31T11:25:30.000Z")
       })
     ).resolves.toEqual({
@@ -491,6 +640,7 @@ describe("SensitiveOperationService", () => {
       challengeId: challenge.challengeId,
       actorUserId: actor.userId,
       sessionId: actor.sessionId,
+      verificationCode,
       now: new Date("2026-05-31T11:27:10.000Z")
     });
     await prisma.riskRestriction.create({
@@ -537,6 +687,7 @@ describe("SensitiveOperationService", () => {
       challengeId: disputeChallenge.challengeId,
       actorUserId: disputeActor.userId,
       sessionId: disputeActor.sessionId,
+      verificationCode,
       now: new Date("2026-05-31T11:30:10.000Z")
     });
     await prisma.guardianDispute.create({
@@ -577,6 +728,7 @@ describe("SensitiveOperationService", () => {
       challengeId: riskChallenge.challengeId,
       actorUserId: restrictedActor.userId,
       sessionId: restrictedActor.sessionId,
+      verificationCode,
       now: new Date("2026-05-31T11:35:10.000Z")
     });
     await prisma.riskRestriction.create({
@@ -619,6 +771,7 @@ describe("SensitiveOperationService", () => {
       challengeId: revokeChallenge.challengeId,
       actorUserId: revokedActor.userId,
       sessionId: revokedActor.sessionId,
+      verificationCode,
       now: new Date("2026-05-31T11:40:10.000Z")
     });
     await sessions.revokeSession({

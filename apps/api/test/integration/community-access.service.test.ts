@@ -180,8 +180,10 @@ describe("CommunityAccessService", () => {
     }
 
     const requested = await access.requestJoinWithInvite({
+      actorUserId: childGuardian.userId,
       childId: child.childId,
       code: invite.code,
+      idempotencyKey: `join_request_${child.childId}`,
       now: new Date("2026-05-27T14:03:00.000Z")
     });
 
@@ -208,6 +210,39 @@ describe("CommunityAccessService", () => {
     ).resolves.toEqual({
       inviteCodeId: invite.inviteCodeId,
       ruleVersionId: activeRule.id
+    });
+    await expect(
+      prisma.auditLog.findFirstOrThrow({
+        where: {
+          action: "community_member.request_with_invite",
+          targetId: (
+            await prisma.communityMember.findUniqueOrThrow({
+              where: {
+                communityId_childId: {
+                  communityId: community.id,
+                  childId: child.childId
+                }
+              },
+              select: {
+                id: true
+              }
+            })
+          ).id
+        },
+        select: {
+          actorUserId: true,
+          afterJson: true
+        }
+      })
+    ).resolves.toEqual({
+      actorUserId: childGuardian.userId,
+      afterJson: expect.objectContaining({
+        childId: child.childId,
+        communityId: community.id,
+        idempotencyKey: `join_request_${child.childId}`,
+        requestHash: expect.any(String),
+        requestedAt: "2026-05-27T14:03:00.000Z"
+      })
     });
 
     const confirmed = await access.confirmJoinByPrimaryGuardian({
@@ -331,6 +366,70 @@ describe("CommunityAccessService", () => {
     expect(usedInvite.ruleVersionId).toBe(activeRule.id);
   });
 
+  it("blocks community admission while a guardian dispute freezes the child", async () => {
+    const onboarding = new OnboardingService(prisma, new FakeWechatAuthProvider());
+    const access = new CommunityAccessService(prisma);
+    const admin = await createGuardian(onboarding, "frozen_join_admin");
+    const childGuardian = await createGuardian(onboarding, "frozen_join_guardian");
+    const child = await onboarding.createChildWithPrimaryGuardian({
+      actorUserId: childGuardian.userId,
+      guardianId: childGuardian.guardianId,
+      displayName: `Frozen Join Child ${Date.now()}`,
+      gradeBand: "grade_3_4",
+      initialPoints: 100,
+      idempotencyKey: `frozen_join_child_${Date.now()}`,
+      now: new Date("2026-05-27T14:02:00.000Z")
+    });
+
+    if (child.result !== "accepted") {
+      throw new Error("expected child creation to succeed");
+    }
+
+    const community = await prisma.auctionCommunity.create({
+      data: {
+        name: `Frozen Join Community ${Date.now()}`,
+        creatorGuardianId: admin.guardianId,
+        status: "active",
+        defaultAuctionDurationMinutes: 1440
+      }
+    });
+    await grantCommunityAdminScope(admin.userId, community.id);
+    await createActiveRuleVersion(community.id);
+    const invite = await access.createInviteCode({
+      actorUserId: admin.userId,
+      communityId: community.id,
+      code: `FREEZE${Date.now()}`,
+      maxUses: 1
+    });
+
+    if (invite.result !== "accepted") {
+      throw new Error("expected invite creation to succeed");
+    }
+
+    await prisma.guardianDispute.create({
+      data: {
+        childId: child.childId,
+        submittingGuardianId: childGuardian.guardianId,
+        type: "consent",
+        status: "frozen",
+        frozenAt: new Date("2026-05-27T14:02:30.000Z")
+      }
+    });
+
+    await expect(
+      access.requestJoinWithInvite({
+        actorUserId: childGuardian.userId,
+        childId: child.childId,
+        code: invite.code,
+        idempotencyKey: `frozen_join_request_${child.childId}`,
+        now: new Date("2026-05-27T14:03:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "GUARDIAN_DISPUTE_FROZEN"
+    });
+  });
+
   it("allows only one child to consume the final invite slot under concurrency", async () => {
     const onboarding = new OnboardingService(prisma, new FakeWechatAuthProvider());
     const access = new CommunityAccessService(prisma);
@@ -383,13 +482,17 @@ describe("CommunityAccessService", () => {
 
     const results = await Promise.all([
       access.requestJoinWithInvite({
+        actorUserId: firstGuardian.userId,
         childId: firstChild.childId,
         code: invite.code,
+        idempotencyKey: `final_slot_first_${firstChild.childId}`,
         now: new Date("2026-05-27T15:01:00.000Z")
       }),
       access.requestJoinWithInvite({
+        actorUserId: secondGuardian.userId,
         childId: secondChild.childId,
         code: invite.code,
+        idempotencyKey: `final_slot_second_${secondChild.childId}`,
         now: new Date("2026-05-27T15:01:00.000Z")
       })
     ]);
@@ -459,13 +562,17 @@ describe("CommunityAccessService", () => {
     }
 
     const first = await access.requestJoinWithInvite({
+      actorUserId: childGuardian.userId,
       childId: child.childId,
       code: invite.code,
+      idempotencyKey: `repeat_join_${child.childId}`,
       now: new Date("2026-05-27T16:01:00.000Z")
     });
     const second = await access.requestJoinWithInvite({
+      actorUserId: childGuardian.userId,
       childId: child.childId,
       code: invite.code,
+      idempotencyKey: `repeat_join_${child.childId}`,
       now: new Date("2026-05-27T16:02:00.000Z")
     });
 
@@ -482,8 +589,28 @@ describe("CommunityAccessService", () => {
         code: invite.code
       }
     });
+    const idempotencyRecord = await prisma.idempotencyRecord.findUniqueOrThrow({
+      where: {
+        key_actorUserId_action_targetType_targetId: {
+          key: `repeat_join_${child.childId}`,
+          actorUserId: childGuardian.userId,
+          action: "community_member.request_with_invite",
+          targetType: "child_profile",
+          targetId: child.childId
+        }
+      }
+    });
 
     expect(usedInvite.usedCount).toBe(1);
+    expect(idempotencyRecord.status).toBe("completed");
+    expect(idempotencyRecord.responseJson).toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        communityId: community.id,
+        childId: child.childId,
+        memberStatus: "pending_guardian"
+      })
+    );
   });
 
   it("does not consume another invite slot when the same child repeats a join request concurrently", async () => {
@@ -528,13 +655,17 @@ describe("CommunityAccessService", () => {
 
     const results = await Promise.all([
       access.requestJoinWithInvite({
+        actorUserId: childGuardian.userId,
         childId: child.childId,
         code: invite.code,
+        idempotencyKey: `repeat_concurrent_join_${child.childId}`,
         now: new Date("2026-05-27T16:11:00.000Z")
       }),
       access.requestJoinWithInvite({
+        actorUserId: childGuardian.userId,
         childId: child.childId,
         code: invite.code,
+        idempotencyKey: `repeat_concurrent_join_${child.childId}`,
         now: new Date("2026-05-27T16:11:00.000Z")
       })
     ]);
@@ -615,8 +746,10 @@ describe("CommunityAccessService", () => {
     }
 
     await access.requestJoinWithInvite({
+      actorUserId: childGuardian.userId,
       childId: child.childId,
       code: invite.code,
+      idempotencyKey: `manual_exception_join_${child.childId}`,
       now: new Date("2026-05-27T16:21:00.000Z")
     });
     await access.confirmJoinByPrimaryGuardian({
@@ -775,8 +908,10 @@ describe("CommunityAccessService", () => {
     }
 
     await access.requestJoinWithInvite({
+      actorUserId: childGuardian.userId,
       childId: child.childId,
       code: firstInvite.code,
+      idempotencyKey: `first_community_join_${child.childId}`,
       now: new Date("2026-05-27T17:01:00.000Z")
     });
     await access.confirmJoinByPrimaryGuardian({
@@ -804,8 +939,10 @@ describe("CommunityAccessService", () => {
 
     await expect(
       access.requestJoinWithInvite({
+        actorUserId: childGuardian.userId,
         childId: child.childId,
         code: secondInvite.code,
+        idempotencyKey: `second_community_join_${child.childId}`,
         now: new Date("2026-05-27T17:05:00.000Z")
       })
     ).resolves.toEqual({

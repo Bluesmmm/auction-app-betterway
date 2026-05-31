@@ -1,3 +1,4 @@
+import { lazy, Suspense, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
   Alert,
@@ -8,18 +9,41 @@ import {
   Descriptions,
   Layout,
   Space,
+  Spin,
   Tabs,
   Tag,
   Typography
 } from "antd";
-import { ShieldCheck, RefreshCw } from "lucide-react";
-import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
+import { RefreshCw, ShieldCheck } from "lucide-react";
+import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import { z } from "zod";
 import { createAdminStage1Skeleton } from "./stage1-shell.js";
+import { stage2AdminViewDefinitions } from "./stage2-nav.js";
 
 const { Content, Header } = Layout;
 
 const queryClient = new QueryClient();
+
+const CommunityRequestsView = lazy(() =>
+  import("./stage2-views.js").then((module) => ({
+    default: module.CommunityRequestsView
+  }))
+);
+const ActivityAdminsView = lazy(() =>
+  import("./stage2-views.js").then((module) => ({
+    default: module.ActivityAdminsView
+  }))
+);
+const MemberReviewView = lazy(() =>
+  import("./stage2-views.js").then((module) => ({
+    default: module.MemberReviewView
+  }))
+);
+const RiskReviewView = lazy(() =>
+  import("./stage2-views.js").then((module) => ({
+    default: module.RiskReviewView
+  }))
+);
 
 const stage1HealthSchema = z.object({
   status: z.enum(["ok", "degraded"]),
@@ -48,6 +72,28 @@ const stage1HealthSchema = z.object({
 
 type Stage1Health = z.infer<typeof stage1HealthSchema>;
 
+export const stage1AdminNavigationItems = [
+  {
+    key: "runtime",
+    label: "Runtime",
+    path: "/"
+  },
+  {
+    key: "security",
+    label: "Security",
+    path: "/security"
+  }
+] as const;
+
+export const adminShellNavigationItems = [
+  ...stage1AdminNavigationItems,
+  ...stage2AdminViewDefinitions.map((view) => ({
+    key: view.key,
+    label: view.label,
+    path: view.path
+  }))
+];
+
 export function AdminApp() {
   return (
     <ConfigProvider
@@ -73,27 +119,84 @@ export function AdminApp() {
 
 function Shell() {
   const skeleton = createAdminStage1Skeleton();
+  const apiBaseUrl = skeleton.healthUrl.replace(/\/health$/, "");
 
   return (
     <Layout className="admin-shell">
       <Header className="admin-header">
-        <Space size={12}>
+        <Space size={12} wrap>
           <ShieldCheck size={22} aria-hidden="true" />
           <Typography.Title level={1}>Auction Admin</Typography.Title>
           <Tag color="blue">Stage 1</Tag>
+          <Tag color="cyan">Stage 2</Tag>
         </Space>
-        <Space>
-          <Link to="/">Runtime</Link>
-          <Link to="/security">Security</Link>
-        </Space>
+        <nav className="admin-nav" aria-label="Admin views">
+          {adminShellNavigationItems.map((item) => (
+            <NavLink
+              key={item.key}
+              to={item.path}
+              className={({ isActive }) =>
+                `admin-nav-link${isActive ? " admin-nav-link-active" : ""}`
+              }
+            >
+              {item.label}
+            </NavLink>
+          ))}
+        </nav>
       </Header>
       <Content className="admin-content">
         <Routes>
           <Route path="/" element={<RuntimeView healthUrl={skeleton.healthUrl} />} />
           <Route path="/security" element={<SecurityView />} />
+          <Route
+            path="/stage2/community-requests"
+            element={
+              <Stage2RouteFallback>
+                <CommunityRequestsView apiBaseUrl={apiBaseUrl} />
+              </Stage2RouteFallback>
+            }
+          />
+          <Route
+            path="/stage2/activity-admins"
+            element={
+              <Stage2RouteFallback>
+                <ActivityAdminsView apiBaseUrl={apiBaseUrl} />
+              </Stage2RouteFallback>
+            }
+          />
+          <Route
+            path="/stage2/member-review"
+            element={
+              <Stage2RouteFallback>
+                <MemberReviewView apiBaseUrl={apiBaseUrl} />
+              </Stage2RouteFallback>
+            }
+          />
+          <Route
+            path="/stage2/risk-review"
+            element={
+              <Stage2RouteFallback>
+                <RiskReviewView apiBaseUrl={apiBaseUrl} />
+              </Stage2RouteFallback>
+            }
+          />
         </Routes>
       </Content>
     </Layout>
+  );
+}
+
+function Stage2RouteFallback({ children }: { children: ReactNode }) {
+  return (
+    <Suspense
+      fallback={
+        <section className="workspace stage2-route-loading">
+          <Spin />
+        </section>
+      }
+    >
+      {children}
+    </Suspense>
   );
 }
 

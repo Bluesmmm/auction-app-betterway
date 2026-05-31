@@ -26,7 +26,7 @@ export type RecordRiskSignalResult =
     }
   | {
       result: "rejected";
-      errorCode: "RISK_TARGET_NOT_FOUND";
+      errorCode: "RISK_TARGET_NOT_FOUND" | "RISK_SIGNAL_ACTOR_NOT_AUTHORIZED";
     };
 
 export type ReviewRiskSignalInput = {
@@ -53,6 +53,64 @@ export type ReviewRiskSignalResult =
         | "RISK_SIGNAL_STATE_INVALID";
     };
 
+export type ApplyRiskRestrictionInput = {
+  platformAdminUserId: string;
+  type: RiskRestrictionType;
+  scope: RiskRestrictionScope;
+  targetId: string;
+  reason: string;
+  expiresAt?: Date;
+  now?: Date;
+};
+
+export type ApplyRiskRestrictionResult =
+  | {
+      result: "accepted";
+      restrictionId: string;
+      status: "active";
+    }
+  | {
+      result: "rejected";
+      errorCode: "PLATFORM_ADMIN_REQUIRED" | "RISK_TARGET_NOT_FOUND";
+    };
+
+export type ResolveRiskRestrictionInput = {
+  platformAdminUserId: string;
+  restrictionId: string;
+  resolutionText: string;
+  now?: Date;
+};
+
+export type ResolveRiskRestrictionResult =
+  | {
+      result: "accepted";
+      restrictionId: string;
+      status: "resolved";
+    }
+  | {
+      result: "rejected";
+      errorCode: "PLATFORM_ADMIN_REQUIRED" | "RISK_RESTRICTION_NOT_FOUND";
+    };
+
+export type ListRiskSignalsResult =
+  | {
+      result: "accepted";
+      signals: Array<{
+        key: string;
+        signalId: string;
+        scope: RiskRestrictionScope;
+        targetId: string;
+        type: RiskSignalType;
+        status: RiskSignalStatus;
+        restrictionCount: number;
+        openedAt: string;
+      }>;
+    }
+  | {
+      result: "rejected";
+      errorCode: "PLATFORM_ADMIN_REQUIRED";
+    };
+
 type RiskTargetContext = {
   userId: string | null;
   guardianId: string | null;
@@ -74,6 +132,53 @@ type RestrictionTargetData = {
 export class RiskGovernanceService {
   constructor(private readonly prisma: PrismaClient) {}
 
+  async listRiskSignals(input: {
+    platformAdminUserId: string;
+  }): Promise<ListRiskSignalsResult> {
+    if (!(await this.isActiveMfaPlatformAdmin(input.platformAdminUserId))) {
+      return {
+        result: "rejected",
+        errorCode: "PLATFORM_ADMIN_REQUIRED"
+      };
+    }
+
+    const signals = await this.prisma.riskSignal.findMany({
+      where: {
+        status: {
+          in: ["open", "under_review"]
+        }
+      },
+      orderBy: {
+        createdAt: "asc"
+      },
+      take: 100,
+      include: {
+        restrictions: {
+          where: {
+            status: "active"
+          },
+          select: {
+            id: true
+          }
+        }
+      }
+    });
+
+    return {
+      result: "accepted",
+      signals: signals.map((signal) => ({
+        key: signal.id,
+        signalId: signal.id,
+        scope: signal.scope,
+        targetId: signal.targetId,
+        type: signal.type,
+        status: signal.status,
+        restrictionCount: signal.restrictions.length,
+        openedAt: signal.createdAt.toISOString()
+      }))
+    };
+  }
+
   async recordRiskSignal(
     input: RecordRiskSignalInput
   ): Promise<RecordRiskSignalResult> {
@@ -93,6 +198,19 @@ export class RiskGovernanceService {
         };
       }
 
+      if (
+        !(await isAuthorizedRiskSignalActor(
+          tx,
+          input.actorUserId,
+          targetContext
+        ))
+      ) {
+        return {
+          result: "rejected" as const,
+          errorCode: "RISK_SIGNAL_ACTOR_NOT_AUTHORIZED" as const
+        };
+      }
+
       await lockRiskTarget(tx, targetContext);
 
       const signal = await createRiskSignal(tx, input, targetContext, now);
@@ -104,6 +222,7 @@ export class RiskGovernanceService {
           const restrictionId = await createRiskRestriction(tx, {
             target: restrictionTarget,
             type: restrictionType,
+            riskSignalId: signal.id,
             reason: `risk_signal:${signal.id}:${input.type}`,
             imposedByUserId: input.actorUserId,
             now
@@ -182,21 +301,18 @@ export class RiskGovernanceService {
         }
       });
 
-      const resolvedRestrictions =
+      const resolvedRestrictionCount =
         input.resolveRestrictions === false
-          ? { count: 0 }
-          : await tx.riskRestriction.updateMany({
-              where: {
-                status: "active",
-                reason: {
-                  startsWith: `risk_signal:${signal.id}:`
-                }
-              },
-              data: {
-                status: "resolved",
-                resolvedAt: now
-              }
-            });
+          ? 0
+          : await tx.$executeRaw`
+              UPDATE "RiskRestriction"
+              SET
+                "status" = ${"resolved"}::"RiskRestrictionStatus",
+                "resolvedAt" = ${now},
+                "updatedAt" = ${now}
+              WHERE "status" = ${"active"}::"RiskRestrictionStatus"
+                AND "riskSignalId" = ${signal.id}
+            `;
 
       await tx.auditLog.create({
         data: {
@@ -206,7 +322,7 @@ export class RiskGovernanceService {
           targetId: signal.id,
           afterJson: {
             status: updatedSignal.status,
-            resolvedRestrictionCount: resolvedRestrictions.count,
+            resolvedRestrictionCount,
             reviewedAt: now.toISOString()
           }
         }
@@ -219,9 +335,125 @@ export class RiskGovernanceService {
           RiskSignalStatus,
           "resolved" | "dismissed"
         >,
-        resolvedRestrictionCount: resolvedRestrictions.count
+        resolvedRestrictionCount
       };
     });
+  }
+
+  async applyRiskRestriction(
+    input: ApplyRiskRestrictionInput
+  ): Promise<ApplyRiskRestrictionResult> {
+    const now = input.now ?? new Date();
+    if (!(await this.isActiveMfaPlatformAdmin(input.platformAdminUserId))) {
+      return {
+        result: "rejected",
+        errorCode: "PLATFORM_ADMIN_REQUIRED"
+      };
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const targetContext = await resolveRiskTargetContext(
+        tx,
+        input.scope,
+        input.targetId
+      );
+      if (!targetContext) {
+        return {
+          result: "rejected" as const,
+          errorCode: "RISK_TARGET_NOT_FOUND" as const
+        };
+      }
+
+      await lockRiskTarget(tx, targetContext);
+      const restrictionTarget = restrictionTargetForContext(targetContext);
+      if (!restrictionTarget) {
+        return {
+          result: "rejected" as const,
+          errorCode: "RISK_TARGET_NOT_FOUND" as const
+        };
+      }
+
+      const restrictionId = await createRiskRestriction(tx, {
+        target: restrictionTarget,
+        type: input.type,
+        reason: input.reason,
+        imposedByUserId: input.platformAdminUserId,
+        expiresAt: input.expiresAt,
+        now
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorUserId: input.platformAdminUserId,
+          action: "risk_restriction.apply",
+          targetType: "risk_restriction",
+          targetId: restrictionId,
+          reason: input.reason,
+          afterJson: {
+            type: input.type,
+            scope: input.scope,
+            targetId: input.targetId,
+            expiresAt: input.expiresAt?.toISOString() ?? null,
+            appliedAt: now.toISOString()
+          }
+        }
+      });
+
+      return {
+        result: "accepted" as const,
+        restrictionId,
+        status: "active" as const
+      };
+    });
+  }
+
+  async resolveRiskRestriction(
+    input: ResolveRiskRestrictionInput
+  ): Promise<ResolveRiskRestrictionResult> {
+    const now = input.now ?? new Date();
+    if (!(await this.isActiveMfaPlatformAdmin(input.platformAdminUserId))) {
+      return {
+        result: "rejected",
+        errorCode: "PLATFORM_ADMIN_REQUIRED"
+      };
+    }
+
+    const updated = await this.prisma.riskRestriction.updateMany({
+      where: {
+        id: input.restrictionId,
+        status: "active"
+      },
+      data: {
+        status: "resolved",
+        resolvedAt: now
+      }
+    });
+
+    if (updated.count !== 1) {
+      return {
+        result: "rejected",
+        errorCode: "RISK_RESTRICTION_NOT_FOUND"
+      };
+    }
+
+    await this.prisma.auditLog.create({
+      data: {
+        actorUserId: input.platformAdminUserId,
+        action: "risk_restriction.resolve",
+        targetType: "risk_restriction",
+        targetId: input.restrictionId,
+        reason: input.resolutionText,
+        afterJson: {
+          resolvedAt: now.toISOString()
+        }
+      }
+    });
+
+    return {
+      result: "accepted",
+      restrictionId: input.restrictionId,
+      status: "resolved"
+    };
   }
 
   private async isActiveMfaPlatformAdmin(userId: string): Promise<boolean> {
@@ -250,8 +482,10 @@ async function createRiskRestriction(
   input: {
     target: RestrictionTargetData;
     type: RiskRestrictionType;
+    riskSignalId?: string;
     reason: string;
     imposedByUserId?: string;
+    expiresAt?: Date;
     now: Date;
   }
 ): Promise<string> {
@@ -260,8 +494,8 @@ async function createRiskRestriction(
     INSERT INTO "RiskRestriction" (
       "id", "type", "scope", "targetId", "targetUserId",
       "communityMemberId", "communityId", "childId", "guardianId",
-      "status", "reason", "imposedByUserId", "startsAt",
-      "createdAt", "updatedAt"
+      "riskSignalId", "status", "reason", "imposedByUserId", "startsAt",
+      "expiresAt", "createdAt", "updatedAt"
     )
     VALUES (
       ${id},
@@ -273,10 +507,12 @@ async function createRiskRestriction(
       ${input.target.communityId ?? null},
       ${input.target.childId ?? null},
       ${input.target.guardianId ?? null},
+      ${input.riskSignalId ?? null},
       ${"active"}::"RiskRestrictionStatus",
       ${input.reason},
       ${input.imposedByUserId ?? null},
       ${input.now},
+      ${input.expiresAt ?? null},
       ${input.now},
       ${input.now}
     )
@@ -565,6 +801,55 @@ async function lockRiskTarget(
   }
 }
 
+async function isAuthorizedRiskSignalActor(
+  tx: Prisma.TransactionClient,
+  actorUserId: string | undefined,
+  targetContext: RiskTargetContext
+): Promise<boolean> {
+  if (!actorUserId) {
+    return true;
+  }
+
+  const platformAdmin = await tx.adminProfile.findFirst({
+    where: {
+      userId: actorUserId,
+      role: "platform_admin",
+      status: "active",
+      mfaEnabled: true
+    },
+    select: {
+      id: true
+    }
+  });
+  if (platformAdmin) {
+    return true;
+  }
+
+  if (!targetContext.communityId) {
+    return false;
+  }
+
+  const scopedActivityAdmin = await tx.adminProfile.findFirst({
+    where: {
+      userId: actorUserId,
+      role: "activity_admin",
+      status: "active",
+      mfaEnabled: true,
+      communityScopes: {
+        some: {
+          communityId: targetContext.communityId,
+          status: "active"
+        }
+      }
+    },
+    select: {
+      id: true
+    }
+  });
+
+  return Boolean(scopedActivityAdmin);
+}
+
 function restrictionTypesForSignal(
   signalType: RiskSignalType
 ): RiskRestrictionType[] {
@@ -572,19 +857,35 @@ function restrictionTypesForSignal(
     case "adult_impersonation_suspected":
       return ["suspended"];
     case "abnormal_join_pattern":
-      return ["no_join"];
+      return ["suspended", "no_join"];
     case "contact_inducement_suspected":
-      return ["no_publish", "no_transaction_confirm"];
+      return ["suspended", "no_publish", "no_transaction_confirm"];
     case "cross_community_anomaly":
-      return ["no_join", "no_bid"];
+      return ["suspended", "no_join", "no_bid"];
     case "guardian_account_takeover_suspected":
-      return ["no_export", "no_delete", "no_transaction_confirm"];
+      return [
+        "suspended",
+        "no_export",
+        "no_delete",
+        "no_transaction_confirm",
+        "sensitive_challenge_required"
+      ];
   }
 }
 
 function restrictionTargetForContext(
   targetContext: RiskTargetContext
 ): RestrictionTargetData | null {
+  if (targetContext.communityMemberId) {
+    return {
+      scope: "community_member",
+      targetId: targetContext.communityMemberId,
+      communityMemberId: targetContext.communityMemberId,
+      communityId: targetContext.communityId,
+      childId: targetContext.childId
+    };
+  }
+
   if (targetContext.childId) {
     return {
       scope: "child",

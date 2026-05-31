@@ -604,6 +604,7 @@ model RiskSignal {
   child             ChildProfile?      @relation(fields: [childId], references: [id], onDelete: Restrict)
   guardian          GuardianProfile?   @relation(fields: [guardianId], references: [id], onDelete: Restrict)
   reviewer          User?              @relation("RiskSignalReviewer", fields: [reviewerUserId], references: [id])
+  restrictions      RiskRestriction[]  @relation("RiskSignalRestrictions")
 
   @@index([type, status])
   @@index([scope, targetId, status])
@@ -621,6 +622,7 @@ model RiskRestriction {
   communityId       String?
   childId           String?
   guardianId        String?
+  riskSignalId      String?
   status            RiskRestrictionStatus  @default(active)
   reason            String
   imposedByUserId   String?
@@ -634,9 +636,11 @@ model RiskRestriction {
   community         AuctionCommunity?      @relation(fields: [communityId], references: [id], onDelete: Restrict)
   child             ChildProfile?          @relation(fields: [childId], references: [id], onDelete: Restrict)
   guardian          GuardianProfile?       @relation(fields: [guardianId], references: [id], onDelete: Restrict)
+  riskSignal        RiskSignal?            @relation("RiskSignalRestrictions", fields: [riskSignalId], references: [id], onDelete: Restrict)
   imposedBy         User?                  @relation("RiskRestrictionImposedBy", fields: [imposedByUserId], references: [id])
 
   @@index([scope, targetId, status], map: "RiskRestriction_scope_target_status_idx")
+  @@index([riskSignalId, status])
   @@index([communityId, status])
   @@index([childId, status])
   @@index([communityMemberId, communityId, childId])

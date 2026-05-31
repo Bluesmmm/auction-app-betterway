@@ -41,6 +41,7 @@ export type ChildParticipationDecision =
         | "GUARDIAN_DISPUTE_FROZEN"
         | "RISK_RESTRICTED"
         | "GUARDIAN_CONTROL_DISABLED"
+        | "COMMUNITY_ID_REQUIRED"
         | "COMMUNITY_MEMBER_REQUIRED"
         | "SENSITIVE_CHALLENGE_REQUIRED"
         | "MAX_BID_POINTS_EXCEEDED";
@@ -104,8 +105,31 @@ export class ChildParticipationService {
           result: "accepted"
         };
       case "browse_community":
+        if (!input.communityId) {
+          return {
+            result: "rejected",
+            errorCode: "COMMUNITY_ID_REQUIRED"
+          };
+        }
         return this.evaluateBrowseCommunity(input.childId, input.communityId);
       case "publish":
+        if (!input.communityId) {
+          return {
+            result: "rejected",
+            errorCode: "COMMUNITY_ID_REQUIRED"
+          };
+        }
+
+        {
+          const membership = await this.evaluateCommunityMembership(
+            input.childId,
+            input.communityId
+          );
+          if (membership.result === "rejected") {
+            return membership;
+          }
+        }
+
         return context.settings?.canPublish
           ? { result: "accepted" }
           : {
@@ -113,6 +137,23 @@ export class ChildParticipationService {
               errorCode: "GUARDIAN_CONTROL_DISABLED"
             };
       case "bid":
+        if (!input.communityId) {
+          return {
+            result: "rejected",
+            errorCode: "COMMUNITY_ID_REQUIRED"
+          };
+        }
+
+        {
+          const membership = await this.evaluateCommunityMembership(
+            input.childId,
+            input.communityId
+          );
+          if (membership.result === "rejected") {
+            return membership;
+          }
+        }
+
         return this.evaluateBid(input.amountPoints, context.settings);
       case "transaction_confirm":
       case "export":
@@ -188,14 +229,15 @@ export class ChildParticipationService {
 
   private async evaluateBrowseCommunity(
     childId: string,
-    communityId?: string
+    communityId: string
   ): Promise<ChildParticipationDecision> {
-    if (!communityId) {
-      return {
-        result: "accepted"
-      };
-    }
+    return this.evaluateCommunityMembership(childId, communityId);
+  }
 
+  private async evaluateCommunityMembership(
+    childId: string,
+    communityId: string
+  ): Promise<ChildParticipationDecision> {
     const membership = await this.prisma.communityMember.findUnique({
       where: {
         communityId_childId: {
@@ -277,14 +319,8 @@ export class ChildParticipationService {
         targetId: input.childId
       },
       {
-        childId: input.childId
-      },
-      {
         scope: "guardian",
         targetId: input.primaryGuardianId
-      },
-      {
-        guardianId: input.primaryGuardianId
       },
       {
         scope: "user",
@@ -298,6 +334,8 @@ export class ChildParticipationService {
         targetId: input.communityId
       });
       filters.push({
+        scope: "community_member",
+        childId: input.childId,
         communityId: input.communityId
       });
     }

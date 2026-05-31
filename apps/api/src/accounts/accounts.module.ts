@@ -2,7 +2,10 @@ import { Module } from "@nestjs/common";
 import { AppConfigService } from "../config/app-config.service.js";
 import { PrismaModule } from "../prisma/prisma.module.js";
 import { PrismaService } from "../prisma/prisma.service.js";
-import { FakeWechatAuthProvider } from "../providers/fake-providers.js";
+import {
+  FakeSensitiveOperationVerificationProvider,
+  FakeWechatAuthProvider
+} from "../providers/fake-providers.js";
 import { ChildParticipationService } from "./child-participation.service.js";
 import { GuardianManagementService } from "./guardian-management.service.js";
 import { OnboardingService } from "./onboarding.service.js";
@@ -10,21 +13,28 @@ import { RiskGovernanceService } from "./risk-governance.service.js";
 import { SensitiveOperationService } from "./sensitive-operation.service.js";
 import { SessionService } from "./session.service.js";
 import { SessionTokenService } from "./session-token.service.js";
+import { AccountsController } from "./accounts.controller.js";
 
 @Module({
   imports: [PrismaModule],
+  controllers: [AccountsController],
   providers: [
     {
       provide: FakeWechatAuthProvider,
       useFactory: () => new FakeWechatAuthProvider()
     },
     {
+      provide: FakeSensitiveOperationVerificationProvider,
+      useFactory: () => new FakeSensitiveOperationVerificationProvider()
+    },
+    {
       provide: OnboardingService,
-      inject: [PrismaService, FakeWechatAuthProvider],
+      inject: [PrismaService, FakeWechatAuthProvider, SessionService],
       useFactory: (
         prisma: PrismaService,
-        wechatAuth: FakeWechatAuthProvider
-      ) => new OnboardingService(prisma, wechatAuth)
+        wechatAuth: FakeWechatAuthProvider,
+        sessions: SessionService
+      ) => new OnboardingService(prisma, wechatAuth, sessions)
     },
     {
       provide: SessionTokenService,
@@ -40,9 +50,16 @@ import { SessionTokenService } from "./session-token.service.js";
     },
     {
       provide: SensitiveOperationService,
-      inject: [PrismaService, SessionService],
-      useFactory: (prisma: PrismaService, sessions: SessionService) =>
-        new SensitiveOperationService(prisma, sessions)
+      inject: [
+        PrismaService,
+        SessionService,
+        FakeSensitiveOperationVerificationProvider
+      ],
+      useFactory: (
+        prisma: PrismaService,
+        sessions: SessionService,
+        verificationProvider: FakeSensitiveOperationVerificationProvider
+      ) => new SensitiveOperationService(prisma, sessions, verificationProvider)
     },
     {
       provide: GuardianManagementService,

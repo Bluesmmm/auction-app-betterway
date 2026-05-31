@@ -8,7 +8,10 @@ import {
 } from "../../src/accounts/sensitive-operation.service.js";
 import { SessionService } from "../../src/accounts/session.service.js";
 import { SessionTokenService } from "../../src/accounts/session-token.service.js";
-import { FakeWechatAuthProvider } from "../../src/providers/fake-providers.js";
+import {
+  FakeSensitiveOperationVerificationProvider,
+  FakeWechatAuthProvider
+} from "../../src/providers/fake-providers.js";
 
 process.env.DATABASE_URL ??=
   "postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public";
@@ -19,7 +22,13 @@ const sessions = new SessionService(
   prisma,
   new SessionTokenService("child-participation-test-signing-key")
 );
-const sensitiveOperations = new SensitiveOperationService(prisma, sessions);
+const verificationCode = "135790";
+const sensitiveOperations = new SensitiveOperationService(
+  prisma,
+  sessions,
+  new FakeSensitiveOperationVerificationProvider(),
+  () => verificationCode
+);
 const participation = new ChildParticipationService(prisma, sessions);
 
 type GuardianFixture = {
@@ -97,6 +106,32 @@ async function createChildFixture(label: string): Promise<ChildFixture> {
   };
 }
 
+async function createActiveCommunityMembership(
+  child: Pick<ChildFixture, "childId" | "guardianId">,
+  label: string
+) {
+  const community = await prisma.auctionCommunity.create({
+    data: {
+      name: `Participation Community ${unique(label)}`,
+      creatorGuardianId: child.guardianId,
+      status: "active",
+      defaultAuctionDurationMinutes: 1440
+    }
+  });
+
+  await prisma.communityMember.create({
+    data: {
+      communityId: community.id,
+      childId: child.childId,
+      status: "active",
+      guardianConfirmedAt: new Date("2026-05-31T13:29:00.000Z"),
+      joinedAt: new Date("2026-05-31T13:29:30.000Z")
+    }
+  });
+
+  return community.id;
+}
+
 async function createPassedChallenge(input: {
   actorUserId: string;
   sessionId: string;
@@ -123,6 +158,7 @@ async function createPassedChallenge(input: {
     challengeId: challenge.challengeId,
     actorUserId: input.actorUserId,
     sessionId: input.sessionId,
+    verificationCode,
     now: input.passedAt
   });
 
@@ -216,13 +252,96 @@ describe("ChildParticipationService", () => {
     });
   });
 
+  it("requires active community membership for community-scoped publish and bid", async () => {
+    const child = await createChildFixture("community_scoped_actions");
+    const community = await prisma.auctionCommunity.create({
+      data: {
+        name: `Scoped Action Community ${unique("community")}`,
+        creatorGuardianId: child.guardianId,
+        status: "active",
+        defaultAuctionDurationMinutes: 1440
+      }
+    });
+
+    for (const action of ["publish", "bid"] as const) {
+      await expect(
+        participation.evaluateChildParticipation({
+          childId: child.childId,
+          action,
+          communityId: community.id,
+          amountPoints: action === "bid" ? 10 : undefined,
+          now: new Date("2026-05-31T13:24:00.000Z")
+        })
+      ).resolves.toEqual({
+        result: "rejected",
+        errorCode: "COMMUNITY_MEMBER_REQUIRED"
+      });
+    }
+
+    await prisma.communityMember.create({
+      data: {
+        communityId: community.id,
+        childId: child.childId,
+        status: "active",
+        guardianConfirmedAt: new Date("2026-05-31T13:25:00.000Z"),
+        joinedAt: new Date("2026-05-31T13:25:30.000Z")
+      }
+    });
+
+    await expect(
+      participation.evaluateChildParticipation({
+        childId: child.childId,
+        action: "publish",
+        communityId: community.id,
+        now: new Date("2026-05-31T13:26:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "accepted"
+    });
+
+    await expect(
+      participation.evaluateChildParticipation({
+        childId: child.childId,
+        action: "bid",
+        communityId: community.id,
+        amountPoints: 10,
+        now: new Date("2026-05-31T13:27:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "accepted"
+    });
+  });
+
+  it("rejects community-scoped actions when the community id is missing", async () => {
+    const child = await createChildFixture("missing_community_id");
+
+    for (const action of ["browse_community", "publish", "bid"] as const) {
+      await expect(
+        participation.evaluateChildParticipation({
+          childId: child.childId,
+          action,
+          amountPoints: action === "bid" ? 10 : undefined,
+          now: new Date("2026-05-31T13:27:30.000Z")
+        })
+      ).resolves.toEqual({
+        result: "rejected",
+        errorCode: "COMMUNITY_ID_REQUIRED"
+      });
+    }
+  });
+
   it("enforces guardian controls, disputes, and risk restrictions for publish and bid", async () => {
     const publishChild = await createChildFixture("publish_controls");
+    const publishCommunityId = await createActiveCommunityMembership(
+      publishChild,
+      "publish_controls"
+    );
 
     await expect(
       participation.evaluateChildParticipation({
         childId: publishChild.childId,
         action: "publish",
+        communityId: publishCommunityId,
         now: new Date("2026-05-31T13:30:00.000Z")
       })
     ).resolves.toEqual({
@@ -242,6 +361,7 @@ describe("ChildParticipationService", () => {
       participation.evaluateChildParticipation({
         childId: publishChild.childId,
         action: "publish",
+        communityId: publishCommunityId,
         now: new Date("2026-05-31T13:31:00.000Z")
       })
     ).resolves.toEqual({
@@ -272,6 +392,10 @@ describe("ChildParticipationService", () => {
     });
 
     const bidChild = await createChildFixture("bid_limits");
+    const bidCommunityId = await createActiveCommunityMembership(
+      bidChild,
+      "bid_limits"
+    );
     await prisma.childGuardianSettings.update({
       where: {
         childId: bidChild.childId
@@ -285,6 +409,7 @@ describe("ChildParticipationService", () => {
       participation.evaluateChildParticipation({
         childId: bidChild.childId,
         action: "bid",
+        communityId: bidCommunityId,
         amountPoints: 25,
         now: new Date("2026-05-31T13:34:00.000Z")
       })
@@ -296,6 +421,7 @@ describe("ChildParticipationService", () => {
       participation.evaluateChildParticipation({
         childId: bidChild.childId,
         action: "bid",
+        communityId: bidCommunityId,
         amountPoints: 31,
         now: new Date("2026-05-31T13:35:00.000Z")
       })

@@ -1,5 +1,6 @@
 import type { ChildStatus, GuardianStatus, PrismaClient } from "@prisma/client";
 import type { WechatAuthProvider } from "../providers/provider-contracts.js";
+import type { SessionService } from "./session.service.js";
 
 export type LoginWithWechatCodeInput = {
   code: string;
@@ -16,6 +17,32 @@ export type LoginWithWechatCodeResult =
   | {
       result: "rejected";
       errorCode: "WECHAT_AUTH_FAILED";
+    };
+
+export type LoginWithWechatCodeAndSessionInput = LoginWithWechatCodeInput & {
+  deviceFingerprintHash: string;
+  ipHash: string;
+  userAgentHash: string;
+};
+
+export type LoginWithWechatCodeAndSessionResult =
+  | {
+      result: "accepted";
+      userId: string;
+      openid: string;
+      isNewUser: boolean;
+      sessionId: string;
+      accessToken: string;
+      accessTokenExpiresAt: string;
+      refreshToken: string;
+      refreshTokenExpiresAt: string;
+    }
+  | {
+      result: "rejected";
+      errorCode:
+        | "WECHAT_AUTH_FAILED"
+        | "USER_NOT_ACTIVE"
+        | "SESSION_SERVICE_UNAVAILABLE";
     };
 
 export type EnsureGuardianProfileInput = {
@@ -61,7 +88,8 @@ export type CreateChildWithPrimaryGuardianResult =
 export class OnboardingService {
   constructor(
     private readonly prisma: PrismaClient,
-    private readonly wechatAuth: WechatAuthProvider
+    private readonly wechatAuth: WechatAuthProvider,
+    private readonly sessionService?: SessionService
   ) {}
 
   async loginWithWechatCode(
@@ -121,6 +149,46 @@ export class OnboardingService {
       userId: user.id,
       openid: identity.openid,
       isNewUser: true
+    };
+  }
+
+  async loginWithWechatCodeAndCreateSession(
+    input: LoginWithWechatCodeAndSessionInput
+  ): Promise<LoginWithWechatCodeAndSessionResult> {
+    if (!this.sessionService) {
+      return {
+        result: "rejected",
+        errorCode: "SESSION_SERVICE_UNAVAILABLE"
+      };
+    }
+
+    const login = await this.loginWithWechatCode(input);
+    if (login.result !== "accepted") {
+      return login;
+    }
+
+    const session = await this.sessionService.createSession({
+      userId: login.userId,
+      deviceFingerprintHash: input.deviceFingerprintHash,
+      ipHash: input.ipHash,
+      userAgentHash: input.userAgentHash,
+      now: input.now
+    });
+
+    if (session.result !== "accepted") {
+      return session;
+    }
+
+    return {
+      result: "accepted",
+      userId: login.userId,
+      openid: login.openid,
+      isNewUser: login.isNewUser,
+      sessionId: session.sessionId,
+      accessToken: session.accessToken,
+      accessTokenExpiresAt: session.accessTokenExpiresAt,
+      refreshToken: session.refreshToken,
+      refreshTokenExpiresAt: session.refreshTokenExpiresAt
     };
   }
 

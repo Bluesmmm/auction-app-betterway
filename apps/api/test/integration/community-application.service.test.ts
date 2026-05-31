@@ -8,7 +8,10 @@ import {
 import { SessionService } from "../../src/accounts/session.service.js";
 import { SessionTokenService } from "../../src/accounts/session-token.service.js";
 import { CommunityApplicationService } from "../../src/communities/community-application.service.js";
-import { FakeWechatAuthProvider } from "../../src/providers/fake-providers.js";
+import {
+  FakeSensitiveOperationVerificationProvider,
+  FakeWechatAuthProvider
+} from "../../src/providers/fake-providers.js";
 
 process.env.DATABASE_URL ??=
   "postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public";
@@ -19,7 +22,13 @@ const sessions = new SessionService(
   prisma,
   new SessionTokenService("community-application-test-signing-key")
 );
-const sensitiveOperations = new SensitiveOperationService(prisma, sessions);
+const verificationCode = "864209";
+const sensitiveOperations = new SensitiveOperationService(
+  prisma,
+  sessions,
+  new FakeSensitiveOperationVerificationProvider(),
+  () => verificationCode
+);
 const applications = new CommunityApplicationService(
   prisma,
   sensitiveOperations
@@ -115,6 +124,7 @@ async function createPassedCommunityCreationChallenge(
     challengeId: challenge.challengeId,
     actorUserId: guardian.userId,
     sessionId: guardian.sessionId,
+    verificationCode,
     now: new Date("2026-05-31T14:02:10.000Z")
   });
 

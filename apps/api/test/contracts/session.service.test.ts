@@ -294,6 +294,53 @@ describe("SessionService", () => {
     });
   });
 
+  it("does not let one user revoke another user's session", async () => {
+    const owner = await prisma.user.create({
+      data: {}
+    });
+    const attacker = await prisma.user.create({
+      data: {}
+    });
+    const created = await service.createSession({
+      userId: owner.id,
+      deviceFingerprintHash: `device_cross_revoke_${Date.now()}`,
+      ipHash: `ip_cross_revoke_${Date.now()}`,
+      userAgentHash: `ua_cross_revoke_${Date.now()}`,
+      now: new Date("2026-05-31T10:13:00.000Z")
+    });
+
+    if (created.result !== "accepted") {
+      throw new Error("expected session creation to succeed");
+    }
+
+    await expect(
+      service.revokeSession({
+        actorUserId: attacker.id,
+        sessionId: created.sessionId,
+        reason: "cross_user_revoke_attempt",
+        now: new Date("2026-05-31T10:14:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SESSION_NOT_OWNED_BY_ACTOR"
+    });
+
+    await expect(
+      prisma.userSession.findUniqueOrThrow({
+        where: {
+          id: created.sessionId
+        },
+        select: {
+          status: true,
+          revokedAt: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "active",
+      revokedAt: null
+    });
+  });
+
   it("restricted or closed users cannot refresh", async () => {
     for (const status of ["restricted", "closed"] as const) {
       const user = await prisma.user.create({

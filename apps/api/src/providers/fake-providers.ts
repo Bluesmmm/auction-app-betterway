@@ -5,7 +5,10 @@ import type {
   FileReadGrantResult,
   ObjectStorageProvider,
   ProviderMode,
+  SendSensitiveOperationVerificationInput,
   SendSubscriptionMessageInput,
+  SensitiveOperationVerificationProvider,
+  SensitiveOperationVerificationResult,
   SendSubscriptionMessageResult,
   SubscriptionMessageProvider,
   WechatAuthProvider,
@@ -105,5 +108,36 @@ export class FakeSubscriptionMessageProvider implements SubscriptionMessageProvi
       providerMessageId: `fake_${input.recipientUserId}_${input.templateKey}`,
       mutatesBusinessState: false
     };
+  }
+}
+
+export class FakeSensitiveOperationVerificationProvider
+  implements SensitiveOperationVerificationProvider
+{
+  private readonly deliveries: SendSensitiveOperationVerificationInput[] = [];
+
+  constructor(private readonly options: FakeProviderOptions = {}) {}
+
+  async send(
+    input: SendSensitiveOperationVerificationInput
+  ): Promise<SensitiveOperationVerificationResult> {
+    if (this.options.mode === "failure") {
+      return {
+        ok: false,
+        errorCode: "SENSITIVE_VERIFICATION_DELIVERY_FAILED",
+        mutatesBusinessState: false
+      };
+    }
+
+    this.deliveries.push(input);
+    return {
+      ok: true,
+      providerMessageId: `fake_sensitive_verification_${input.challengeId}`,
+      mutatesBusinessState: false
+    };
+  }
+
+  getLastDelivery(): SendSensitiveOperationVerificationInput | null {
+    return this.deliveries[this.deliveries.length - 1] ?? null;
   }
 }

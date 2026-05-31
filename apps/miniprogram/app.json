@@ -1,5 +1,10 @@
 {
-  "pages": ["pages/health/index"],
+  "pages": [
+    "pages/health/index",
+    "pages/stage2/onboarding/index",
+    "pages/stage2/child/index",
+    "pages/stage2/join/index"
+  ],
   "window": {
     "navigationBarTitleText": "积分拍卖",
     "navigationBarBackgroundColor": "#ffffff",

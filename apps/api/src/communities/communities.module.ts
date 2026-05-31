@@ -7,9 +7,11 @@ import { CommunityAdminAuthorizationService } from "./community-admin-authorizat
 import { CommunityAccessService } from "./community-access.service.js";
 import { CommunityApplicationService } from "./community-application.service.js";
 import { CommunityRuleService } from "./community-rule.service.js";
+import { CommunitiesController } from "./communities.controller.js";
 
 @Module({
   imports: [PrismaModule, AccountsModule],
+  controllers: [CommunitiesController],
   providers: [
     {
       provide: CommunityAccessService,

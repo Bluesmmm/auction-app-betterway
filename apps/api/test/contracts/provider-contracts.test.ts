@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   FakeContentSafetyProvider,
   FakeObjectStorageProvider,
+  FakeSensitiveOperationVerificationProvider,
   FakeSubscriptionMessageProvider,
   FakeWechatAuthProvider
 } from "../../src/providers/fake-providers.js";
@@ -74,5 +75,23 @@ describe("fake provider contracts", () => {
 
     expect(result.ok).toBe(false);
     expect(result.mutatesBusinessState).toBe(false);
+  });
+
+  it("sensitive verification delivery exposes code only through provider boundary", async () => {
+    const provider = new FakeSensitiveOperationVerificationProvider();
+
+    const result = await provider.send({
+      recipientUserId: "user_1",
+      challengeId: "challenge_1",
+      operationType: "export_child_data",
+      targetType: "child_profile",
+      targetId: "child_1",
+      code: "123456",
+      expiresAt: new Date("2026-05-31T15:00:00.000Z"),
+      ttlSeconds: 300
+    });
+
+    expect(result.ok).toBe(true);
+    expect(provider.getLastDelivery()?.code).toBe("123456");
   });
 });

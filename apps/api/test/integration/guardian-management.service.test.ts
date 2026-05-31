@@ -9,7 +9,10 @@ import {
 } from "../../src/accounts/sensitive-operation.service.js";
 import { SessionService } from "../../src/accounts/session.service.js";
 import { SessionTokenService } from "../../src/accounts/session-token.service.js";
-import { FakeWechatAuthProvider } from "../../src/providers/fake-providers.js";
+import {
+  FakeSensitiveOperationVerificationProvider,
+  FakeWechatAuthProvider
+} from "../../src/providers/fake-providers.js";
 
 process.env.DATABASE_URL ??=
   "postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public";
@@ -20,7 +23,13 @@ const sessions = new SessionService(
   prisma,
   new SessionTokenService("guardian-management-test-signing-key")
 );
-const sensitiveOperations = new SensitiveOperationService(prisma, sessions);
+const verificationCode = "975310";
+const sensitiveOperations = new SensitiveOperationService(
+  prisma,
+  sessions,
+  new FakeSensitiveOperationVerificationProvider(),
+  () => verificationCode
+);
 const guardians = new GuardianManagementService(prisma, sensitiveOperations);
 const participation = new ChildParticipationService(prisma, sessions);
 
@@ -129,6 +138,7 @@ async function createPassedSettingsChallenge(child: ChildFixture, sessionId = ch
     challengeId: challenge.challengeId,
     actorUserId: child.userId,
     sessionId,
+    verificationCode,
     now: new Date("2026-05-31T12:45:10.000Z")
   });
 
@@ -189,6 +199,7 @@ async function createPassedDisputeResolutionChallenge(
     challengeId: challenge.challengeId,
     actorUserId: admin.userId,
     sessionId: admin.sessionId,
+    verificationCode,
     now: new Date("2026-05-31T12:56:45.000Z")
   });
 

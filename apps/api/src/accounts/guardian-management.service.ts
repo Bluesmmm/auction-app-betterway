@@ -54,6 +54,7 @@ export type UpdateChildGuardianSettingsResult =
         | "INVALID_MAX_BID_POINTS"
         | "SENSITIVE_CHALLENGE_REQUIRED"
         | "SENSITIVE_CHALLENGE_EXPIRED"
+        | "DEVICE_NOT_TRUSTED"
         | "SESSION_REVOKED"
         | "RISK_RESTRICTED"
         | "GUARDIAN_DISPUTE_FROZEN";
@@ -78,6 +79,7 @@ export type GuardianDisputeTransitionResult =
         | "PLATFORM_ADMIN_REQUIRED"
         | "SENSITIVE_CHALLENGE_REQUIRED"
         | "SENSITIVE_CHALLENGE_EXPIRED"
+        | "DEVICE_NOT_TRUSTED"
         | "SESSION_REVOKED"
         | "RISK_RESTRICTED"
         | "GUARDIAN_DISPUTE_FROZEN";
