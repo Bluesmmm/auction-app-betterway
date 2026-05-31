@@ -6,14 +6,18 @@ import { PrismaService } from "../prisma/prisma.service.js";
 import { CommunityAdminAuthorizationService } from "./community-admin-authorization.service.js";
 import { CommunityAccessService } from "./community-access.service.js";
 import { CommunityApplicationService } from "./community-application.service.js";
+import { CommunityRuleService } from "./community-rule.service.js";
 
 @Module({
   imports: [PrismaModule, AccountsModule],
   providers: [
     {
       provide: CommunityAccessService,
-      inject: [PrismaService],
-      useFactory: (prisma: PrismaService) => new CommunityAccessService(prisma)
+      inject: [PrismaService, CommunityAdminAuthorizationService],
+      useFactory: (
+        prisma: PrismaService,
+        adminAuthorizations: CommunityAdminAuthorizationService
+      ) => new CommunityAccessService(prisma, adminAuthorizations)
     },
     {
       provide: CommunityApplicationService,
@@ -28,12 +32,18 @@ import { CommunityApplicationService } from "./community-application.service.js"
       inject: [PrismaService],
       useFactory: (prisma: PrismaService) =>
         new CommunityAdminAuthorizationService(prisma)
+    },
+    {
+      provide: CommunityRuleService,
+      inject: [PrismaService],
+      useFactory: (prisma: PrismaService) => new CommunityRuleService(prisma)
     }
   ],
   exports: [
     CommunityAccessService,
     CommunityApplicationService,
-    CommunityAdminAuthorizationService
+    CommunityAdminAuthorizationService,
+    CommunityRuleService
   ]
 })
 export class CommunitiesModule {}

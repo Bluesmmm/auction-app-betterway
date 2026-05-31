@@ -1,8 +1,11 @@
 import type {
   CommunityMemberStatus,
   InviteCodeStatus,
-  PrismaClient
+  Prisma,
+  PrismaClient,
+  RosterVerificationStatus
 } from "@prisma/client";
+import { CommunityAdminAuthorizationService } from "./community-admin-authorization.service.js";
 
 export type CreateInviteCodeInput = {
   actorUserId: string;
@@ -23,8 +26,10 @@ export type CreateInviteCodeResult =
       result: "rejected";
       errorCode:
         | "COMMUNITY_NOT_ACTIVE"
+        | "COMMUNITY_NOT_OPEN_FOR_ADMISSION"
         | "COMMUNITY_ADMIN_REQUIRED"
-        | "INVITE_MAX_USES_INVALID";
+        | "INVITE_MAX_USES_INVALID"
+        | "ACTIVE_RULE_VERSION_REQUIRED";
     };
 
 export type RequestJoinWithInviteInput = {
@@ -46,7 +51,10 @@ export type CommunityMemberTransitionResult =
         | "ACTIVE_PRIMARY_GUARDIAN_REQUIRED"
         | "INVITE_CODE_UNAVAILABLE"
         | "COMMUNITY_MEMBER_STATE_INVALID"
-        | "COMMUNITY_ADMIN_REQUIRED";
+        | "COMMUNITY_ADMIN_REQUIRED"
+        | "PLATFORM_ADMIN_REQUIRED"
+        | "COMMUNITY_NOT_OPEN_FOR_ADMISSION"
+        | "ROSTER_VERIFICATION_REQUIRED";
     };
 
 export type ConfirmJoinByPrimaryGuardianInput = {
@@ -63,18 +71,34 @@ export type ApproveCommunityMemberInput = {
   now?: Date;
 };
 
+export type RecordRosterVerificationInput = {
+  actorUserId: string;
+  communityId: string;
+  childId: string;
+  status: RosterVerificationStatus;
+  evidenceJson: Prisma.InputJsonValue;
+  now?: Date;
+};
+
 type ConsumedInviteCode = {
   id: string;
   communityId: string;
+  ruleVersionId: string | null;
 };
 
 type InviteCodeCandidate = {
   id: string;
   communityId: string;
+  ruleVersionId: string | null;
 };
 
 export class CommunityAccessService {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly adminAuthorizations = new CommunityAdminAuthorizationService(
+      prisma
+    )
+  ) {}
 
   async createInviteCode(
     input: CreateInviteCodeInput
@@ -89,44 +113,82 @@ export class CommunityAccessService {
       };
     }
 
-    const community = await this.prisma.auctionCommunity.findUnique({
-      where: {
-        id: input.communityId
+    const inviteCode = await this.prisma.$transaction(async (tx) => {
+      await lockCommunity(tx, input.communityId);
+
+      const admission = await isCommunityOpenForAdmission(tx, input.communityId);
+      if (!admission) {
+        const community = await tx.auctionCommunity.findUnique({
+          where: {
+            id: input.communityId
+          },
+          select: {
+            status: true
+          }
+        });
+
+        const errorCode:
+          | "COMMUNITY_NOT_ACTIVE"
+          | "COMMUNITY_NOT_OPEN_FOR_ADMISSION" =
+          !community || community.status !== "active"
+            ? "COMMUNITY_NOT_ACTIVE"
+            : "COMMUNITY_NOT_OPEN_FOR_ADMISSION";
+
+        return {
+          result: "rejected" as const,
+          errorCode
+        };
       }
+
+      const scopedAdmin = await findActiveScopedActivityAdmin(
+        tx,
+        input.actorUserId,
+        input.communityId
+      );
+      if (!scopedAdmin) {
+        return {
+          result: "rejected" as const,
+          errorCode: "COMMUNITY_ADMIN_REQUIRED" as const
+        };
+      }
+
+      const activeRuleVersion = await findSingleActiveRuleVersion(
+        tx,
+        input.communityId
+      );
+      if (!activeRuleVersion) {
+        return {
+          result: "rejected" as const,
+          errorCode: "ACTIVE_RULE_VERSION_REQUIRED" as const
+        };
+      }
+
+      const created = await tx.communityInviteCode.create({
+        data: {
+          communityId: input.communityId,
+          ruleVersionId: activeRuleVersion.id,
+          code: input.code,
+          maxUses: input.maxUses,
+          expiresAt: input.expiresAt,
+          status: "active"
+        }
+      });
+
+      return {
+        result: "accepted" as const,
+        inviteCodeId: created.id,
+        code: created.code,
+        status: created.status
+      };
     });
 
-    if (!community || community.status !== "active") {
-      return {
-        result: "rejected",
-        errorCode: "COMMUNITY_NOT_ACTIVE"
-      };
+    if (inviteCode.result === "rejected") {
+      return inviteCode;
     }
-
-    const scopedAdmin = await this.findActiveScopedAdmin(
-      input.actorUserId,
-      community.id
-    );
-
-    if (!scopedAdmin) {
-      return {
-        result: "rejected",
-        errorCode: "COMMUNITY_ADMIN_REQUIRED"
-      };
-    }
-
-    const inviteCode = await this.prisma.communityInviteCode.create({
-      data: {
-        communityId: community.id,
-        code: input.code,
-        maxUses: input.maxUses,
-        expiresAt: input.expiresAt,
-        status: "active"
-      }
-    });
 
     return {
       result: "accepted",
-      inviteCodeId: inviteCode.id,
+      inviteCodeId: inviteCode.inviteCodeId,
       code: inviteCode.code,
       status: inviteCode.status
     };
@@ -159,8 +221,10 @@ export class CommunityAccessService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      await lockChild(tx, input.childId);
+
       const inviteCandidates = await tx.$queryRaw<InviteCodeCandidate[]>`
-        SELECT "id", "communityId"
+        SELECT "id", "communityId", "ruleVersionId"
         FROM "CommunityInviteCode"
         WHERE "code" = ${input.code}
           AND "status" = 'active'
@@ -169,6 +233,22 @@ export class CommunityAccessService {
       const inviteCandidate = inviteCandidates[0];
 
       if (!inviteCandidate) {
+        return {
+          result: "rejected",
+          errorCode: "INVITE_CODE_UNAVAILABLE"
+        };
+      }
+
+      if (
+        !(await isCommunityOpenForAdmission(tx, inviteCandidate.communityId))
+      ) {
+        return {
+          result: "rejected",
+          errorCode: "COMMUNITY_NOT_OPEN_FOR_ADMISSION"
+        };
+      }
+
+      if (!inviteCandidate.ruleVersionId) {
         return {
           result: "rejected",
           errorCode: "INVITE_CODE_UNAVAILABLE"
@@ -198,7 +278,7 @@ export class CommunityAccessService {
         SET "usedCount" = "usedCount" + 1
         WHERE "id" = ${inviteCandidate.id}
           AND ("maxUses" IS NULL OR "usedCount" < "maxUses")
-        RETURNING "id", "communityId"
+        RETURNING "id", "communityId", "ruleVersionId"
       `;
       const inviteCode = inviteCodes[0];
 
@@ -213,6 +293,8 @@ export class CommunityAccessService {
         data: {
           communityId: inviteCode.communityId,
           childId: input.childId,
+          inviteCodeId: inviteCode.id,
+          ruleVersionId: inviteCode.ruleVersionId,
           status: "pending_guardian"
         }
       });
@@ -270,7 +352,8 @@ export class CommunityAccessService {
           status: "pending_guardian"
         },
         data: {
-          status: "pending_admin"
+          status: "pending_admin",
+          guardianConfirmedAt: now
         }
       });
 
@@ -329,16 +412,13 @@ export class CommunityAccessService {
       };
     }
 
-    const scopedAdmin = await this.findActiveScopedAdmin(
-      input.actorUserId,
-      community.id
-    );
-
-    if (!scopedAdmin) {
-      return {
-        result: "rejected",
-        errorCode: "COMMUNITY_ADMIN_REQUIRED"
-      };
+    const scopedAdmin =
+      await this.adminAuthorizations.findActiveScopedActivityAdmin({
+        actorUserId: input.actorUserId,
+        communityId: community.id
+      });
+    if (scopedAdmin.result === "rejected") {
+      return scopedAdmin;
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -346,11 +426,105 @@ export class CommunityAccessService {
         where: {
           communityId: input.communityId,
           childId: input.childId,
-          status: "pending_admin"
+          status: "pending_admin",
+          rosterVerificationStatus: {
+            in: ["matched", "manual_exception"]
+          }
         },
         data: {
           status: "active",
+          adminReviewedByUserId: input.actorUserId,
+          adminReviewedAt: now,
           joinedAt: now
+        }
+      });
+
+      if (updated.count !== 1) {
+        return {
+          result: "rejected",
+          errorCode: "ROSTER_VERIFICATION_REQUIRED"
+        };
+      }
+
+      const member = await tx.communityMember.findUniqueOrThrow({
+        where: {
+          communityId_childId: {
+            communityId: input.communityId,
+            childId: input.childId
+          }
+        }
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorUserId: input.actorUserId,
+          action: "community_member.admin_approve",
+          targetType: "community_member",
+          targetId: member.id,
+          afterJson: {
+            approvedAt: now.toISOString(),
+            rosterVerificationStatus: member.rosterVerificationStatus,
+            status: member.status
+          }
+        }
+      });
+
+      return {
+        result: "accepted",
+        communityId: member.communityId,
+        childId: member.childId,
+        memberStatus: member.status
+      };
+    });
+  }
+
+  async recordRosterVerification(
+    input: RecordRosterVerificationInput
+  ): Promise<CommunityMemberTransitionResult> {
+    const now = input.now ?? new Date();
+    if (input.status === "manual_exception") {
+      if (!(await this.isActiveMfaPlatformAdmin(input.actorUserId))) {
+        return {
+          result: "rejected",
+          errorCode: "PLATFORM_ADMIN_REQUIRED"
+        };
+      }
+    } else {
+      const scopedAdmin =
+        await this.adminAuthorizations.findActiveScopedActivityAdmin({
+          actorUserId: input.actorUserId,
+          communityId: input.communityId
+        });
+      if (scopedAdmin.result === "rejected") {
+        return scopedAdmin;
+      }
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      if (input.status === "manual_exception") {
+        await lockCommunity(tx, input.communityId);
+      } else if (
+        !(await findActiveScopedActivityAdmin(
+          tx,
+          input.actorUserId,
+          input.communityId
+        ))
+      ) {
+        return {
+          result: "rejected",
+          errorCode: "COMMUNITY_ADMIN_REQUIRED"
+        };
+      }
+
+      const updated = await tx.communityMember.updateMany({
+        where: {
+          communityId: input.communityId,
+          childId: input.childId,
+          status: "pending_admin"
+        },
+        data: {
+          rosterVerificationStatus: input.status,
+          rosterEvidenceJson: input.evidenceJson
         }
       });
 
@@ -373,12 +547,14 @@ export class CommunityAccessService {
       await tx.auditLog.create({
         data: {
           actorUserId: input.actorUserId,
-          action: "community_member.admin_approve",
+          action: "community_member.record_roster_verification",
           targetType: "community_member",
           targetId: member.id,
           afterJson: {
-            approvedAt: now.toISOString(),
-            status: member.status
+            status: member.status,
+            rosterVerificationStatus: member.rosterVerificationStatus,
+            evidenceJson: input.evidenceJson,
+            recordedAt: now.toISOString()
           }
         }
       });
@@ -392,22 +568,117 @@ export class CommunityAccessService {
     });
   }
 
-  private async findActiveScopedAdmin(actorUserId: string, communityId: string) {
-    return this.prisma.adminProfile.findFirst({
+  private async isActiveMfaPlatformAdmin(userId: string): Promise<boolean> {
+    const platformAdmin = await this.prisma.adminProfile.findUnique({
       where: {
-        userId: actorUserId,
-        status: "active",
-        mfaEnabled: true,
-        communityScopes: {
-          some: {
-            communityId,
-            status: "active"
-          }
-        }
+        userId
       },
       select: {
-        id: true
+        role: true,
+        status: true,
+        mfaEnabled: true
       }
     });
+
+    return Boolean(
+      platformAdmin &&
+        platformAdmin.role === "platform_admin" &&
+        platformAdmin.status === "active" &&
+        platformAdmin.mfaEnabled
+    );
   }
+}
+
+async function lockCommunity(tx: Prisma.TransactionClient, communityId: string) {
+  await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT "id"
+    FROM "AuctionCommunity"
+    WHERE "id" = ${communityId}
+    FOR UPDATE
+  `;
+}
+
+async function lockChild(tx: Prisma.TransactionClient, childId: string) {
+  await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT "id"
+    FROM "ChildProfile"
+    WHERE "id" = ${childId}
+    FOR UPDATE
+  `;
+}
+
+async function findActiveScopedActivityAdmin(
+  tx: Prisma.TransactionClient,
+  actorUserId: string,
+  communityId: string
+) {
+  return tx.adminProfile.findFirst({
+    where: {
+      userId: actorUserId,
+      role: "activity_admin",
+      status: "active",
+      mfaEnabled: true,
+      communityScopes: {
+        some: {
+          communityId,
+          status: "active"
+        }
+      }
+    },
+    select: {
+      id: true
+    }
+  });
+}
+
+async function findSingleActiveRuleVersion(
+  tx: Prisma.TransactionClient,
+  communityId: string
+) {
+  const activeRuleVersions = await tx.communityRuleVersion.findMany({
+    where: {
+      communityId,
+      status: "active"
+    },
+    orderBy: {
+      versionNo: "desc"
+    },
+    take: 2
+  });
+
+  return activeRuleVersions.length === 1 ? activeRuleVersions[0] : null;
+}
+
+async function isCommunityOpenForAdmission(
+  tx: Prisma.TransactionClient,
+  communityId: string
+): Promise<boolean> {
+  const community = await tx.auctionCommunity.findUnique({
+    where: {
+      id: communityId
+    },
+    select: {
+      status: true,
+      adminScopes: {
+        where: {
+          status: "active",
+          adminProfile: {
+            role: "activity_admin",
+            status: "active",
+            mfaEnabled: true
+          }
+        },
+        select: {
+          id: true
+        },
+        take: 1
+      }
+    }
+  });
+
+  return Boolean(
+    community &&
+      community.status === "active" &&
+      community.adminScopes.length > 0
+  );
 }

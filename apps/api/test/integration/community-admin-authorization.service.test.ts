@@ -221,7 +221,7 @@ describe("CommunityAdminAuthorizationService", () => {
       })
     ).resolves.toEqual({
       result: "rejected",
-      errorCode: "COMMUNITY_ADMIN_REQUIRED"
+      errorCode: "COMMUNITY_NOT_OPEN_FOR_ADMISSION"
     });
   });
 

@@ -1,4 +1,4 @@
-import type { AdminScopeStatus, PrismaClient } from "@prisma/client";
+import type { AdminScopeStatus, Prisma, PrismaClient } from "@prisma/client";
 
 export type GrantActivityAdminResult =
   | {
@@ -88,6 +88,8 @@ export class CommunityAdminAuthorizationService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      await lockCommunity(tx, input.communityId);
+
       const existingAdminProfile = await tx.adminProfile.findUnique({
         where: {
           userId: input.targetUserId
@@ -181,71 +183,75 @@ export class CommunityAdminAuthorizationService {
       };
     }
 
-    const adminProfile = await this.prisma.adminProfile.findUnique({
-      where: {
-        userId: input.targetUserId
-      },
-      select: {
-        id: true
+    return this.prisma.$transaction(async (tx) => {
+      await lockCommunity(tx, input.communityId);
+
+      const adminProfile = await tx.adminProfile.findUnique({
+        where: {
+          userId: input.targetUserId
+        },
+        select: {
+          id: true
+        }
+      });
+
+      if (!adminProfile) {
+        return {
+          result: "rejected",
+          errorCode: "COMMUNITY_ADMIN_SCOPE_NOT_FOUND"
+        };
       }
-    });
 
-    if (!adminProfile) {
+      const updated = await tx.adminCommunityScope.updateMany({
+        where: {
+          adminProfileId: adminProfile.id,
+          communityId: input.communityId,
+          status: "active"
+        },
+        data: {
+          status: "revoked"
+        }
+      });
+
+      if (updated.count !== 1) {
+        return {
+          result: "rejected",
+          errorCode: "COMMUNITY_ADMIN_SCOPE_NOT_FOUND"
+        };
+      }
+
+      const scope = await tx.adminCommunityScope.findUniqueOrThrow({
+        where: {
+          adminProfileId_communityId: {
+            adminProfileId: adminProfile.id,
+            communityId: input.communityId
+          }
+        }
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorUserId: input.platformAdminUserId,
+          action: "admin_community_scope.revoke_activity_admin",
+          targetType: "admin_community_scope",
+          targetId: scope.id,
+          reason: input.reason,
+          afterJson: {
+            targetUserId: input.targetUserId,
+            communityId: input.communityId,
+            status: scope.status,
+            revokedAt: now.toISOString()
+          }
+        }
+      });
+
       return {
-        result: "rejected",
-        errorCode: "COMMUNITY_ADMIN_SCOPE_NOT_FOUND"
-      };
-    }
-
-    const updated = await this.prisma.adminCommunityScope.updateMany({
-      where: {
+        result: "accepted",
         adminProfileId: adminProfile.id,
         communityId: input.communityId,
-        status: "active"
-      },
-      data: {
-        status: "revoked"
-      }
-    });
-
-    if (updated.count !== 1) {
-      return {
-        result: "rejected",
-        errorCode: "COMMUNITY_ADMIN_SCOPE_NOT_FOUND"
+        scopeStatus: "revoked"
       };
-    }
-
-    const scope = await this.prisma.adminCommunityScope.findUniqueOrThrow({
-      where: {
-        adminProfileId_communityId: {
-          adminProfileId: adminProfile.id,
-          communityId: input.communityId
-        }
-      }
     });
-
-    await this.prisma.auditLog.create({
-      data: {
-        actorUserId: input.platformAdminUserId,
-        action: "admin_community_scope.revoke_activity_admin",
-        targetType: "admin_community_scope",
-        targetId: scope.id,
-        reason: input.reason,
-        afterJson: {
-          targetUserId: input.targetUserId,
-          communityId: input.communityId,
-          status: scope.status,
-          revokedAt: now.toISOString()
-        }
-      }
-    });
-
-    return {
-      result: "accepted",
-      adminProfileId: adminProfile.id,
-      communityId: input.communityId,
-      scopeStatus: "revoked"
-    };
   }
 
   async assertCommunityOpenForAdmission(input: {
@@ -350,4 +356,13 @@ export class CommunityAdminAuthorizationService {
         platformAdmin.mfaEnabled
     );
   }
+}
+
+async function lockCommunity(tx: Prisma.TransactionClient, communityId: string) {
+  await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT "id"
+    FROM "AuctionCommunity"
+    WHERE "id" = ${communityId}
+    FOR UPDATE
+  `;
 }
