@@ -54,7 +54,8 @@ export type CreateChildWithPrimaryGuardianResult =
       errorCode:
         | "GUARDIAN_NOT_ACTIVE"
         | "GUARDIAN_NOT_OWNED_BY_ACTOR"
-        | "INITIAL_POINTS_INVALID";
+        | "INITIAL_POINTS_INVALID"
+        | "GUARDIAN_CHILD_LIMIT_EXCEEDED";
     };
 
 export class OnboardingService {
@@ -187,6 +188,54 @@ export class OnboardingService {
     const now = input.now ?? new Date();
 
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id"
+        FROM "GuardianProfile"
+        WHERE "id" = ${guardian.id}
+        FOR UPDATE
+      `;
+
+      const lockedGuardian = await tx.guardianProfile.findUnique({
+        where: {
+          id: guardian.id
+        },
+        select: {
+          userId: true,
+          status: true
+        }
+      });
+
+      if (!lockedGuardian || lockedGuardian.status !== "active") {
+        return {
+          result: "rejected",
+          errorCode: "GUARDIAN_NOT_ACTIVE"
+        };
+      }
+
+      if (lockedGuardian.userId !== input.actorUserId) {
+        return {
+          result: "rejected",
+          errorCode: "GUARDIAN_NOT_OWNED_BY_ACTOR"
+        };
+      }
+
+      const activeChildCount = await tx.guardianChildLink.count({
+        where: {
+          guardianId: guardian.id,
+          status: "active",
+          child: {
+            status: "active"
+          }
+        }
+      });
+
+      if (activeChildCount >= 3) {
+        return {
+          result: "rejected",
+          errorCode: "GUARDIAN_CHILD_LIMIT_EXCEEDED"
+        };
+      }
+
       const child = await tx.childProfile.create({
         data: {
           displayName: input.displayName,
@@ -204,6 +253,19 @@ export class OnboardingService {
           role: "primary",
           status: "active",
           confirmedAt: now
+        }
+      });
+
+      await tx.childGuardianSettings.create({
+        data: {
+          childId: child.id,
+          canPublish: true,
+          canBid: true,
+          maxBidPoints: null,
+          bidRequiresGuardianConfirmation: false,
+          canUseCourier: false,
+          canUseGuardianArrangedDelivery: true,
+          canFavorite: true
         }
       });
 

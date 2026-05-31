@@ -6,7 +6,8 @@ export const SensitiveOperationType = {
   exportChildData: "export_child_data",
   deleteChildProfile: "delete_child_profile",
   confirmTransaction: "confirm_transaction",
-  changeChildPermissions: "change_child_permissions"
+  changeChildPermissions: "change_child_permissions",
+  resolveGuardianDispute: "resolve_guardian_dispute"
 } as const;
 
 export type SensitiveOperationType =
@@ -17,6 +18,7 @@ const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
 export type CreateSensitiveOperationChallengeInput = {
   actorUserId: string;
+  sessionId: string;
   operationType: string;
   targetType: string;
   targetId: string;
@@ -24,20 +26,26 @@ export type CreateSensitiveOperationChallengeInput = {
   now?: Date;
 };
 
-export type CreateSensitiveOperationChallengeResult = {
-  result: "accepted";
-  challengeId: string;
-  actorUserId: string;
-  operationType: string;
-  targetType: string;
-  targetId: string;
-  expiresAt: string;
-  status: "pending";
-};
+export type CreateSensitiveOperationChallengeResult =
+  | {
+      result: "accepted";
+      challengeId: string;
+      actorUserId: string;
+      operationType: string;
+      targetType: string;
+      targetId: string;
+      expiresAt: string;
+      status: "pending";
+    }
+  | {
+      result: "rejected";
+      errorCode: "SESSION_REVOKED";
+    };
 
 export type MarkSensitiveOperationChallengePassedInput = {
   challengeId: string;
   actorUserId: string;
+  sessionId: string;
   now?: Date;
 };
 
@@ -52,7 +60,10 @@ export type MarkSensitiveOperationChallengePassedResult =
     }
   | {
       result: "rejected";
-      errorCode: "SENSITIVE_CHALLENGE_REQUIRED" | "SENSITIVE_CHALLENGE_EXPIRED";
+      errorCode:
+        | "SENSITIVE_CHALLENGE_REQUIRED"
+        | "SENSITIVE_CHALLENGE_EXPIRED"
+        | "SESSION_REVOKED";
     };
 
 export type AuthorizeSensitiveOperationInput = {
@@ -105,6 +116,18 @@ export class SensitiveOperationService {
     input: CreateSensitiveOperationChallengeInput
   ): Promise<CreateSensitiveOperationChallengeResult> {
     const now = input.now ?? new Date();
+    const activeSession = await this.sessionService.assertActiveSession({
+      userId: input.actorUserId,
+      sessionId: input.sessionId,
+      now
+    });
+    if (activeSession.result !== "accepted") {
+      return {
+        result: "rejected",
+        errorCode: "SESSION_REVOKED"
+      };
+    }
+
     const expiresAt = new Date(now.getTime() + CHALLENGE_TTL_MS);
     const challenge = await this.prisma.sensitiveOperationChallenge.create({
       data: {
@@ -113,7 +136,10 @@ export class SensitiveOperationService {
         targetType: input.targetType,
         targetId: input.targetId,
         status: "pending",
-        riskLabelsJson: input.riskLabels,
+        riskLabelsJson: {
+          labels: input.riskLabels,
+          sessionId: input.sessionId
+        },
         expiresAt
       }
     });
@@ -134,13 +160,29 @@ export class SensitiveOperationService {
     input: MarkSensitiveOperationChallengePassedInput
   ): Promise<MarkSensitiveOperationChallengePassedResult> {
     const now = input.now ?? new Date();
+    const activeSession = await this.sessionService.assertActiveSession({
+      userId: input.actorUserId,
+      sessionId: input.sessionId,
+      now
+    });
+    if (activeSession.result !== "accepted") {
+      return {
+        result: "rejected",
+        errorCode: "SESSION_REVOKED"
+      };
+    }
+
     const challenge = await this.prisma.sensitiveOperationChallenge.findUnique({
       where: {
         id: input.challengeId
       }
     });
 
-    if (!challenge || challenge.actorUserId !== input.actorUserId) {
+    if (
+      !challenge ||
+      challenge.actorUserId !== input.actorUserId ||
+      getChallengeSessionId(challenge.riskLabelsJson) !== input.sessionId
+    ) {
       return {
         result: "rejected",
         errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
@@ -256,7 +298,10 @@ export class SensitiveOperationService {
       };
     }
 
-    if (await this.hasFrozenGuardianDispute(input.targetType, input.targetId)) {
+    if (
+      input.operationType !== SensitiveOperationType.resolveGuardianDispute &&
+      (await this.hasFrozenGuardianDispute(input.targetType, input.targetId))
+    ) {
       return {
         result: "rejected",
         errorCode: "GUARDIAN_DISPUTE_FROZEN"
@@ -274,8 +319,8 @@ export class SensitiveOperationService {
       };
     }
 
-    const passedChallenge =
-      await this.prisma.sensitiveOperationChallenge.findFirst({
+    const passedChallenges =
+      await this.prisma.sensitiveOperationChallenge.findMany({
         where: {
           actorUserId: input.actorUserId,
           operation: input.operationType,
@@ -286,8 +331,16 @@ export class SensitiveOperationService {
             gt: now
           }
         },
-        orderBy: [{ passedAt: "desc" }, { createdAt: "desc" }]
+        orderBy: [{ passedAt: "desc" }, { createdAt: "desc" }],
+        select: {
+          id: true,
+          riskLabelsJson: true
+        }
       });
+    const passedChallenge = passedChallenges.find(
+      (challenge) =>
+        getChallengeSessionId(challenge.riskLabelsJson) === input.sessionId
+    );
 
     if (passedChallenge) {
       return {
@@ -300,15 +353,25 @@ export class SensitiveOperationService {
       };
     }
 
-    const challenge = await this.prisma.sensitiveOperationChallenge.findFirst({
+    const challenges = await this.prisma.sensitiveOperationChallenge.findMany({
       where: {
         actorUserId: input.actorUserId,
         operation: input.operationType,
         targetType: input.targetType,
         targetId: input.targetId
       },
-      orderBy: [{ passedAt: "desc" }, { createdAt: "desc" }]
+      orderBy: [{ passedAt: "desc" }, { createdAt: "desc" }],
+      select: {
+        id: true,
+        status: true,
+        expiresAt: true,
+        riskLabelsJson: true
+      }
     });
+    const challenge = challenges.find(
+      (candidate) =>
+        getChallengeSessionId(candidate.riskLabelsJson) === input.sessionId
+    );
 
     if (!challenge) {
       return {
@@ -607,6 +670,29 @@ export class SensitiveOperationService {
         }
         break;
       }
+      case "guardian_dispute": {
+        const dispute = await this.prisma.guardianDispute.findUnique({
+          where: {
+            id: targetId
+          },
+          select: {
+            childId: true,
+            submittingGuardianId: true,
+            submittingGuardian: {
+              select: {
+                userId: true
+              }
+            }
+          }
+        });
+
+        if (dispute) {
+          context.childIds.push(dispute.childId);
+          context.guardianIds.push(dispute.submittingGuardianId);
+          context.userIds.push(dispute.submittingGuardian.userId);
+        }
+        break;
+      }
       default:
         break;
     }
@@ -623,6 +709,15 @@ export class SensitiveOperationService {
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
+}
+
+export function getChallengeSessionId(value: Prisma.JsonValue | null): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const sessionId = (value as { sessionId?: unknown }).sessionId;
+  return typeof sessionId === "string" ? sessionId : null;
 }
 
 function riskRestrictionTypesForOperation(
