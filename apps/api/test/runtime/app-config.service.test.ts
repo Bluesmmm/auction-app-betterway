@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { AppConfigService } from "../../src/config/app-config.service.js";
 
@@ -13,6 +14,9 @@ describe("AppConfigService", () => {
     expect(() => config.objectStorageSigningKey).toThrow(
       "OBJECT_STORAGE_KEY_CURRENT must be configured"
     );
+    expect(() => config.authTokenSigningKey).toThrow(
+      "AUTH_TOKEN_SIGNING_KEY must be configured"
+    );
   });
 
   it("reads runtime connection and browser origin configuration from env", () => {
@@ -21,6 +25,7 @@ describe("AppConfigService", () => {
       REDIS_URL: "redis://redis:6379/0",
       WORKER_NAME: "auction-worker-runtime",
       OBJECT_STORAGE_KEY_CURRENT: "runtime-object-storage-current",
+      AUTH_TOKEN_SIGNING_KEY: "runtime-auth-token-current",
       CORS_ALLOWED_ORIGINS: "http://localhost:5173, https://admin.example.com"
     });
 
@@ -28,6 +33,7 @@ describe("AppConfigService", () => {
     expect(config.redisUrl).toBe("redis://redis:6379/0");
     expect(config.workerName).toBe("auction-worker-runtime");
     expect(config.objectStorageSigningKey).toBe("runtime-object-storage-current");
+    expect(config.authTokenSigningKey).toBe("runtime-auth-token-current");
     expect(config.corsAllowedOrigins).toEqual([
       "http://localhost:5173",
       "https://admin.example.com"
@@ -38,5 +44,14 @@ describe("AppConfigService", () => {
     const config = new AppConfigService({ PORT: "not-a-port" });
 
     expect(() => config.port).toThrow("PORT must be an integer");
+  });
+
+  it("does not give runtime containers a default auth token signing key", () => {
+    const runtimeCompose = readFileSync("docker-compose.runtime.yml", "utf8");
+
+    expect(runtimeCompose).toContain(
+      "AUTH_TOKEN_SIGNING_KEY: ${AUTH_TOKEN_SIGNING_KEY:?AUTH_TOKEN_SIGNING_KEY must be configured}"
+    );
+    expect(runtimeCompose).not.toContain("runtime-auth-token-current");
   });
 });

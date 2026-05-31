@@ -39,6 +39,10 @@ export class AppConfigService {
   get objectStorageSigningKey(): string {
     return requireEnv(this.env, "OBJECT_STORAGE_KEY_CURRENT");
   }
+
+  get authTokenSigningKey(): string {
+    return requireEnv(this.env, "AUTH_TOKEN_SIGNING_KEY");
+  }
 }
 
 function requireEnv(env: NodeJS.ProcessEnv, key: string): string {
