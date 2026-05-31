@@ -53,6 +53,7 @@ export type CommunityMemberTransitionResult =
         | "COMMUNITY_MEMBER_STATE_INVALID"
         | "COMMUNITY_ADMIN_REQUIRED"
         | "PLATFORM_ADMIN_REQUIRED"
+        | "RISK_RESTRICTED"
         | "COMMUNITY_NOT_OPEN_FOR_ADMISSION"
         | "ROSTER_VERIFICATION_REQUIRED";
     };
@@ -210,6 +211,14 @@ export class CommunityAccessService {
         guardian: {
           status: "active"
         }
+      },
+      select: {
+        guardianId: true,
+        guardian: {
+          select: {
+            userId: true
+          }
+        }
       }
     });
 
@@ -252,6 +261,21 @@ export class CommunityAccessService {
         return {
           result: "rejected",
           errorCode: "INVITE_CODE_UNAVAILABLE"
+        };
+      }
+
+      if (
+        await hasActiveJoinRiskRestriction(tx, {
+          childId: input.childId,
+          primaryGuardianId: activePrimaryGuardian.guardianId,
+          primaryGuardianUserId: activePrimaryGuardian.guardian.userId,
+          communityId: inviteCandidate.communityId,
+          now
+        })
+      ) {
+        return {
+          result: "rejected",
+          errorCode: "RISK_RESTRICTED"
         };
       }
 
@@ -345,6 +369,31 @@ export class CommunityAccessService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      await lockChild(tx, input.childId);
+
+      const primaryGuardian = await findActivePrimaryGuardian(tx, input.childId);
+      if (!primaryGuardian) {
+        return {
+          result: "rejected",
+          errorCode: "ACTIVE_PRIMARY_GUARDIAN_REQUIRED"
+        };
+      }
+
+      if (
+        await hasActiveJoinRiskRestriction(tx, {
+          childId: input.childId,
+          primaryGuardianId: primaryGuardian.guardianId,
+          primaryGuardianUserId: primaryGuardian.guardian.userId,
+          communityId: input.communityId,
+          now
+        })
+      ) {
+        return {
+          result: "rejected",
+          errorCode: "RISK_RESTRICTED"
+        };
+      }
+
       const updated = await tx.communityMember.updateMany({
         where: {
           communityId: input.communityId,
@@ -422,6 +471,31 @@ export class CommunityAccessService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      await lockChild(tx, input.childId);
+
+      const primaryGuardian = await findActivePrimaryGuardian(tx, input.childId);
+      if (!primaryGuardian) {
+        return {
+          result: "rejected",
+          errorCode: "ACTIVE_PRIMARY_GUARDIAN_REQUIRED"
+        };
+      }
+
+      if (
+        await hasActiveJoinRiskRestriction(tx, {
+          childId: input.childId,
+          primaryGuardianId: primaryGuardian.guardianId,
+          primaryGuardianUserId: primaryGuardian.guardian.userId,
+          communityId: input.communityId,
+          now
+        })
+      ) {
+        return {
+          result: "rejected",
+          errorCode: "RISK_RESTRICTED"
+        };
+      }
+
       const updated = await tx.communityMember.updateMany({
         where: {
           communityId: input.communityId,
@@ -629,6 +703,92 @@ async function findActiveScopedActivityAdmin(
       id: true
     }
   });
+}
+
+async function findActivePrimaryGuardian(
+  tx: Prisma.TransactionClient,
+  childId: string
+) {
+  return tx.guardianChildLink.findFirst({
+    where: {
+      childId,
+      role: "primary",
+      status: "active",
+      guardian: {
+        status: "active"
+      }
+    },
+    select: {
+      guardianId: true,
+      guardian: {
+        select: {
+          userId: true
+        }
+      }
+    }
+  });
+}
+
+async function hasActiveJoinRiskRestriction(
+  tx: Prisma.TransactionClient,
+  input: {
+    childId: string;
+    primaryGuardianId: string;
+    primaryGuardianUserId: string;
+    communityId: string;
+    now: Date;
+  }
+) {
+  const restriction = await tx.riskRestriction.findFirst({
+    where: {
+      status: "active",
+      type: {
+        in: ["suspended", "no_join"]
+      },
+      startsAt: {
+        lte: input.now
+      },
+      AND: [
+        {
+          OR: [{ expiresAt: null }, { expiresAt: { gt: input.now } }]
+        },
+        {
+          OR: [
+            {
+              scope: "child",
+              targetId: input.childId
+            },
+            {
+              childId: input.childId
+            },
+            {
+              scope: "guardian",
+              targetId: input.primaryGuardianId
+            },
+            {
+              guardianId: input.primaryGuardianId
+            },
+            {
+              scope: "user",
+              targetId: input.primaryGuardianUserId
+            },
+            {
+              scope: "community",
+              targetId: input.communityId
+            },
+            {
+              communityId: input.communityId
+            }
+          ]
+        }
+      ]
+    },
+    select: {
+      id: true
+    }
+  });
+
+  return Boolean(restriction);
 }
 
 async function findSingleActiveRuleVersion(
