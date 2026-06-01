@@ -31,7 +31,7 @@ const sensitiveOperations = new SensitiveOperationService(
   () => verificationCode
 );
 const guardians = new GuardianManagementService(prisma, sensitiveOperations);
-const participation = new ChildParticipationService(prisma, sessions);
+const participation = new ChildParticipationService(prisma, sensitiveOperations);
 
 type GuardianFixture = {
   userId: string;
@@ -91,7 +91,6 @@ async function createChildWithGuardian(
     guardianId: guardian.guardianId,
     displayName: `Child ${token}`,
     gradeBand: "grade_3_4",
-    initialPoints: 100,
     idempotencyKey: `initial_${token}`,
     now: new Date("2026-05-31T12:02:00.000Z")
   });
@@ -119,15 +118,20 @@ async function createChildWithGuardian(
   };
 }
 
-async function createPassedSettingsChallenge(child: ChildFixture, sessionId = child.sessionId) {
+async function createPassedChildChallenge(
+  child: ChildFixture,
+  operationType: SensitiveOperationType,
+  sessionId = child.sessionId,
+  now = new Date("2026-05-31T12:45:00.000Z")
+) {
   const challenge = await sensitiveOperations.createChallenge({
     actorUserId: child.userId,
     sessionId,
-    operationType: SensitiveOperationType.changeChildPermissions,
+    operationType,
     targetType: "child_profile",
     targetId: child.childId,
     riskLabels: [],
-    now: new Date("2026-05-31T12:45:00.000Z")
+    now
   });
 
   if (challenge.result !== "accepted") {
@@ -139,10 +143,34 @@ async function createPassedSettingsChallenge(child: ChildFixture, sessionId = ch
     actorUserId: child.userId,
     sessionId,
     verificationCode,
-    now: new Date("2026-05-31T12:45:10.000Z")
+    now: new Date(now.getTime() + 10_000)
   });
 
   return challenge.challengeId;
+}
+
+async function createPassedSettingsChallenge(
+  child: ChildFixture,
+  sessionId = child.sessionId
+) {
+  return createPassedChildChallenge(
+    child,
+    SensitiveOperationType.changeChildPermissions,
+    sessionId
+  );
+}
+
+async function createPassedManageGuardiansChallenge(
+  child: ChildFixture,
+  sessionId = child.sessionId,
+  now = new Date("2026-05-31T12:45:00.000Z")
+) {
+  return createPassedChildChallenge(
+    child,
+    SensitiveOperationType.manageChildGuardians,
+    sessionId,
+    now
+  );
 }
 
 async function createPlatformAdmin(
@@ -236,11 +264,18 @@ describe("GuardianManagementService", () => {
   it("lets the active primary guardian invite a secondary guardian and keeps it pending until confirmed", async () => {
     const child = await createChildFixture("secondary_pending");
     const secondaryGuardian = await createGuardianFixture("secondary_pending_guardian");
+    const challengeId = await createPassedManageGuardiansChallenge(
+      child,
+      child.sessionId,
+      new Date("2026-05-31T12:09:00.000Z")
+    );
 
     const invited = await guardians.inviteSecondaryGuardian({
       actorUserId: child.userId,
       childId: child.childId,
       secondaryGuardianId: secondaryGuardian.guardianId,
+      challengeId,
+      sessionId: child.sessionId,
       now: new Date("2026-05-31T12:10:00.000Z")
     });
 
@@ -268,6 +303,8 @@ describe("GuardianManagementService", () => {
       actorUserId: child.userId,
       childId: child.childId,
       secondaryGuardianId: secondaryGuardian.guardianId,
+      challengeId,
+      sessionId: child.sessionId,
       now: new Date("2026-05-31T12:11:00.000Z")
     });
 
@@ -281,21 +318,75 @@ describe("GuardianManagementService", () => {
     });
   });
 
+  it("requires a sensitive challenge for secondary guardian management", async () => {
+    const child = await createChildFixture("secondary_sensitive_required");
+    const secondaryGuardian = await createGuardianFixture(
+      "secondary_sensitive_required_guardian"
+    );
+    const challengeId = await createPassedManageGuardiansChallenge(
+      child,
+      child.sessionId,
+      new Date("2026-05-31T12:14:00.000Z")
+    );
+
+    await expect(
+      guardians.inviteSecondaryGuardian({
+        actorUserId: child.userId,
+        childId: child.childId,
+        secondaryGuardianId: secondaryGuardian.guardianId,
+        now: new Date("2026-05-31T12:15:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
+    });
+
+    await guardians.inviteSecondaryGuardian({
+      actorUserId: child.userId,
+      childId: child.childId,
+      secondaryGuardianId: secondaryGuardian.guardianId,
+      challengeId,
+      sessionId: child.sessionId,
+      now: new Date("2026-05-31T12:15:30.000Z")
+    });
+
+    await expect(
+      guardians.confirmSecondaryGuardian({
+        actorUserId: child.userId,
+        childId: child.childId,
+        secondaryGuardianId: secondaryGuardian.guardianId,
+        now: new Date("2026-05-31T12:16:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
+    });
+  });
+
   it("rejects a third active guardian for the same child", async () => {
     const child = await createChildFixture("guardian_limit_child");
     const secondGuardian = await createGuardianFixture("guardian_limit_second");
     const thirdGuardian = await createGuardianFixture("guardian_limit_third");
+    const challengeId = await createPassedManageGuardiansChallenge(
+      child,
+      child.sessionId,
+      new Date("2026-05-31T12:19:00.000Z")
+    );
 
     await guardians.inviteSecondaryGuardian({
       actorUserId: child.userId,
       childId: child.childId,
       secondaryGuardianId: secondGuardian.guardianId,
+      challengeId,
+      sessionId: child.sessionId,
       now: new Date("2026-05-31T12:20:00.000Z")
     });
     await guardians.confirmSecondaryGuardian({
       actorUserId: child.userId,
       childId: child.childId,
       secondaryGuardianId: secondGuardian.guardianId,
+      challengeId,
+      sessionId: child.sessionId,
       now: new Date("2026-05-31T12:21:00.000Z")
     });
 
@@ -304,6 +395,8 @@ describe("GuardianManagementService", () => {
         actorUserId: child.userId,
         childId: child.childId,
         secondaryGuardianId: thirdGuardian.guardianId,
+        challengeId,
+        sessionId: child.sessionId,
         now: new Date("2026-05-31T12:22:00.000Z")
       })
     ).resolves.toEqual({
@@ -319,12 +412,19 @@ describe("GuardianManagementService", () => {
     await createChildWithGuardian(cappedGuardian, "capped_3");
 
     const anotherChild = await createChildFixture("fourth_child_target");
+    const challengeId = await createPassedManageGuardiansChallenge(
+      anotherChild,
+      anotherChild.sessionId,
+      new Date("2026-05-31T12:29:00.000Z")
+    );
 
     await expect(
       guardians.inviteSecondaryGuardian({
         actorUserId: anotherChild.userId,
         childId: anotherChild.childId,
         secondaryGuardianId: cappedGuardian.guardianId,
+        challengeId,
+        sessionId: anotherChild.sessionId,
         now: new Date("2026-05-31T12:30:00.000Z")
       })
     ).resolves.toEqual({
@@ -345,7 +445,6 @@ describe("GuardianManagementService", () => {
         guardianId: cappedGuardian.guardianId,
         displayName: `Child ${unique("primary_capped_4")}`,
         gradeBand: "grade_3_4",
-        initialPoints: 100,
         idempotencyKey: `initial_${unique("primary_capped_4")}`,
         now: new Date("2026-05-31T12:31:00.000Z")
       })
@@ -357,12 +456,19 @@ describe("GuardianManagementService", () => {
 
   it("does not treat an existing primary link as a secondary invite", async () => {
     const child = await createChildFixture("primary_not_secondary");
+    const challengeId = await createPassedManageGuardiansChallenge(
+      child,
+      child.sessionId,
+      new Date("2026-05-31T12:34:00.000Z")
+    );
 
     await expect(
       guardians.inviteSecondaryGuardian({
         actorUserId: child.userId,
         childId: child.childId,
         secondaryGuardianId: child.guardianId,
+        challengeId,
+        sessionId: child.sessionId,
         now: new Date("2026-05-31T12:35:00.000Z")
       })
     ).resolves.toEqual({
@@ -375,6 +481,8 @@ describe("GuardianManagementService", () => {
         actorUserId: child.userId,
         childId: child.childId,
         secondaryGuardianId: child.guardianId,
+        challengeId,
+        sessionId: child.sessionId,
         now: new Date("2026-05-31T12:35:30.000Z")
       })
     ).resolves.toEqual({
@@ -386,11 +494,18 @@ describe("GuardianManagementService", () => {
   it("blocks a non-primary guardian from confirming a secondary guardian", async () => {
     const child = await createChildFixture("confirm_secondary");
     const secondaryGuardian = await createGuardianFixture("confirm_secondary_pending");
+    const challengeId = await createPassedManageGuardiansChallenge(
+      child,
+      child.sessionId,
+      new Date("2026-05-31T12:39:00.000Z")
+    );
 
     await guardians.inviteSecondaryGuardian({
       actorUserId: child.userId,
       childId: child.childId,
       secondaryGuardianId: secondaryGuardian.guardianId,
+      challengeId,
+      sessionId: child.sessionId,
       now: new Date("2026-05-31T12:40:00.000Z")
     });
 
@@ -483,12 +598,112 @@ describe("GuardianManagementService", () => {
     });
 
     const frozenDecision = await participation.evaluateChildParticipation({
+      actorUserId: child.userId,
       childId: child.childId,
       action: "publish",
       now: new Date("2026-05-31T12:51:00.000Z")
     });
 
     expect(frozenDecision).toEqual({
+      result: "rejected",
+      errorCode: "GUARDIAN_DISPUTE_FROZEN"
+    });
+  });
+
+  it("blocks guardian settings and guardian-link writes while a dispute is open", async () => {
+    const settingsChild = await createChildFixture("freeze_settings_child");
+    const settingsChallengeId = await createPassedChildChallenge(
+      settingsChild,
+      SensitiveOperationType.changeChildPermissions,
+      settingsChild.sessionId,
+      new Date("2026-05-31T12:50:30.000Z")
+    );
+    await guardians.openGuardianDispute({
+      actorUserId: settingsChild.userId,
+      childId: settingsChild.childId,
+      disputeType: "consent",
+      reason: "freeze settings",
+      now: new Date("2026-05-31T12:51:30.000Z")
+    });
+
+    await expect(
+      guardians.updateChildGuardianSettings({
+        actorUserId: settingsChild.userId,
+        childId: settingsChild.childId,
+        patch: {
+          canPublish: false
+        },
+        challengeId: settingsChallengeId,
+        sessionId: settingsChild.sessionId,
+        now: new Date("2026-05-31T12:52:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "GUARDIAN_DISPUTE_FROZEN"
+    });
+
+    const inviteChild = await createChildFixture("freeze_invite_child");
+    const invitedGuardian = await createGuardianFixture("freeze_invite_guardian");
+    const inviteChallengeId = await createPassedManageGuardiansChallenge(
+      inviteChild,
+      inviteChild.sessionId,
+      new Date("2026-05-31T12:51:30.000Z")
+    );
+    await guardians.openGuardianDispute({
+      actorUserId: inviteChild.userId,
+      childId: inviteChild.childId,
+      disputeType: "guardian_change",
+      reason: "freeze invite",
+      now: new Date("2026-05-31T12:52:30.000Z")
+    });
+
+    await expect(
+      guardians.inviteSecondaryGuardian({
+        actorUserId: inviteChild.userId,
+        childId: inviteChild.childId,
+        secondaryGuardianId: invitedGuardian.guardianId,
+        challengeId: inviteChallengeId,
+        sessionId: inviteChild.sessionId,
+        now: new Date("2026-05-31T12:53:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "GUARDIAN_DISPUTE_FROZEN"
+    });
+
+    const confirmChild = await createChildFixture("freeze_confirm_child");
+    const confirmedGuardian = await createGuardianFixture("freeze_confirm_guardian");
+    const confirmChallengeId = await createPassedManageGuardiansChallenge(
+      confirmChild,
+      confirmChild.sessionId,
+      new Date("2026-05-31T12:52:30.000Z")
+    );
+    await guardians.inviteSecondaryGuardian({
+      actorUserId: confirmChild.userId,
+      childId: confirmChild.childId,
+      secondaryGuardianId: confirmedGuardian.guardianId,
+      challengeId: confirmChallengeId,
+      sessionId: confirmChild.sessionId,
+      now: new Date("2026-05-31T12:53:30.000Z")
+    });
+    await guardians.openGuardianDispute({
+      actorUserId: confirmChild.userId,
+      childId: confirmChild.childId,
+      disputeType: "guardian_change",
+      reason: "freeze confirm",
+      now: new Date("2026-05-31T12:54:00.000Z")
+    });
+
+    await expect(
+      guardians.confirmSecondaryGuardian({
+        actorUserId: confirmChild.userId,
+        childId: confirmChild.childId,
+        secondaryGuardianId: confirmedGuardian.guardianId,
+        challengeId: confirmChallengeId,
+        sessionId: confirmChild.sessionId,
+        now: new Date("2026-05-31T12:54:30.000Z")
+      })
+    ).resolves.toEqual({
       result: "rejected",
       errorCode: "GUARDIAN_DISPUTE_FROZEN"
     });

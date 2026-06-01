@@ -138,6 +138,131 @@ describe("CommunityAccessService", () => {
     });
   });
 
+  it("lets activity admins list only their scoped community member review queue", async () => {
+    const onboarding = new OnboardingService(prisma, new FakeWechatAuthProvider());
+    const access = new CommunityAccessService(prisma);
+    const activityAdmin = await createGuardian(onboarding, "scoped_queue_admin");
+    const childGuardian = await createGuardian(onboarding, "scoped_queue_child");
+    const otherChildGuardian = await createGuardian(
+      onboarding,
+      "scoped_queue_other_child"
+    );
+    const pendingGuardian = await createGuardian(
+      onboarding,
+      "scoped_queue_pending_guardian"
+    );
+    const child = await onboarding.createChildWithPrimaryGuardian({
+      actorUserId: childGuardian.userId,
+      guardianId: childGuardian.guardianId,
+      displayName: `Scoped Queue Child ${Date.now()}`,
+      gradeBand: "grade_3_4",
+      idempotencyKey: `scoped_queue_child_${Date.now()}`,
+      now: new Date("2026-05-27T14:01:30.000Z")
+    });
+    const otherChild = await onboarding.createChildWithPrimaryGuardian({
+      actorUserId: otherChildGuardian.userId,
+      guardianId: otherChildGuardian.guardianId,
+      displayName: `Other Queue Child ${Date.now()}`,
+      gradeBand: "grade_3_4",
+      idempotencyKey: `scoped_queue_other_child_${Date.now()}`,
+      now: new Date("2026-05-27T14:01:40.000Z")
+    });
+    const pendingGuardianChild = await onboarding.createChildWithPrimaryGuardian({
+      actorUserId: pendingGuardian.userId,
+      guardianId: pendingGuardian.guardianId,
+      displayName: `Pending Guardian Queue Child ${Date.now()}`,
+      gradeBand: "grade_3_4",
+      idempotencyKey: `scoped_queue_pending_guardian_child_${Date.now()}`,
+      now: new Date("2026-05-27T14:01:50.000Z")
+    });
+
+    if (
+      child.result !== "accepted" ||
+      otherChild.result !== "accepted" ||
+      pendingGuardianChild.result !== "accepted"
+    ) {
+      throw new Error("expected child creation to succeed");
+    }
+
+    const community = await prisma.auctionCommunity.create({
+      data: {
+        name: `Scoped Queue Community ${Date.now()}`,
+        creatorGuardianId: activityAdmin.guardianId,
+        status: "active",
+        defaultAuctionDurationMinutes: 1440
+      }
+    });
+    const otherCommunity = await prisma.auctionCommunity.create({
+      data: {
+        name: `Other Scoped Queue Community ${Date.now()}`,
+        creatorGuardianId: activityAdmin.guardianId,
+        status: "active",
+        defaultAuctionDurationMinutes: 1440
+      }
+    });
+    await grantCommunityAdminScope(activityAdmin.userId, community.id);
+
+    const member = await prisma.communityMember.create({
+      data: {
+        communityId: community.id,
+        childId: child.childId,
+        status: "pending_admin",
+        rosterVerificationStatus: "matched",
+        guardianConfirmedAt: new Date("2026-05-27T14:02:00.000Z")
+      }
+    });
+    await prisma.communityMember.create({
+      data: {
+        communityId: otherCommunity.id,
+        childId: otherChild.childId,
+        status: "pending_admin",
+        rosterVerificationStatus: "matched",
+        guardianConfirmedAt: new Date("2026-05-27T14:02:10.000Z")
+      }
+    });
+    await prisma.communityMember.create({
+      data: {
+        communityId: community.id,
+        childId: pendingGuardianChild.childId,
+        status: "pending_guardian",
+        rosterVerificationStatus: "matched"
+      }
+    });
+
+    await expect(
+      access.listScopedMemberReviewQueue({
+        actorUserId: childGuardian.userId,
+        communityId: community.id,
+        now: new Date("2026-05-27T14:03:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "COMMUNITY_ADMIN_REQUIRED"
+    });
+
+    await expect(
+      access.listScopedMemberReviewQueue({
+        actorUserId: activityAdmin.userId,
+        communityId: community.id,
+        now: new Date("2026-05-27T14:03:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "accepted",
+      members: [
+        {
+          key: member.id,
+          communityId: community.id,
+          childId: child.childId,
+          guardianId: childGuardian.guardianId,
+          memberStatus: "pending_admin",
+          rosterVerificationStatus: "matched",
+          riskState: "clear",
+          requestedAt: "2026-05-27T14:02:00.000Z"
+        }
+      ]
+    });
+  });
+
   it("keeps invite validation, guardian confirmation, and admin approval separate", async () => {
     const onboarding = new OnboardingService(prisma, new FakeWechatAuthProvider());
     const access = new CommunityAccessService(prisma);
@@ -148,7 +273,6 @@ describe("CommunityAccessService", () => {
       guardianId: childGuardian.guardianId,
       displayName: `Community Child ${Date.now()}`,
       gradeBand: "grade_3_4",
-      initialPoints: 100,
       idempotencyKey: `community_child_initial_${Date.now()}`,
       now: new Date("2026-05-27T14:02:00.000Z")
     });
@@ -178,6 +302,32 @@ describe("CommunityAccessService", () => {
     if (invite.result !== "accepted") {
       throw new Error("expected invite creation to succeed");
     }
+    const inviteAudit = await prisma.auditLog.findFirstOrThrow({
+      where: {
+        action: "community_invite_code.create",
+        targetId: invite.inviteCodeId
+      },
+      select: {
+        actorUserId: true,
+        afterJson: true
+      }
+    });
+    expect(inviteAudit).toEqual({
+      actorUserId: admin.userId,
+      afterJson: expect.objectContaining({
+        communityId: community.id,
+        ruleVersionId: activeRule.id,
+        codeHash: expect.any(String),
+        maxUses: 1,
+        expiresAt: null,
+        status: "active"
+      })
+    });
+    expect(inviteAudit.afterJson).not.toEqual(
+      expect.objectContaining({
+        code: invite.code
+      })
+    );
 
     const requested = await access.requestJoinWithInvite({
       actorUserId: childGuardian.userId,
@@ -327,6 +477,41 @@ describe("CommunityAccessService", () => {
       now: new Date("2026-05-27T14:04:55.000Z")
     });
 
+    const memberForRosterAudit = await prisma.communityMember.findUniqueOrThrow({
+      where: {
+        communityId_childId: {
+          communityId: community.id,
+          childId: child.childId
+        }
+      },
+      select: {
+        id: true
+      }
+    });
+    const rosterAudit = await prisma.auditLog.findFirstOrThrow({
+      where: {
+        action: "community_member.record_roster_verification",
+        targetId: memberForRosterAudit.id
+      },
+      orderBy: {
+        createdAt: "desc"
+      },
+      select: {
+        afterJson: true
+      }
+    });
+    expect(rosterAudit.afterJson).toEqual(
+      expect.objectContaining({
+        rosterVerificationStatus: "matched",
+        evidenceAudit: {
+          recorded: true,
+          kind: "object",
+          sha256: expect.any(String)
+        }
+      })
+    );
+    expect(JSON.stringify(rosterAudit.afterJson)).not.toContain("class-3a");
+
     const approved = await access.approveCommunityMember({
       actorUserId: admin.userId,
       communityId: community.id,
@@ -376,7 +561,6 @@ describe("CommunityAccessService", () => {
       guardianId: childGuardian.guardianId,
       displayName: `Frozen Join Child ${Date.now()}`,
       gradeBand: "grade_3_4",
-      initialPoints: 100,
       idempotencyKey: `frozen_join_child_${Date.now()}`,
       now: new Date("2026-05-27T14:02:00.000Z")
     });
@@ -441,7 +625,6 @@ describe("CommunityAccessService", () => {
       guardianId: firstGuardian.guardianId,
       displayName: `Final Slot First ${Date.now()}`,
       gradeBand: "grade_3_4",
-      initialPoints: 100,
       idempotencyKey: `final_slot_first_initial_${Date.now()}`,
       now: new Date("2026-05-27T15:00:00.000Z")
     });
@@ -450,7 +633,6 @@ describe("CommunityAccessService", () => {
       guardianId: secondGuardian.guardianId,
       displayName: `Final Slot Second ${Date.now()}`,
       gradeBand: "grade_3_4",
-      initialPoints: 100,
       idempotencyKey: `final_slot_second_initial_${Date.now()}`,
       now: new Date("2026-05-27T15:00:00.000Z")
     });
@@ -531,7 +713,6 @@ describe("CommunityAccessService", () => {
       guardianId: childGuardian.guardianId,
       displayName: `Repeat Child ${Date.now()}`,
       gradeBand: "grade_3_4",
-      initialPoints: 100,
       idempotencyKey: `repeat_child_initial_${Date.now()}`,
       now: new Date("2026-05-27T16:00:00.000Z")
     });
@@ -623,7 +804,6 @@ describe("CommunityAccessService", () => {
       guardianId: childGuardian.guardianId,
       displayName: `Repeat Concurrent Child ${Date.now()}`,
       gradeBand: "grade_3_4",
-      initialPoints: 100,
       idempotencyKey: `repeat_concurrent_child_initial_${Date.now()}`,
       now: new Date("2026-05-27T16:10:00.000Z")
     });
@@ -715,7 +895,6 @@ describe("CommunityAccessService", () => {
       guardianId: childGuardian.guardianId,
       displayName: `Manual Exception Child ${Date.now()}`,
       gradeBand: "grade_3_4",
-      initialPoints: 100,
       idempotencyKey: `manual_exception_child_initial_${Date.now()}`,
       now: new Date("2026-05-27T16:20:00.000Z")
     });
@@ -848,7 +1027,6 @@ describe("CommunityAccessService", () => {
       guardianId: childGuardian.guardianId,
       displayName: `Second Community Child ${Date.now()}`,
       gradeBand: "grade_3_4",
-      initialPoints: 100,
       idempotencyKey: `second_community_initial_${Date.now()}`,
       now: new Date("2026-05-27T17:00:00.000Z")
     });

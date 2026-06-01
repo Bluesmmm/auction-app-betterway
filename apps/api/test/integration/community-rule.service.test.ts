@@ -193,7 +193,6 @@ describe("CommunityRuleService", () => {
       guardianId: guardian.guardianId,
       displayName: `Rule Member Child ${unique("child")}`,
       gradeBand: "grade_3_4",
-      initialPoints: 100,
       idempotencyKey: `rule_member_initial_${unique("child")}`,
       now: new Date("2026-05-31T16:10:00.000Z")
     });

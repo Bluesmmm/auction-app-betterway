@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccountsController } from "../../src/accounts/accounts.controller.js";
 import { GuardianManagementService } from "../../src/accounts/guardian-management.service.js";
 import { OnboardingService } from "../../src/accounts/onboarding.service.js";
+import { SensitiveOperationService } from "../../src/accounts/sensitive-operation.service.js";
 import { SessionService } from "../../src/accounts/session.service.js";
 import { SessionTokenService } from "../../src/accounts/session-token.service.js";
 
@@ -31,6 +32,10 @@ function buildController() {
     updateChildGuardianSettings: vi.fn(),
     openGuardianDispute: vi.fn()
   } as unknown as GuardianManagementService;
+  const sensitiveOperations = {
+    createChallenge: vi.fn(),
+    markPassed: vi.fn()
+  } as unknown as SensitiveOperationService;
   const sessionTokens = {
     verifyAccessToken: vi.fn().mockReturnValue({
       result: "accepted",
@@ -45,11 +50,13 @@ function buildController() {
       onboarding,
       sessions,
       guardians,
+      sensitiveOperations,
       sessionTokens
     ),
     onboarding,
     sessions,
     guardians,
+    sensitiveOperations,
     sessionTokens
   };
 }
@@ -247,7 +254,6 @@ describe("AccountsController", () => {
         guardianId: "guardian_5",
         displayName: "Kid",
         gradeBand: "grade_3_4",
-        initialPoints: 120,
         idempotencyKey: "child_create_1"
       },
       AUTHORIZATION
@@ -258,7 +264,6 @@ describe("AccountsController", () => {
       guardianId: "guardian_5",
       displayName: "Kid",
       gradeBand: "grade_3_4",
-      initialPoints: 120,
       idempotencyKey: "child_create_1",
       now: new Date("2026-05-31T12:20:00.000Z")
     });
@@ -360,6 +365,89 @@ describe("AccountsController", () => {
     });
   });
 
+  it("exposes sensitive operation challenge creation over HTTP", async () => {
+    setServerTime("2026-05-31T12:31:00.000Z");
+    const { controller, sensitiveOperations } = buildController();
+    vi.mocked(sensitiveOperations.createChallenge).mockResolvedValue({
+      result: "accepted",
+      challengeId: "challenge_1",
+      actorUserId: AUTH_USER_ID,
+      operationType: "create_community",
+      targetType: "guardian_profile",
+      targetId: "guardian_1",
+      expiresAt: "2026-05-31T12:36:00.000Z",
+      status: "pending"
+    });
+
+    const response = await controller.createSensitiveOperationChallenge(
+      {
+        operationType: "create_community",
+        targetType: "guardian_profile",
+        targetId: "guardian_1"
+      },
+      AUTHORIZATION
+    );
+
+    expect(sensitiveOperations.createChallenge).toHaveBeenCalledWith({
+      actorUserId: AUTH_USER_ID,
+      sessionId: AUTH_SESSION_ID,
+      operationType: "create_community",
+      targetType: "guardian_profile",
+      targetId: "guardian_1",
+      now: new Date("2026-05-31T12:31:00.000Z")
+    });
+    expectWriteEnvelope(response, {
+      result: "accepted",
+      serverTime: "2026-05-31T12:31:00.000Z",
+      targetType: "sensitive_operation_challenge",
+      targetId: "challenge_1",
+      latestStatus: "pending"
+    });
+    expect(response).toEqual(
+      expect.objectContaining({
+        operationType: "create_community",
+        operationTargetType: "guardian_profile",
+        operationTargetId: "guardian_1"
+      })
+    );
+  });
+
+  it("exposes sensitive operation challenge verification over HTTP", async () => {
+    setServerTime("2026-05-31T12:31:30.000Z");
+    const { controller, sensitiveOperations } = buildController();
+    vi.mocked(sensitiveOperations.markPassed).mockResolvedValue({
+      result: "accepted",
+      challengeId: "challenge_2",
+      actorUserId: AUTH_USER_ID,
+      status: "passed",
+      passedAt: "2026-05-31T12:31:30.000Z",
+      expiresAt: "2026-05-31T12:36:00.000Z"
+    });
+
+    const response = await controller.verifySensitiveOperationChallenge(
+      "challenge_2",
+      {
+        verificationCode: "135790"
+      },
+      AUTHORIZATION
+    );
+
+    expect(sensitiveOperations.markPassed).toHaveBeenCalledWith({
+      challengeId: "challenge_2",
+      actorUserId: AUTH_USER_ID,
+      sessionId: AUTH_SESSION_ID,
+      verificationCode: "135790",
+      now: new Date("2026-05-31T12:31:30.000Z")
+    });
+    expectWriteEnvelope(response, {
+      result: "accepted",
+      serverTime: "2026-05-31T12:31:30.000Z",
+      targetType: "sensitive_operation_challenge",
+      targetId: "challenge_2",
+      latestStatus: "passed"
+    });
+  });
+
   it("rejects protected account writes without Bearer auth", async () => {
     setServerTime("2026-05-31T12:32:00.000Z");
     const { controller } = buildController();
@@ -369,7 +457,6 @@ describe("AccountsController", () => {
         guardianId: "guardian_5",
         displayName: "Kid",
         gradeBand: "grade_3_4",
-        initialPoints: 120,
         idempotencyKey: "child_create_1"
       })
     ).rejects.toBeInstanceOf(UnauthorizedException);

@@ -71,14 +71,19 @@ import { AccountsController } from "./accounts.controller.js";
     },
     {
       provide: ChildParticipationService,
-      inject: [PrismaService, SessionService],
-      useFactory: (prisma: PrismaService, sessions: SessionService) =>
-        new ChildParticipationService(prisma, sessions)
+      inject: [PrismaService, SensitiveOperationService],
+      useFactory: (
+        prisma: PrismaService,
+        sensitiveOperations: SensitiveOperationService
+      ) => new ChildParticipationService(prisma, sensitiveOperations)
     },
     {
       provide: RiskGovernanceService,
-      inject: [PrismaService],
-      useFactory: (prisma: PrismaService) => new RiskGovernanceService(prisma)
+      inject: [PrismaService, SensitiveOperationService],
+      useFactory: (
+        prisma: PrismaService,
+        sensitiveOperations: SensitiveOperationService
+      ) => new RiskGovernanceService(prisma, sensitiveOperations)
     }
   ],
   exports: [

@@ -217,7 +217,6 @@ describe("CommunityApplicationService", () => {
       guardianId: frozenGuardian.guardianId,
       displayName: `Child ${unique("frozen")}`,
       gradeBand: "grade_3_4",
-      initialPoints: 100,
       idempotencyKey: `initial_${unique("frozen")}`,
       now: new Date("2026-05-31T14:03:00.000Z")
     });

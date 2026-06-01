@@ -31,9 +31,11 @@ import { CommunitiesController } from "./communities.controller.js";
     },
     {
       provide: CommunityAdminAuthorizationService,
-      inject: [PrismaService],
-      useFactory: (prisma: PrismaService) =>
-        new CommunityAdminAuthorizationService(prisma)
+      inject: [PrismaService, SensitiveOperationService],
+      useFactory: (
+        prisma: PrismaService,
+        sensitiveOperations: SensitiveOperationService
+      ) => new CommunityAdminAuthorizationService(prisma, sensitiveOperations)
     },
     {
       provide: CommunityRuleService,

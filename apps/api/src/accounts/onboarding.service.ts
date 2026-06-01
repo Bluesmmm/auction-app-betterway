@@ -1,4 +1,10 @@
-import type { ChildStatus, GuardianStatus, PrismaClient } from "@prisma/client";
+import type {
+  ChildStatus,
+  GuardianStatus,
+  Prisma,
+  PrismaClient
+} from "@prisma/client";
+import { createHash } from "node:crypto";
 import type { WechatAuthProvider } from "../providers/provider-contracts.js";
 import type { SessionService } from "./session.service.js";
 
@@ -64,7 +70,6 @@ export type CreateChildWithPrimaryGuardianInput = {
   guardianId: string;
   displayName: string;
   gradeBand: string;
-  initialPoints: number;
   idempotencyKey: string;
   now?: Date;
 };
@@ -81,9 +86,30 @@ export type CreateChildWithPrimaryGuardianResult =
       errorCode:
         | "GUARDIAN_NOT_ACTIVE"
         | "GUARDIAN_NOT_OWNED_BY_ACTOR"
-        | "INITIAL_POINTS_INVALID"
-        | "GUARDIAN_CHILD_LIMIT_EXCEEDED";
+        | "GUARDIAN_CHILD_LIMIT_EXCEEDED"
+        | "IDEMPOTENCY_KEY_REQUIRED"
+        | "IDEMPOTENCY_CONFLICT";
     };
+
+type CreateChildWithPrimaryGuardianErrorCode = Extract<
+  CreateChildWithPrimaryGuardianResult,
+  { result: "rejected" }
+>["errorCode"];
+
+type CreateChildIdempotencyReservation =
+  | {
+      result: "reserved";
+      id: string;
+    }
+  | {
+      result: "replay";
+      response: CreateChildWithPrimaryGuardianResult;
+    }
+  | {
+      result: "conflict";
+    };
+
+export const STAGE2_CHILD_INITIAL_POINTS = 100;
 
 export class OnboardingService {
   constructor(
@@ -203,8 +229,7 @@ export class OnboardingService {
         phoneHash: input.phoneHash,
         phoneLast4: input.phoneLast4,
         consentVersion: input.consentVersion,
-        consentedAt: input.consentedAt,
-        status: "active"
+        consentedAt: input.consentedAt
       },
       create: {
         userId: input.userId,
@@ -226,46 +251,46 @@ export class OnboardingService {
   async createChildWithPrimaryGuardian(
     input: CreateChildWithPrimaryGuardianInput
   ): Promise<CreateChildWithPrimaryGuardianResult> {
-    if (!Number.isInteger(input.initialPoints) || input.initialPoints <= 0) {
+    if (!input.idempotencyKey) {
       return {
         result: "rejected",
-        errorCode: "INITIAL_POINTS_INVALID"
-      };
-    }
-
-    const guardian = await this.prisma.guardianProfile.findUnique({
-      where: {
-        id: input.guardianId
-      }
-    });
-
-    if (!guardian || guardian.status !== "active") {
-      return {
-        result: "rejected",
-        errorCode: "GUARDIAN_NOT_ACTIVE"
-      };
-    }
-
-    if (guardian.userId !== input.actorUserId) {
-      return {
-        result: "rejected",
-        errorCode: "GUARDIAN_NOT_OWNED_BY_ACTOR"
+        errorCode: "IDEMPOTENCY_KEY_REQUIRED"
       };
     }
 
     const now = input.now ?? new Date();
+    const requestHash = createStableHash({
+      guardianId: input.guardianId,
+      displayName: input.displayName,
+      gradeBand: input.gradeBand
+    });
 
     return this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT "id"
-        FROM "GuardianProfile"
-        WHERE "id" = ${guardian.id}
-        FOR UPDATE
-      `;
+      await lockGuardian(tx, input.guardianId);
+
+      const idempotency = await reserveCreateChildIdempotencyRecord(tx, {
+        key: input.idempotencyKey,
+        actorUserId: input.actorUserId,
+        action: "child_profile.create_with_primary_guardian",
+        targetType: "guardian_profile",
+        targetId: input.guardianId,
+        requestHash
+      });
+
+      if (idempotency.result === "conflict") {
+        return {
+          result: "rejected",
+          errorCode: "IDEMPOTENCY_CONFLICT"
+        };
+      }
+
+      if (idempotency.result === "replay") {
+        return idempotency.response;
+      }
 
       const lockedGuardian = await tx.guardianProfile.findUnique({
         where: {
-          id: guardian.id
+          id: input.guardianId
         },
         select: {
           userId: true,
@@ -274,22 +299,22 @@ export class OnboardingService {
       });
 
       if (!lockedGuardian || lockedGuardian.status !== "active") {
-        return {
+        return completeIdempotentCreateChild(tx, idempotency.id, {
           result: "rejected",
           errorCode: "GUARDIAN_NOT_ACTIVE"
-        };
+        });
       }
 
       if (lockedGuardian.userId !== input.actorUserId) {
-        return {
+        return completeIdempotentCreateChild(tx, idempotency.id, {
           result: "rejected",
           errorCode: "GUARDIAN_NOT_OWNED_BY_ACTOR"
-        };
+        });
       }
 
       const activeChildCount = await tx.guardianChildLink.count({
         where: {
-          guardianId: guardian.id,
+          guardianId: input.guardianId,
           status: "active",
           child: {
             status: "active"
@@ -298,10 +323,10 @@ export class OnboardingService {
       });
 
       if (activeChildCount >= 3) {
-        return {
+        return completeIdempotentCreateChild(tx, idempotency.id, {
           result: "rejected",
           errorCode: "GUARDIAN_CHILD_LIMIT_EXCEEDED"
-        };
+        });
       }
 
       const child = await tx.childProfile.create({
@@ -309,14 +334,14 @@ export class OnboardingService {
           displayName: input.displayName,
           gradeBand: input.gradeBand,
           status: "active",
-          createdByGuardianId: guardian.id,
+          createdByGuardianId: input.guardianId,
           initialPointsGrantedAt: now
         }
       });
 
       await tx.guardianChildLink.create({
         data: {
-          guardianId: guardian.id,
+          guardianId: input.guardianId,
           childId: child.id,
           role: "primary",
           status: "active",
@@ -340,9 +365,9 @@ export class OnboardingService {
       const pointAccount = await tx.pointAccount.create({
         data: {
           childId: child.id,
-          availablePoints: input.initialPoints,
+          availablePoints: STAGE2_CHILD_INITIAL_POINTS,
           frozenPoints: 0,
-          totalEarnedPoints: input.initialPoints,
+          totalEarnedPoints: STAGE2_CHILD_INITIAL_POINTS,
           totalSpentPoints: 0,
           ledgerEntries: {
             create: {
@@ -352,8 +377,8 @@ export class OnboardingService {
                 }
               },
               type: "initial_grant",
-              amountPoints: input.initialPoints,
-              availableAfter: input.initialPoints,
+              amountPoints: STAGE2_CHILD_INITIAL_POINTS,
+              availableAfter: STAGE2_CHILD_INITIAL_POINTS,
               frozenAfter: 0,
               relatedType: "child_profile",
               relatedId: child.id,
@@ -376,18 +401,152 @@ export class OnboardingService {
           targetType: "child_profile",
           targetId: child.id,
           afterJson: {
-            guardianId: guardian.id,
-            initialPoints: input.initialPoints
+            guardianId: input.guardianId,
+            initialPoints: STAGE2_CHILD_INITIAL_POINTS
           }
         }
       });
 
-      return {
+      return completeIdempotentCreateChild(tx, idempotency.id, {
         result: "accepted",
         childId: child.id,
         childStatus: child.status,
         availablePoints: pointAccount.availablePoints
-      };
+      });
     });
   }
+}
+
+async function lockGuardian(tx: Prisma.TransactionClient, guardianId: string) {
+  await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT "id"
+    FROM "GuardianProfile"
+    WHERE "id" = ${guardianId}
+    FOR UPDATE
+  `;
+}
+
+async function reserveCreateChildIdempotencyRecord(
+  tx: Prisma.TransactionClient,
+  input: {
+    key: string;
+    actorUserId: string;
+    action: string;
+    targetType: string;
+    targetId: string;
+    requestHash: string;
+  }
+): Promise<CreateChildIdempotencyReservation> {
+  const existing = await tx.idempotencyRecord.findUnique({
+    where: {
+      key_actorUserId_action_targetType_targetId: {
+        key: input.key,
+        actorUserId: input.actorUserId,
+        action: input.action,
+        targetType: input.targetType,
+        targetId: input.targetId
+      }
+    },
+    select: {
+      id: true,
+      requestHash: true,
+      status: true,
+      responseJson: true
+    }
+  });
+
+  if (existing) {
+    if (existing.requestHash !== input.requestHash) {
+      return {
+        result: "conflict"
+      };
+    }
+
+    const response = parseCreateChildWithPrimaryGuardianResult(
+      existing.responseJson
+    );
+    if (existing.status === "completed" && response) {
+      return {
+        result: "replay",
+        response
+      };
+    }
+
+    return {
+      result: "conflict"
+    };
+  }
+
+  const created = await tx.idempotencyRecord.create({
+    data: {
+      key: input.key,
+      actorUserId: input.actorUserId,
+      action: input.action,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      requestHash: input.requestHash,
+      status: "processing"
+    },
+    select: {
+      id: true
+    }
+  });
+
+  return {
+    result: "reserved",
+    id: created.id
+  };
+}
+
+async function completeIdempotentCreateChild(
+  tx: Prisma.TransactionClient,
+  idempotencyRecordId: string,
+  response: CreateChildWithPrimaryGuardianResult
+): Promise<CreateChildWithPrimaryGuardianResult> {
+  await tx.idempotencyRecord.update({
+    where: {
+      id: idempotencyRecordId
+    },
+    data: {
+      status: "completed",
+      responseJson: response
+    }
+  });
+
+  return response;
+}
+
+function parseCreateChildWithPrimaryGuardianResult(
+  value: Prisma.JsonValue | null
+): CreateChildWithPrimaryGuardianResult | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const response = value as Record<string, unknown>;
+  if (response.result === "accepted") {
+    return typeof response.childId === "string" &&
+      typeof response.childStatus === "string" &&
+      typeof response.availablePoints === "number"
+      ? {
+          result: "accepted",
+          childId: response.childId,
+          childStatus: response.childStatus as ChildStatus,
+          availablePoints: response.availablePoints
+        }
+      : null;
+  }
+
+  if (response.result === "rejected" && typeof response.errorCode === "string") {
+    return {
+      result: "rejected",
+      errorCode: response.errorCode as CreateChildWithPrimaryGuardianErrorCode
+    };
+  }
+
+  return null;
+}
+
+function createStableHash(value: Record<string, string>): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }

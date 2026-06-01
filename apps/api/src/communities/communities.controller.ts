@@ -13,6 +13,7 @@ import type {
   RiskSignalType,
   RosterVerificationStatus
 } from "@prisma/client";
+import "reflect-metadata";
 import {
   authenticateBearerSession,
   type AuthenticatedActor
@@ -72,6 +73,19 @@ export class CommunitiesController {
     const actor = await this.authenticate(authorization, now);
     return this.access.listMemberReviewQueue({
       platformAdminUserId: actor.userId,
+      now
+    });
+  }
+
+  async listScopedMemberReviewQueue(
+    communityId: string,
+    authorization?: string
+  ) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    return this.access.listScopedMemberReviewQueue({
+      actorUserId: actor.userId,
+      communityId,
       now
     });
   }
@@ -219,6 +233,7 @@ export class CommunitiesController {
     communityId: string,
     body: {
       targetUserId: string;
+      challengeId?: string;
     },
     authorization?: string
   ) {
@@ -226,6 +241,8 @@ export class CommunitiesController {
     const actor = await this.authenticate(authorization, now);
     const result = await this.adminAuthorizations.grantActivityAdmin({
       platformAdminUserId: actor.userId,
+      sessionId: actor.sessionId,
+      challengeId: body.challengeId,
       targetUserId: body.targetUserId,
       communityId,
       now
@@ -260,6 +277,7 @@ export class CommunitiesController {
     body: {
       targetUserId: string;
       reason: string;
+      challengeId?: string;
     },
     authorization?: string
   ) {
@@ -267,6 +285,8 @@ export class CommunitiesController {
     const actor = await this.authenticate(authorization, now);
     const result = await this.adminAuthorizations.revokeActivityAdmin({
       platformAdminUserId: actor.userId,
+      sessionId: actor.sessionId,
+      challengeId: body.challengeId,
       targetUserId: body.targetUserId,
       communityId,
       reason: body.reason,
@@ -596,6 +616,7 @@ export class CommunitiesController {
       scope: RiskRestrictionScope;
       targetId: string;
       reason: string;
+      challengeId?: string;
       expiresAt?: Date | string;
     },
     authorization?: string
@@ -604,6 +625,8 @@ export class CommunitiesController {
     const actor = await this.authenticate(authorization, now);
     const result = await this.risks.applyRiskRestriction({
       platformAdminUserId: actor.userId,
+      sessionId: actor.sessionId,
+      challengeId: body.challengeId,
       type: body.type,
       scope: body.scope,
       targetId: body.targetId,
@@ -640,6 +663,7 @@ export class CommunitiesController {
     restrictionId: string,
     body: {
       resolutionText: string;
+      challengeId?: string;
     },
     authorization?: string
   ) {
@@ -647,6 +671,8 @@ export class CommunitiesController {
     const actor = await this.authenticate(authorization, now);
     const result = await this.risks.resolveRiskRestriction({
       platformAdminUserId: actor.userId,
+      sessionId: actor.sessionId,
+      challengeId: body.challengeId,
       restrictionId,
       resolutionText: body.resolutionText,
       now
@@ -691,6 +717,14 @@ export class CommunitiesController {
   }
 }
 
+defineConstructorParamTypes(CommunitiesController, [
+  CommunityApplicationService,
+  CommunityAdminAuthorizationService,
+  CommunityAccessService,
+  RiskGovernanceService,
+  SessionTokenService,
+  SessionService
+]);
 Controller("communities")(CommunitiesController);
 applyMethodDecorator(
   Get("creation-requests"),
@@ -701,6 +735,11 @@ applyMethodDecorator(
   Get("member-review-queue"),
   CommunitiesController.prototype,
   "listMemberReviewQueue"
+);
+applyMethodDecorator(
+  Get(":communityId/member-review-queue"),
+  CommunitiesController.prototype,
+  "listScopedMemberReviewQueue"
 );
 applyMethodDecorator(
   Get("risk-signals"),
@@ -788,6 +827,18 @@ applyParameterDecorator(
   CommunitiesController.prototype,
   "listMemberReviewQueue",
   0
+);
+applyParameterDecorator(
+  Param("communityId"),
+  CommunitiesController.prototype,
+  "listScopedMemberReviewQueue",
+  0
+);
+applyParameterDecorator(
+  Headers("authorization"),
+  CommunitiesController.prototype,
+  "listScopedMemberReviewQueue",
+  1
 );
 applyParameterDecorator(
   Headers("authorization"),
@@ -1080,4 +1131,8 @@ function applyMethodDecorator(
   }
 
   decorator(target, propertyKey, descriptor);
+}
+
+function defineConstructorParamTypes(target: object, paramTypes: unknown[]) {
+  Reflect.defineMetadata("design:paramtypes", paramTypes, target);
 }

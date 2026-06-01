@@ -12,6 +12,7 @@ import {
   createInviteCode,
   grantActivityAdmin,
   listCommunityCreationRequests,
+  listScopedMemberReviewQueue,
   recordRosterVerification,
   recordRiskSignal,
   rejectCommunityRequest,
@@ -79,6 +80,7 @@ describe("admin Stage 2 shell", () => {
     expect(typeof createInviteCode).toBe("function");
     expect(typeof recordRosterVerification).toBe("function");
     expect(typeof approveCommunityMember).toBe("function");
+    expect(typeof listScopedMemberReviewQueue).toBe("function");
     expect(typeof reviewRiskSignal).toBe("function");
     expect(typeof recordRiskSignal).toBe("function");
     expect(typeof applyRiskRestriction).toBe("function");
@@ -108,6 +110,10 @@ describe("admin Stage 2 shell", () => {
       createInviteCode: {
         method: "POST",
         path: "/communities/:communityId/invites"
+      },
+      listScopedMemberReviewQueue: {
+        method: "GET",
+        path: "/communities/:communityId/member-review-queue"
       },
       recordRosterVerification: {
         method: "POST",
@@ -143,6 +149,11 @@ describe("admin Stage 2 shell", () => {
     ).toBe(
       "/communities/community_alpha/members/child_alpha/roster-verification"
     );
+    expect(
+      buildStage2AdminCommandPath("listScopedMemberReviewQueue", {
+        communityId: "community_alpha"
+      })
+    ).toBe("/communities/community_alpha/member-review-queue");
   });
 
   it("parses review results and sends Stage 2 command payloads through the typed helpers", async () => {

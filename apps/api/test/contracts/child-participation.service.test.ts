@@ -29,7 +29,7 @@ const sensitiveOperations = new SensitiveOperationService(
   new FakeSensitiveOperationVerificationProvider(),
   () => verificationCode
 );
-const participation = new ChildParticipationService(prisma, sessions);
+const participation = new ChildParticipationService(prisma, sensitiveOperations);
 
 type GuardianFixture = {
   userId: string;
@@ -39,6 +39,7 @@ type GuardianFixture = {
 type ChildFixture = GuardianFixture & {
   childId: string;
   sessionId: string;
+  deviceFingerprintHash: string;
 };
 
 function unique(label: string) {
@@ -78,7 +79,6 @@ async function createChildFixture(label: string): Promise<ChildFixture> {
     guardianId: guardian.guardianId,
     displayName: `Child ${token}`,
     gradeBand: "grade_3_4",
-    initialPoints: 100,
     idempotencyKey: `initial_${token}`,
     now: new Date("2026-05-31T13:02:00.000Z")
   });
@@ -87,9 +87,10 @@ async function createChildFixture(label: string): Promise<ChildFixture> {
     throw new Error("expected child creation to succeed");
   }
 
+  const deviceFingerprintHash = `device_${token}`;
   const session = await sessions.createSession({
     userId: guardian.userId,
-    deviceFingerprintHash: `device_${token}`,
+    deviceFingerprintHash,
     ipHash: `ip_${token}`,
     userAgentHash: `ua_${token}`,
     now: new Date("2026-05-31T13:02:30.000Z")
@@ -102,7 +103,8 @@ async function createChildFixture(label: string): Promise<ChildFixture> {
   return {
     ...guardian,
     childId: child.childId,
-    sessionId: session.sessionId
+    sessionId: session.sessionId,
+    deviceFingerprintHash
   };
 }
 
@@ -196,6 +198,58 @@ describe("ChildParticipationService", () => {
     });
   });
 
+  it("requires the actor to represent the target child", async () => {
+    const child = await createChildFixture("actor_boundary");
+    const unrelatedGuardian = await createGuardianFixture("actor_boundary_other");
+
+    await expect(
+      participation.evaluateChildParticipation({
+        childId: child.childId,
+        action: "join_community",
+        now: new Date("2026-05-31T13:11:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "ACTOR_NOT_AUTHORIZED"
+    });
+
+    await expect(
+      participation.evaluateChildParticipation({
+        actorUserId: unrelatedGuardian.userId,
+        childId: child.childId,
+        action: "join_community",
+        now: new Date("2026-05-31T13:11:30.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "ACTOR_NOT_AUTHORIZED"
+    });
+  });
+
+  it("rejects child participation when the child profile is not active", async () => {
+    const child = await createChildFixture("inactive_child");
+    await prisma.childProfile.update({
+      where: {
+        id: child.childId
+      },
+      data: {
+        status: "restricted"
+      }
+    });
+
+    await expect(
+      participation.evaluateChildParticipation({
+        actorUserId: child.userId,
+        childId: child.childId,
+        action: "join_community",
+        now: new Date("2026-05-31T13:12:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "CHILD_NOT_ACTIVE"
+    });
+  });
+
   it("enforces browse membership and allows join_community when the child is otherwise eligible", async () => {
     const child = await createChildFixture("browse_membership");
     const community = await prisma.auctionCommunity.create({
@@ -209,6 +263,7 @@ describe("ChildParticipationService", () => {
 
     await expect(
       participation.evaluateChildParticipation({
+        actorUserId: child.userId,
         childId: child.childId,
         action: "join_community",
         communityId: community.id,
@@ -220,6 +275,7 @@ describe("ChildParticipationService", () => {
 
     await expect(
       participation.evaluateChildParticipation({
+        actorUserId: child.userId,
         childId: child.childId,
         action: "browse_community",
         communityId: community.id,
@@ -242,6 +298,7 @@ describe("ChildParticipationService", () => {
 
     await expect(
       participation.evaluateChildParticipation({
+        actorUserId: child.userId,
         childId: child.childId,
         action: "browse_community",
         communityId: community.id,
@@ -266,6 +323,7 @@ describe("ChildParticipationService", () => {
     for (const action of ["publish", "bid"] as const) {
       await expect(
         participation.evaluateChildParticipation({
+          actorUserId: child.userId,
           childId: child.childId,
           action,
           communityId: community.id,
@@ -290,6 +348,7 @@ describe("ChildParticipationService", () => {
 
     await expect(
       participation.evaluateChildParticipation({
+        actorUserId: child.userId,
         childId: child.childId,
         action: "publish",
         communityId: community.id,
@@ -301,6 +360,7 @@ describe("ChildParticipationService", () => {
 
     await expect(
       participation.evaluateChildParticipation({
+        actorUserId: child.userId,
         childId: child.childId,
         action: "bid",
         communityId: community.id,
@@ -312,12 +372,46 @@ describe("ChildParticipationService", () => {
     });
   });
 
+  it("rejects community-scoped actions when the community is suspended", async () => {
+    const child = await createChildFixture("suspended_community");
+    const communityId = await createActiveCommunityMembership(
+      child,
+      "suspended_community"
+    );
+
+    await prisma.auctionCommunity.update({
+      where: {
+        id: communityId
+      },
+      data: {
+        status: "suspended"
+      }
+    });
+
+    for (const action of ["browse_community", "publish", "bid"] as const) {
+      await expect(
+        participation.evaluateChildParticipation({
+          actorUserId: child.userId,
+          childId: child.childId,
+          action,
+          communityId,
+          amountPoints: action === "bid" ? 10 : undefined,
+          now: new Date("2026-05-31T13:27:15.000Z")
+        })
+      ).resolves.toEqual({
+        result: "rejected",
+        errorCode: "COMMUNITY_NOT_ACTIVE"
+      });
+    }
+  });
+
   it("rejects community-scoped actions when the community id is missing", async () => {
     const child = await createChildFixture("missing_community_id");
 
     for (const action of ["browse_community", "publish", "bid"] as const) {
       await expect(
         participation.evaluateChildParticipation({
+          actorUserId: child.userId,
           childId: child.childId,
           action,
           amountPoints: action === "bid" ? 10 : undefined,
@@ -339,6 +433,7 @@ describe("ChildParticipationService", () => {
 
     await expect(
       participation.evaluateChildParticipation({
+        actorUserId: publishChild.userId,
         childId: publishChild.childId,
         action: "publish",
         communityId: publishCommunityId,
@@ -359,6 +454,7 @@ describe("ChildParticipationService", () => {
 
     await expect(
       participation.evaluateChildParticipation({
+        actorUserId: publishChild.userId,
         childId: publishChild.childId,
         action: "publish",
         communityId: publishCommunityId,
@@ -382,6 +478,7 @@ describe("ChildParticipationService", () => {
 
     await expect(
       participation.evaluateChildParticipation({
+        actorUserId: frozenChild.userId,
         childId: frozenChild.childId,
         action: "publish",
         now: new Date("2026-05-31T13:33:00.000Z")
@@ -407,6 +504,7 @@ describe("ChildParticipationService", () => {
 
     await expect(
       participation.evaluateChildParticipation({
+        actorUserId: bidChild.userId,
         childId: bidChild.childId,
         action: "bid",
         communityId: bidCommunityId,
@@ -419,6 +517,7 @@ describe("ChildParticipationService", () => {
 
     await expect(
       participation.evaluateChildParticipation({
+        actorUserId: bidChild.userId,
         childId: bidChild.childId,
         action: "bid",
         communityId: bidCommunityId,
@@ -445,6 +544,7 @@ describe("ChildParticipationService", () => {
 
     await expect(
       participation.evaluateChildParticipation({
+        actorUserId: restrictedChild.userId,
         childId: restrictedChild.childId,
         action: "bid",
         amountPoints: 10,
@@ -563,6 +663,45 @@ describe("ChildParticipationService", () => {
     }
   });
 
+  it("rejects sensitive child actions when the device is no longer trusted", async () => {
+    const child = await createChildFixture("sensitive_revoked_device");
+    const challengeId = await createPassedChallenge({
+      actorUserId: child.userId,
+      sessionId: child.sessionId,
+      operationType: SensitiveOperationType.exportChildData,
+      childId: child.childId,
+      createdAt: new Date("2026-05-31T13:42:10.000Z"),
+      passedAt: new Date("2026-05-31T13:42:20.000Z")
+    });
+
+    await prisma.trustedDevice.update({
+      where: {
+        userId_deviceFingerprintHash: {
+          userId: child.userId,
+          deviceFingerprintHash: child.deviceFingerprintHash
+        }
+      },
+      data: {
+        trustLevel: "revoked",
+        revokedAt: new Date("2026-05-31T13:42:30.000Z")
+      }
+    });
+
+    await expect(
+      participation.evaluateChildParticipation({
+        actorUserId: child.userId,
+        childId: child.childId,
+        action: "export",
+        sensitiveChallengeId: challengeId,
+        sessionId: child.sessionId,
+        now: new Date("2026-05-31T13:42:40.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "DEVICE_NOT_TRUSTED"
+    });
+  });
+
   it("rejects sensitive child actions when the challenge belongs to another session or the session is revoked", async () => {
     const child = await createChildFixture("sensitive_session_bound");
     const otherSession = await sessions.createSession({
@@ -618,7 +757,7 @@ describe("ChildParticipationService", () => {
       })
     ).resolves.toEqual({
       result: "rejected",
-      errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
+      errorCode: "SESSION_REVOKED"
     });
   });
 });

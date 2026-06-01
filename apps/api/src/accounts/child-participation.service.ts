@@ -1,14 +1,12 @@
 import type {
   Prisma,
   PrismaClient,
-  RiskRestrictionType,
-  SensitiveOperationChallengeStatus
+  RiskRestrictionType
 } from "@prisma/client";
 import {
-  getChallengeSessionId,
+  SensitiveOperationService,
   SensitiveOperationType
 } from "./sensitive-operation.service.js";
-import { SessionService } from "./session.service.js";
 
 export type ChildParticipationAction =
   | "join_community"
@@ -38,16 +36,24 @@ export type ChildParticipationDecision =
       result: "rejected";
       errorCode:
         | "ACTIVE_PRIMARY_GUARDIAN_REQUIRED"
+        | "ACTOR_NOT_AUTHORIZED"
+        | "CHILD_NOT_ACTIVE"
         | "GUARDIAN_DISPUTE_FROZEN"
         | "RISK_RESTRICTED"
         | "GUARDIAN_CONTROL_DISABLED"
         | "COMMUNITY_ID_REQUIRED"
         | "COMMUNITY_MEMBER_REQUIRED"
+        | "COMMUNITY_NOT_ACTIVE"
         | "SENSITIVE_CHALLENGE_REQUIRED"
+        | "SENSITIVE_CHALLENGE_EXPIRED"
+        | "SESSION_REVOKED"
+        | "DEVICE_NOT_TRUSTED"
         | "MAX_BID_POINTS_EXCEEDED";
     };
 
 type ChildParticipationContext = {
+  childStatus: string;
+  childUserId: string | null;
   primaryGuardianId: string;
   primaryGuardianUserId: string;
   settings: {
@@ -60,7 +66,7 @@ type ChildParticipationContext = {
 export class ChildParticipationService {
   constructor(
     private readonly prisma: PrismaClient,
-    private readonly sessionService: SessionService
+    private readonly sensitiveOperations: SensitiveOperationService
   ) {}
 
   async evaluateChildParticipation(
@@ -73,6 +79,20 @@ export class ChildParticipationService {
       return {
         result: "rejected",
         errorCode: "ACTIVE_PRIMARY_GUARDIAN_REQUIRED"
+      };
+    }
+
+    if (context.childStatus !== "active") {
+      return {
+        result: "rejected",
+        errorCode: "CHILD_NOT_ACTIVE"
+      };
+    }
+
+    if (!canActorRepresentChild(input.actorUserId, context)) {
+      return {
+        result: "rejected",
+        errorCode: "ACTOR_NOT_AUTHORIZED"
       };
     }
 
@@ -89,6 +109,7 @@ export class ChildParticipationService {
         childId: input.childId,
         primaryGuardianId: context.primaryGuardianId,
         primaryGuardianUserId: context.primaryGuardianUserId,
+        actorUserId: input.actorUserId,
         communityId: input.communityId,
         now
       })
@@ -157,8 +178,8 @@ export class ChildParticipationService {
         return this.evaluateBid(input.amountPoints, context.settings);
       case "transaction_confirm":
       case "export":
-      case "delete":
-        return (await this.hasFreshSensitiveChallenge({
+      case "delete": {
+        const challengeAuthorization = await this.hasFreshSensitiveChallenge({
           action: input.action,
           actorUserId: input.actorUserId,
           challengeId: input.sensitiveChallengeId,
@@ -166,12 +187,11 @@ export class ChildParticipationService {
           childId: input.childId,
           primaryGuardianUserId: context.primaryGuardianUserId,
           now
-        }))
+        });
+        return challengeAuthorization.result === "accepted"
           ? { result: "accepted" }
-          : {
-              result: "rejected",
-              errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
-            };
+          : challengeAuthorization;
+      }
       default:
         return {
           result: "accepted"
@@ -187,6 +207,8 @@ export class ChildParticipationService {
         id: childId
       },
       select: {
+        status: true,
+        userId: true,
         guardianSettings: {
           select: {
             canPublish: true,
@@ -216,11 +238,13 @@ export class ChildParticipationService {
     });
 
     const primaryGuardian = child?.guardianLinks[0];
-    if (!primaryGuardian) {
+    if (!child || !primaryGuardian) {
       return null;
     }
 
     return {
+      childStatus: child.status,
+      childUserId: child.userId,
       primaryGuardianId: primaryGuardian.guardianId,
       primaryGuardianUserId: primaryGuardian.guardian.userId,
       settings: child?.guardianSettings ?? null
@@ -246,7 +270,12 @@ export class ChildParticipationService {
         }
       },
       select: {
-        status: true
+        status: true,
+        community: {
+          select: {
+            status: true
+          }
+        }
       }
     });
 
@@ -254,6 +283,13 @@ export class ChildParticipationService {
       return {
         result: "rejected",
         errorCode: "COMMUNITY_MEMBER_REQUIRED"
+      };
+    }
+
+    if (membership.community.status !== "active") {
+      return {
+        result: "rejected",
+        errorCode: "COMMUNITY_NOT_ACTIVE"
       };
     }
 
@@ -309,6 +345,7 @@ export class ChildParticipationService {
     childId: string;
     primaryGuardianId: string;
     primaryGuardianUserId: string;
+    actorUserId?: string;
     communityId?: string;
     now: Date;
   }): Promise<boolean> {
@@ -327,6 +364,16 @@ export class ChildParticipationService {
         targetId: input.primaryGuardianUserId
       }
     ];
+
+    if (
+      input.actorUserId &&
+      input.actorUserId !== input.primaryGuardianUserId
+    ) {
+      filters.push({
+        scope: "user",
+        targetId: input.actorUserId
+      });
+    }
 
     if (input.communityId) {
       filters.push({
@@ -377,79 +424,47 @@ export class ChildParticipationService {
     childId: string;
     primaryGuardianUserId: string;
     now: Date;
-  }): Promise<boolean> {
+  }): Promise<
+    | { result: "accepted" }
+    | Extract<ChildParticipationDecision, { result: "rejected" }>
+  > {
     if (
       !input.actorUserId ||
       input.actorUserId !== input.primaryGuardianUserId ||
       !input.challengeId ||
       !input.sessionId
     ) {
-      return false;
+      return {
+        result: "rejected",
+        errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
+      };
     }
 
-    const activeSession = await this.sessionService.assertActiveSession({
-      userId: input.actorUserId,
+    const authorization = await this.sensitiveOperations.authorizeFreshChallenge({
+      actorUserId: input.actorUserId,
+      operationType: sensitiveOperationTypeForAction(input.action),
+      targetType: "child_profile",
+      targetId: input.childId,
       sessionId: input.sessionId,
+      challengeId: input.challengeId,
       now: input.now
     });
-    if (activeSession.result !== "accepted") {
-      return false;
-    }
 
-    const challenge = await this.prisma.sensitiveOperationChallenge.findUnique({
-      where: {
-        id: input.challengeId
-      },
-      select: {
-        id: true,
-        actorUserId: true,
-        operation: true,
-        targetType: true,
-        targetId: true,
-        status: true,
-        expiresAt: true,
-        riskLabelsJson: true
-      }
-    });
-
-    if (
-      !challenge ||
-      challenge.actorUserId !== input.actorUserId ||
-      challenge.operation !== sensitiveOperationTypeForAction(input.action) ||
-      getChallengeSessionId(challenge.riskLabelsJson) !== input.sessionId ||
-      challenge.targetType !== "child_profile" ||
-      challenge.targetId !== input.childId
-    ) {
-      return false;
-    }
-
-    const expired = challenge.expiresAt.getTime() <= input.now.getTime();
-    if (expired || challenge.status === "expired") {
-      if (expired && canAutoExpireChallenge(challenge.status)) {
-        await this.prisma.sensitiveOperationChallenge.updateMany({
-          where: {
-            id: challenge.id,
-            status: {
-              in: ["pending", "passed", "cooling_down"]
-            }
-          },
-          data: {
-            status: "expired"
-          }
-        });
-      }
-
-      return false;
-    }
-
-    return challenge.status === "passed";
+    return authorization.result === "accepted"
+      ? { result: "accepted" }
+      : authorization;
   }
 }
 
-function canAutoExpireChallenge(
-  status: SensitiveOperationChallengeStatus
+function canActorRepresentChild(
+  actorUserId: string | undefined,
+  context: ChildParticipationContext
 ): boolean {
-  return status === "pending" || status === "passed" || status === "cooling_down";
+  return Boolean(
+    actorUserId &&
+      (actorUserId === context.primaryGuardianUserId ||
+        actorUserId === context.childUserId)
+  );
 }
 
 function riskRestrictionTypesForAction(

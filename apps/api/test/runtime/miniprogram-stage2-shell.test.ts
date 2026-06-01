@@ -5,6 +5,8 @@ import {
   buildCommunityJoinRequest,
   buildGuardianJoinConfirmationRequest,
   buildGuardianOnboardingRequest,
+  buildSensitiveOperationChallengeRequest,
+  buildSensitiveOperationChallengeVerificationRequest,
   buildWechatLoginRequest,
   requestJson,
   type MiniprogramJsonResponse,
@@ -89,7 +91,6 @@ describe("miniprogram Stage 2 shell", () => {
         guardianId: "guardian_1",
         displayName: "Child 1",
         gradeBand: "grade_3_4",
-        initialPoints: 100,
         idempotencyKey: "child_1"
       })
     ).toEqual({
@@ -99,7 +100,6 @@ describe("miniprogram Stage 2 shell", () => {
         guardianId: "guardian_1",
         displayName: "Child 1",
         gradeBand: "grade_3_4",
-        initialPoints: 100,
         idempotencyKey: "child_1"
       },
       header: {
@@ -137,6 +137,43 @@ describe("miniprogram Stage 2 shell", () => {
       url: "https://api.example.com/communities/community_1/members/child_1/guardian-confirm",
       method: "POST",
       data: {},
+      header: {
+        "content-type": "application/json",
+        authorization: "Bearer access_1"
+      }
+    });
+    expect(
+      buildSensitiveOperationChallengeRequest(configuredApiBaseUrl, {
+        accessToken: "access_1",
+        operationType: "create_community",
+        targetType: "guardian_profile",
+        targetId: "guardian_1"
+      })
+    ).toEqual({
+      url: "https://api.example.com/accounts/sensitive-operation-challenges",
+      method: "POST",
+      data: {
+        operationType: "create_community",
+        targetType: "guardian_profile",
+        targetId: "guardian_1"
+      },
+      header: {
+        "content-type": "application/json",
+        authorization: "Bearer access_1"
+      }
+    });
+    expect(
+      buildSensitiveOperationChallengeVerificationRequest(configuredApiBaseUrl, {
+        accessToken: "access_1",
+        challengeId: "challenge_1",
+        verificationCode: "135790"
+      })
+    ).toEqual({
+      url: "https://api.example.com/accounts/sensitive-operation-challenges/challenge_1/verify",
+      method: "POST",
+      data: {
+        verificationCode: "135790"
+      },
       header: {
         "content-type": "application/json",
         authorization: "Bearer access_1"
@@ -280,7 +317,6 @@ describe("miniprogram Stage 2 shell", () => {
         guardianId: "guardian_1",
         displayName: "Child 1",
         gradeBand: "grade_3_4",
-        initialPoints: 100,
         idempotencyKey: "child_1"
       },
       request

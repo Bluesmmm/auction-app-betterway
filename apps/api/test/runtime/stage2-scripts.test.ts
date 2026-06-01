@@ -39,6 +39,9 @@ describe("stage 2 seed and verification scripts", () => {
     expect(verifyScript).toContain('"apps/api/test/contracts"');
     expect(verifyScript).toContain('"apps/api/test/integration"');
     expect(verifyScript).toContain('"apps/api/test/runtime/admin-stage2-shell.test.ts"');
+    expect(verifyScript).toContain(
+      '"apps/api/test/runtime/stage2-controller-di.test.ts"'
+    );
     expect(verifyScript).toContain('"typecheck"');
     expect(verifyScript).toContain('"build"');
     expect(verifyScript).toContain("mock_openid_stage2_platform_admin");

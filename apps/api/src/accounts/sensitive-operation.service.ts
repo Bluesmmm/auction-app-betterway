@@ -9,7 +9,12 @@ export const SensitiveOperationType = {
   deleteChildProfile: "delete_child_profile",
   confirmTransaction: "confirm_transaction",
   changeChildPermissions: "change_child_permissions",
-  resolveGuardianDispute: "resolve_guardian_dispute"
+  manageChildGuardians: "manage_child_guardians",
+  resolveGuardianDispute: "resolve_guardian_dispute",
+  grantActivityAdmin: "grant_activity_admin",
+  revokeActivityAdmin: "revoke_activity_admin",
+  applyRiskRestriction: "apply_risk_restriction",
+  resolveRiskRestriction: "resolve_risk_restriction"
 } as const;
 
 export type SensitiveOperationType =
@@ -18,6 +23,9 @@ export type SensitiveOperationType =
 const REQUIRED_OPERATIONS = new Set<string>(Object.values(SensitiveOperationType));
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const CHALLENGE_TTL_SECONDS = CHALLENGE_TTL_MS / 1000;
+const SENSITIVE_DEVICE_COOLDOWN_MS = 2 * 60 * 1000;
+export const ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE =
+  "admin_community_scope_request";
 
 export type CreateSensitiveOperationChallengeInput = {
   actorUserId: string;
@@ -25,7 +33,7 @@ export type CreateSensitiveOperationChallengeInput = {
   operationType: string;
   targetType: string;
   targetId: string;
-  riskLabels: string[];
+  riskLabels?: string[];
   now?: Date;
 };
 
@@ -42,7 +50,11 @@ export type CreateSensitiveOperationChallengeResult =
     }
   | {
       result: "rejected";
-      errorCode: "SESSION_REVOKED" | "SENSITIVE_CHALLENGE_DELIVERY_FAILED";
+      errorCode:
+        | "SESSION_REVOKED"
+        | "SENSITIVE_CHALLENGE_DELIVERY_FAILED"
+        | "SENSITIVE_OPERATION_NOT_SUPPORTED"
+        | "SENSITIVE_CHALLENGE_TARGET_FORBIDDEN";
     };
 
 export type MarkSensitiveOperationChallengePassedInput = {
@@ -100,6 +112,34 @@ export type AuthorizeSensitiveOperationResult =
         | "GUARDIAN_DISPUTE_FROZEN";
     };
 
+export type AuthorizeFreshSensitiveChallengeInput = {
+  actorUserId: string;
+  operationType: string;
+  targetType: string;
+  targetId: string;
+  sessionId: string;
+  challengeId?: string;
+  now?: Date;
+};
+
+export type AuthorizeFreshSensitiveChallengeResult =
+  | {
+      result: "accepted";
+      actorUserId: string;
+      operationType: string;
+      targetType: string;
+      targetId: string;
+      challengeId: string;
+    }
+  | {
+      result: "rejected";
+      errorCode:
+        | "SENSITIVE_CHALLENGE_REQUIRED"
+        | "SENSITIVE_CHALLENGE_EXPIRED"
+        | "SESSION_REVOKED"
+        | "DEVICE_NOT_TRUSTED";
+    };
+
 export type ExpireActorChallengesInput = {
   actorUserId: string;
   reason: string;
@@ -137,10 +177,21 @@ export class SensitiveOperationService {
       };
     }
 
+    const challengeTarget = await this.authorizeChallengeTarget({
+      actorUserId: input.actorUserId,
+      operationType: input.operationType,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      now
+    });
+    if (challengeTarget.result === "rejected") {
+      return challengeTarget;
+    }
+
     const expiresAt = new Date(now.getTime() + CHALLENGE_TTL_MS);
     const verificationCode = this.verificationCodeGenerator();
     const riskLabelsJson = {
-      labels: input.riskLabels,
+      labels: dedupe(input.riskLabels ?? []),
       sessionId: input.sessionId,
       verificationCodeHash:
         hashSensitiveOperationVerificationCode(verificationCode)
@@ -338,6 +389,7 @@ export class SensitiveOperationService {
     await this.trustSessionDeviceForSensitiveOperations({
       actorUserId: input.actorUserId,
       sessionId: input.sessionId,
+      riskLabelsJson: challenge.riskLabelsJson,
       now
     });
 
@@ -367,19 +419,14 @@ export class SensitiveOperationService {
       };
     }
 
-    if (
-      REQUIRED_OPERATIONS.has(input.operationType) &&
-      !(await this.isSessionDeviceUsableForSensitiveOperations(
+    const challengeRequired =
+      REQUIRED_OPERATIONS.has(input.operationType) ||
+      (await this.hasActiveSensitiveChallengeRequiredRestriction(
         input.actorUserId,
-        input.sessionId,
+        input.targetType,
+        input.targetId,
         now
-      ))
-    ) {
-      return {
-        result: "rejected",
-        errorCode: "DEVICE_NOT_TRUSTED"
-      };
-    }
+      ));
 
     if (
       await this.hasActiveRiskRestriction(
@@ -406,7 +453,7 @@ export class SensitiveOperationService {
       };
     }
 
-    if (!REQUIRED_OPERATIONS.has(input.operationType)) {
+    if (!challengeRequired) {
       return {
         result: "accepted",
         actorUserId: input.actorUserId,
@@ -417,61 +464,98 @@ export class SensitiveOperationService {
       };
     }
 
-    const passedChallenges =
-      await this.prisma.sensitiveOperationChallenge.findMany({
-        where: {
-          actorUserId: input.actorUserId,
-          operation: input.operationType,
-          targetType: input.targetType,
-          targetId: input.targetId,
-          status: "passed",
-          expiresAt: {
-            gt: now
-          }
-        },
-        orderBy: [{ passedAt: "desc" }, { createdAt: "desc" }],
-        select: {
-          id: true,
-          riskLabelsJson: true
-        }
-      });
-    const passedChallenge = passedChallenges.find(
-      (challenge) =>
-        getChallengeSessionId(challenge.riskLabelsJson) === input.sessionId
-    );
-
-    if (passedChallenge) {
+    const challengeAuthorization = await this.authorizeFreshChallenge({
+      actorUserId: input.actorUserId,
+      operationType: input.operationType,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      sessionId: input.sessionId,
+      now
+    });
+    if (challengeAuthorization.result === "accepted") {
       return {
         result: "accepted",
         actorUserId: input.actorUserId,
         operationType: input.operationType,
         targetType: input.targetType,
         targetId: input.targetId,
-        challengeId: passedChallenge.id
+        challengeId: challengeAuthorization.challengeId
       };
     }
 
-    const challenges = await this.prisma.sensitiveOperationChallenge.findMany({
-      where: {
-        actorUserId: input.actorUserId,
-        operation: input.operationType,
-        targetType: input.targetType,
-        targetId: input.targetId
-      },
-      orderBy: [{ passedAt: "desc" }, { createdAt: "desc" }],
-      select: {
-        id: true,
-        status: true,
-        expiresAt: true,
-        riskLabelsJson: true
-      }
+    return challengeAuthorization;
+  }
+
+  async authorizeFreshChallenge(
+    input: AuthorizeFreshSensitiveChallengeInput
+  ): Promise<AuthorizeFreshSensitiveChallengeResult> {
+    const now = input.now ?? new Date();
+    const activeSession = await this.sessionService.assertActiveSession({
+      userId: input.actorUserId,
+      sessionId: input.sessionId,
+      now
     });
-    const challenge = challenges.find(
+    if (activeSession.result !== "accepted") {
+      return {
+        result: "rejected",
+        errorCode: "SESSION_REVOKED"
+      };
+    }
+
+    const challenges = input.challengeId
+      ? await this.prisma.sensitiveOperationChallenge.findMany({
+          where: {
+            id: input.challengeId
+          },
+          orderBy: [{ passedAt: "desc" }, { createdAt: "desc" }],
+          select: {
+            id: true,
+            actorUserId: true,
+            operation: true,
+            targetType: true,
+            targetId: true,
+            status: true,
+            expiresAt: true,
+            riskLabelsJson: true
+          }
+        })
+      : await this.prisma.sensitiveOperationChallenge.findMany({
+          where: {
+            actorUserId: input.actorUserId,
+            operation: input.operationType,
+            targetType: input.targetType,
+            targetId: input.targetId
+          },
+          orderBy: [{ passedAt: "desc" }, { createdAt: "desc" }],
+          select: {
+            id: true,
+            actorUserId: true,
+            operation: true,
+            targetType: true,
+            targetId: true,
+            status: true,
+            expiresAt: true,
+            riskLabelsJson: true
+          }
+        });
+    const passedChallenge = challenges.find(
+      (candidate) =>
+        candidate.status === "passed" &&
+        candidate.expiresAt.getTime() > now.getTime() &&
+        getChallengeSessionId(candidate.riskLabelsJson) === input.sessionId
+    );
+    const challenge = passedChallenge ?? challenges.find(
       (candidate) =>
         getChallengeSessionId(candidate.riskLabelsJson) === input.sessionId
     );
 
-    if (!challenge) {
+    if (
+      !challenge ||
+      challenge.actorUserId !== input.actorUserId ||
+      challenge.operation !== input.operationType ||
+      challenge.targetType !== input.targetType ||
+      challenge.targetId !== input.targetId
+    ) {
       return {
         result: "rejected",
         errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
@@ -500,6 +584,30 @@ export class SensitiveOperationService {
       return {
         result: "rejected",
         errorCode: "SENSITIVE_CHALLENGE_EXPIRED"
+      };
+    }
+
+    if (challenge.status === "passed") {
+      if (
+        !(await this.isSessionDeviceUsableForSensitiveOperations(
+          input.actorUserId,
+          input.sessionId,
+          now
+        ))
+      ) {
+        return {
+          result: "rejected",
+          errorCode: "DEVICE_NOT_TRUSTED"
+        };
+      }
+
+      return {
+        result: "accepted",
+        actorUserId: input.actorUserId,
+        operationType: input.operationType,
+        targetType: input.targetType,
+        targetId: input.targetId,
+        challengeId: challenge.id
       };
     }
 
@@ -546,9 +654,498 @@ export class SensitiveOperationService {
     };
   }
 
+  private async authorizeChallengeTarget(input: {
+    actorUserId: string;
+    operationType: string;
+    targetType: string;
+    targetId: string;
+    now: Date;
+  }): Promise<
+    | { result: "accepted" }
+    | Extract<CreateSensitiveOperationChallengeResult, { result: "rejected" }>
+  > {
+    if (!REQUIRED_OPERATIONS.has(input.operationType)) {
+      const hasStepUpRestriction =
+        await this.hasActiveSensitiveChallengeRequiredRestriction(
+          input.actorUserId,
+          input.targetType,
+          input.targetId,
+          input.now
+        );
+      if (!hasStepUpRestriction) {
+        return {
+          result: "rejected",
+          errorCode: "SENSITIVE_OPERATION_NOT_SUPPORTED"
+        };
+      }
+
+      if (!(await this.actorCanRequestTargetChallenge(input))) {
+        return {
+          result: "rejected",
+          errorCode: "SENSITIVE_CHALLENGE_TARGET_FORBIDDEN"
+        };
+      }
+
+      return {
+        result: "accepted"
+      };
+    }
+
+    switch (input.operationType) {
+      case SensitiveOperationType.createCommunity:
+        return this.acceptIf(
+          input.targetType === "guardian_profile" &&
+            (await this.actorOwnsActiveGuardianProfile(
+              input.actorUserId,
+              input.targetId
+            ))
+        );
+      case SensitiveOperationType.exportChildData:
+      case SensitiveOperationType.deleteChildProfile:
+      case SensitiveOperationType.changeChildPermissions:
+      case SensitiveOperationType.manageChildGuardians:
+        return this.acceptIf(
+          input.targetType === "child_profile" &&
+            (await this.actorHasActiveGuardianLinkToChild(
+              input.actorUserId,
+              input.targetId
+            ))
+        );
+      case SensitiveOperationType.confirmTransaction:
+        return this.acceptIf(
+          (input.targetType === "child_profile" &&
+            (await this.actorHasActiveGuardianLinkToChild(
+              input.actorUserId,
+              input.targetId
+            ))) ||
+            (input.targetType === "transaction" &&
+              (await this.actorHasActiveGuardianLinkToTransactionChild(
+                input.actorUserId,
+                input.targetId
+              )))
+        );
+      case SensitiveOperationType.resolveGuardianDispute:
+        return this.acceptIf(
+          input.targetType === "guardian_dispute" &&
+            (await this.isActiveMfaPlatformAdmin(input.actorUserId))
+        );
+      case SensitiveOperationType.grantActivityAdmin:
+      case SensitiveOperationType.revokeActivityAdmin:
+        return this.acceptIf(
+          input.targetType === ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE &&
+            (await this.canRequestAdminCommunityScopeChallenge(input))
+        );
+      case SensitiveOperationType.applyRiskRestriction:
+        return this.acceptIf(
+          (await this.isActiveMfaPlatformAdmin(input.actorUserId)) &&
+            (await this.sensitiveTargetExists(input.targetType, input.targetId))
+        );
+      case SensitiveOperationType.resolveRiskRestriction:
+        return this.acceptIf(
+          input.targetType === "risk_restriction" &&
+            (await this.isActiveMfaPlatformAdmin(input.actorUserId)) &&
+            (await this.activeRiskRestrictionExists(input.targetId))
+        );
+      default:
+        return {
+          result: "rejected",
+          errorCode: "SENSITIVE_OPERATION_NOT_SUPPORTED"
+        };
+    }
+  }
+
+  private acceptIf(
+    accepted: boolean
+  ):
+    | { result: "accepted" }
+    | Extract<CreateSensitiveOperationChallengeResult, { result: "rejected" }> {
+    return accepted
+      ? { result: "accepted" }
+      : {
+          result: "rejected",
+          errorCode: "SENSITIVE_CHALLENGE_TARGET_FORBIDDEN"
+        };
+  }
+
+  private async actorCanRequestTargetChallenge(input: {
+    actorUserId: string;
+    targetType: string;
+    targetId: string;
+  }): Promise<boolean> {
+    switch (input.targetType) {
+      case "user":
+      case "user_profile":
+        return input.targetId === input.actorUserId;
+      case "guardian":
+      case "guardian_profile":
+        return this.actorOwnsActiveGuardianProfile(
+          input.actorUserId,
+          input.targetId
+        );
+      case "child":
+      case "child_profile":
+        return this.actorHasActiveGuardianLinkToChild(
+          input.actorUserId,
+          input.targetId
+        );
+      case "transaction":
+        return this.actorHasActiveGuardianLinkToTransactionChild(
+          input.actorUserId,
+          input.targetId
+        );
+      case "community":
+      case "auction_community":
+        return (
+          (await this.isActiveMfaPlatformAdmin(input.actorUserId)) ||
+          (await this.actorHasCommunityAdminScope(
+            input.actorUserId,
+            input.targetId
+          ))
+        );
+      case "community_member":
+        return this.actorHasActiveGuardianLinkToCommunityMemberChild(
+          input.actorUserId,
+          input.targetId
+        );
+      case "guardian_dispute":
+        return (
+          (await this.isActiveMfaPlatformAdmin(input.actorUserId)) ||
+          (await this.actorHasActiveGuardianLinkToDisputeChild(
+            input.actorUserId,
+            input.targetId
+          ))
+        );
+      case "risk_restriction":
+        return this.isActiveMfaPlatformAdmin(input.actorUserId);
+      case ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE:
+        return this.canRequestAdminCommunityScopeChallenge(input);
+      default:
+        return false;
+    }
+  }
+
+  private async actorOwnsActiveGuardianProfile(
+    actorUserId: string,
+    guardianId: string
+  ): Promise<boolean> {
+    const guardian = await this.prisma.guardianProfile.findFirst({
+      where: {
+        id: guardianId,
+        userId: actorUserId,
+        status: "active"
+      },
+      select: {
+        id: true
+      }
+    });
+
+    return Boolean(guardian);
+  }
+
+  private async actorHasActiveGuardianLinkToChild(
+    actorUserId: string,
+    childId: string
+  ): Promise<boolean> {
+    const link = await this.prisma.guardianChildLink.findFirst({
+      where: {
+        childId,
+        status: "active",
+        child: {
+          status: "active"
+        },
+        guardian: {
+          userId: actorUserId,
+          status: "active"
+        }
+      },
+      select: {
+        id: true
+      }
+    });
+
+    return Boolean(link);
+  }
+
+  private async actorHasActiveGuardianLinkToTransactionChild(
+    actorUserId: string,
+    transactionId: string
+  ): Promise<boolean> {
+    const transaction = await this.prisma.transaction.findUnique({
+      where: {
+        id: transactionId
+      },
+      select: {
+        buyerChildId: true,
+        sellerChildId: true
+      }
+    });
+
+    if (!transaction) {
+      return false;
+    }
+
+    const link = await this.prisma.guardianChildLink.findFirst({
+      where: {
+        childId: {
+          in: [transaction.buyerChildId, transaction.sellerChildId]
+        },
+        status: "active",
+        guardian: {
+          userId: actorUserId,
+          status: "active"
+        }
+      },
+      select: {
+        id: true
+      }
+    });
+
+    return Boolean(link);
+  }
+
+  private async actorHasActiveGuardianLinkToCommunityMemberChild(
+    actorUserId: string,
+    communityMemberId: string
+  ): Promise<boolean> {
+    const member = await this.prisma.communityMember.findUnique({
+      where: {
+        id: communityMemberId
+      },
+      select: {
+        childId: true
+      }
+    });
+
+    return member
+      ? this.actorHasActiveGuardianLinkToChild(actorUserId, member.childId)
+      : false;
+  }
+
+  private async actorHasActiveGuardianLinkToDisputeChild(
+    actorUserId: string,
+    disputeId: string
+  ): Promise<boolean> {
+    const dispute = await this.prisma.guardianDispute.findUnique({
+      where: {
+        id: disputeId
+      },
+      select: {
+        childId: true
+      }
+    });
+
+    return dispute
+      ? this.actorHasActiveGuardianLinkToChild(actorUserId, dispute.childId)
+      : false;
+  }
+
+  private async actorHasCommunityAdminScope(
+    actorUserId: string,
+    communityId: string
+  ): Promise<boolean> {
+    const admin = await this.prisma.adminProfile.findFirst({
+      where: {
+        userId: actorUserId,
+        role: "activity_admin",
+        status: "active",
+        mfaEnabled: true,
+        communityScopes: {
+          some: {
+            communityId,
+            status: "active"
+          }
+        }
+      },
+      select: {
+        id: true
+      }
+    });
+
+    return Boolean(admin);
+  }
+
+  private async isActiveMfaPlatformAdmin(userId: string): Promise<boolean> {
+    const admin = await this.prisma.adminProfile.findUnique({
+      where: {
+        userId
+      },
+      select: {
+        role: true,
+        status: true,
+        mfaEnabled: true
+      }
+    });
+
+    return Boolean(
+      admin &&
+        admin.role === "platform_admin" &&
+        admin.status === "active" &&
+        admin.mfaEnabled
+    );
+  }
+
+  private async canRequestAdminCommunityScopeChallenge(input: {
+    actorUserId: string;
+    operationType?: string;
+    targetId: string;
+  }): Promise<boolean> {
+    if (!(await this.isActiveMfaPlatformAdmin(input.actorUserId))) {
+      return false;
+    }
+
+    const target = parseAdminCommunityScopeChallengeTargetId(input.targetId);
+    if (!target) {
+      return false;
+    }
+
+    const [community, targetUser] = await Promise.all([
+      this.prisma.auctionCommunity.findUnique({
+        where: {
+          id: target.communityId
+        },
+        select: {
+          status: true
+        }
+      }),
+      this.prisma.user.findUnique({
+        where: {
+          id: target.targetUserId
+        },
+        select: {
+          status: true,
+          adminProfile: {
+            select: {
+              id: true,
+              role: true,
+              status: true,
+              communityScopes: {
+                where: {
+                  communityId: target.communityId
+                },
+                select: {
+                  status: true
+                },
+                take: 1
+              }
+            }
+          }
+        }
+      })
+    ]);
+
+    if (!community || community.status !== "active") {
+      return false;
+    }
+
+    if (!targetUser || targetUser.status !== "active") {
+      return false;
+    }
+
+    if (input.operationType === SensitiveOperationType.grantActivityAdmin) {
+      return (
+        !targetUser.adminProfile ||
+        (targetUser.adminProfile.role === "activity_admin" &&
+          targetUser.adminProfile.status === "active")
+      );
+    }
+
+    if (input.operationType === SensitiveOperationType.revokeActivityAdmin) {
+      return (
+        targetUser.adminProfile?.role === "activity_admin" &&
+        targetUser.adminProfile.communityScopes.some(
+          (scope) => scope.status === "active"
+        )
+      );
+    }
+
+    return true;
+  }
+
+  private async sensitiveTargetExists(
+    targetType: string,
+    targetId: string
+  ): Promise<boolean> {
+    switch (targetType) {
+      case "user":
+      case "user_profile":
+        return Boolean(
+          await this.prisma.user.findUnique({
+            where: { id: targetId },
+            select: { id: true }
+          })
+        );
+      case "guardian":
+      case "guardian_profile":
+        return Boolean(
+          await this.prisma.guardianProfile.findUnique({
+            where: { id: targetId },
+            select: { id: true }
+          })
+        );
+      case "child":
+      case "child_profile":
+        return Boolean(
+          await this.prisma.childProfile.findUnique({
+            where: { id: targetId },
+            select: { id: true }
+          })
+        );
+      case "community":
+      case "auction_community":
+        return Boolean(
+          await this.prisma.auctionCommunity.findUnique({
+            where: { id: targetId },
+            select: { id: true }
+          })
+        );
+      case "community_member":
+        return Boolean(
+          await this.prisma.communityMember.findUnique({
+            where: { id: targetId },
+            select: { id: true }
+          })
+        );
+      case "transaction":
+        return Boolean(
+          await this.prisma.transaction.findUnique({
+            where: { id: targetId },
+            select: { id: true }
+          })
+        );
+      case "guardian_dispute":
+        return Boolean(
+          await this.prisma.guardianDispute.findUnique({
+            where: { id: targetId },
+            select: { id: true }
+          })
+        );
+      case "risk_restriction":
+        return this.activeRiskRestrictionExists(targetId);
+      case ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE:
+        return Boolean(parseAdminCommunityScopeChallengeTargetId(targetId));
+      default:
+        return false;
+    }
+  }
+
+  private async activeRiskRestrictionExists(restrictionId: string): Promise<boolean> {
+    const restriction = await this.prisma.riskRestriction.findFirst({
+      where: {
+        id: restrictionId,
+        status: "active"
+      },
+      select: {
+        id: true
+      }
+    });
+
+    return Boolean(restriction);
+  }
+
   private async trustSessionDeviceForSensitiveOperations(input: {
     actorUserId: string;
     sessionId: string;
+    riskLabelsJson: Prisma.JsonValue | null;
     now: Date;
   }): Promise<void> {
     const session = await this.prisma.userSession.findFirst({
@@ -582,6 +1179,7 @@ export class SensitiveOperationService {
       return;
     }
 
+    const trustedAt = sensitiveDeviceTrustedAt(input.riskLabelsJson, input.now);
     await this.prisma.trustedDevice.upsert({
       where: {
         userId_deviceFingerprintHash: {
@@ -591,7 +1189,7 @@ export class SensitiveOperationService {
       },
       update: {
         trustLevel: "sensitive_allowed",
-        trustedAt: input.now,
+        trustedAt,
         revokedAt: null,
         lastSeenAt: input.now
       },
@@ -599,7 +1197,7 @@ export class SensitiveOperationService {
         userId: input.actorUserId,
         deviceFingerprintHash: session.deviceFingerprintHash,
         trustLevel: "sensitive_allowed",
-        trustedAt: input.now,
+        trustedAt,
         lastSeenAt: input.now
       }
     });
@@ -637,11 +1235,16 @@ export class SensitiveOperationService {
       },
       select: {
         trustLevel: true,
+        trustedAt: true,
         revokedAt: true
       }
     });
 
-    if (!device || device.trustLevel === "revoked") {
+    if (!device || device.trustLevel !== "sensitive_allowed") {
+      return false;
+    }
+
+    if (!device.trustedAt || device.trustedAt.getTime() > now.getTime()) {
       return false;
     }
 
@@ -655,12 +1258,40 @@ export class SensitiveOperationService {
     targetId: string,
     now: Date
   ): Promise<boolean> {
-    const matchingRestrictionTypes = riskRestrictionTypesForOperation(
-      operationType
-    );
+    return this.hasActiveRestriction({
+      actorUserId,
+      targetType,
+      targetId,
+      now,
+      matchingRestrictionTypes: riskRestrictionTypesForOperation(operationType)
+    });
+  }
+
+  private async hasActiveSensitiveChallengeRequiredRestriction(
+    actorUserId: string,
+    targetType: string,
+    targetId: string,
+    now: Date
+  ): Promise<boolean> {
+    return this.hasActiveRestriction({
+      actorUserId,
+      targetType,
+      targetId,
+      now,
+      matchingRestrictionTypes: ["sensitive_challenge_required"]
+    });
+  }
+
+  private async hasActiveRestriction(input: {
+    actorUserId: string;
+    targetType: string;
+    targetId: string;
+    now: Date;
+    matchingRestrictionTypes: RiskRestrictionType[];
+  }): Promise<boolean> {
     const actor = await this.prisma.user.findUnique({
       where: {
-        id: actorUserId
+        id: input.actorUserId
       },
       select: {
         guardianProfile: {
@@ -675,11 +1306,14 @@ export class SensitiveOperationService {
         }
       }
     });
-    const targetContext = await this.resolveTargetContext(targetType, targetId);
+    const targetContext = await this.resolveTargetContext(
+      input.targetType,
+      input.targetId
+    );
     const filters: Prisma.RiskRestrictionWhereInput[] = [
       {
         scope: "user",
-        targetId: actorUserId
+        targetId: input.actorUserId
       }
     ];
 
@@ -736,14 +1370,14 @@ export class SensitiveOperationService {
       where: {
         status: "active",
         type: {
-          in: matchingRestrictionTypes
+          in: input.matchingRestrictionTypes
         },
         startsAt: {
-          lte: now
+          lte: input.now
         },
         AND: [
           {
-            OR: [{ expiresAt: null }, { expiresAt: { gt: now } }]
+            OR: [{ expiresAt: null }, { expiresAt: { gt: input.now } }]
           },
           {
             OR: filters
@@ -896,6 +1530,27 @@ function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
+export function buildAdminCommunityScopeChallengeTargetId(
+  communityId: string,
+  targetUserId: string
+): string {
+  return `${communityId}:${targetUserId}`;
+}
+
+function parseAdminCommunityScopeChallengeTargetId(
+  targetId: string
+): { communityId: string; targetUserId: string } | null {
+  const [communityId, targetUserId, extra] = targetId.split(":");
+  if (!communityId || !targetUserId || extra !== undefined) {
+    return null;
+  }
+
+  return {
+    communityId,
+    targetUserId
+  };
+}
+
 export function getChallengeSessionId(value: Prisma.JsonValue | null): string | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -940,4 +1595,25 @@ function riskRestrictionTypesForOperation(
     default:
       return universalRestrictions;
   }
+}
+
+function sensitiveDeviceTrustedAt(
+  riskLabelsJson: Prisma.JsonValue | null,
+  now: Date
+): Date {
+  const labels = getChallengeRiskLabels(riskLabelsJson);
+  return labels.includes("new_device") || labels.includes("abnormal_login")
+    ? new Date(now.getTime() + SENSITIVE_DEVICE_COOLDOWN_MS)
+    : now;
+}
+
+function getChallengeRiskLabels(value: Prisma.JsonValue | null): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return [];
+  }
+
+  const labels = (value as { labels?: unknown }).labels;
+  return Array.isArray(labels)
+    ? labels.filter((label): label is string => typeof label === "string")
+    : [];
 }

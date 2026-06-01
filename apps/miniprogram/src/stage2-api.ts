@@ -37,7 +37,6 @@ export type ChildOnboardingPayload = {
   guardianId: string;
   displayName: string;
   gradeBand: string;
-  initialPoints: number;
   idempotencyKey: string;
 };
 
@@ -52,6 +51,19 @@ export type GuardianJoinConfirmationPayload = {
   accessToken: string;
   communityId: string;
   childId: string;
+};
+
+export type SensitiveOperationChallengePayload = {
+  accessToken: string;
+  operationType: string;
+  targetType: string;
+  targetId: string;
+};
+
+export type SensitiveOperationChallengeVerificationPayload = {
+  accessToken: string;
+  challengeId: string;
+  verificationCode: string;
 };
 
 export type Stage2RequestResult = {
@@ -130,6 +142,39 @@ export function buildGuardianJoinConfirmationRequest(
       )}/guardian-confirm`
     ),
     {},
+    accessToken
+  );
+}
+
+export function buildSensitiveOperationChallengeRequest(
+  apiBaseUrl: string,
+  payload: SensitiveOperationChallengePayload
+): MiniprogramJsonRequestOptions<
+  Omit<SensitiveOperationChallengePayload, "accessToken">
+> {
+  const { accessToken, ...data } = payload;
+  return buildJsonPostRequest(
+    buildStage2ApiUrl(apiBaseUrl, "/accounts/sensitive-operation-challenges"),
+    data,
+    accessToken
+  );
+}
+
+export function buildSensitiveOperationChallengeVerificationRequest(
+  apiBaseUrl: string,
+  payload: SensitiveOperationChallengeVerificationPayload
+): MiniprogramJsonRequestOptions<
+  Omit<SensitiveOperationChallengeVerificationPayload, "accessToken" | "challengeId">
+> {
+  const { accessToken, challengeId, ...data } = payload;
+  return buildJsonPostRequest(
+    buildStage2ApiUrl(
+      apiBaseUrl,
+      `/accounts/sensitive-operation-challenges/${encodeURIComponent(
+        challengeId
+      )}/verify`
+    ),
+    data,
     accessToken
   );
 }

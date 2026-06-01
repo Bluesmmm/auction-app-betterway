@@ -70,23 +70,37 @@ type CommunityMemberTransitionErrorCode = Extract<
   { result: "rejected" }
 >["errorCode"];
 
+type MemberReviewQueueRow = {
+  key: string;
+  communityId: string;
+  childId: string;
+  guardianId: string;
+  memberStatus: CommunityMemberStatus;
+  rosterVerificationStatus: RosterVerificationStatus;
+  riskState: "clear" | "restricted";
+  requestedAt: string;
+};
+
+type MemberReviewQueueAcceptedResult = {
+  result: "accepted";
+  members: MemberReviewQueueRow[];
+};
+
 export type ListMemberReviewQueueResult =
-  | {
-      result: "accepted";
-      members: Array<{
-        key: string;
-        communityId: string;
-        childId: string;
-        guardianId: string;
-        memberStatus: CommunityMemberStatus;
-        rosterVerificationStatus: RosterVerificationStatus;
-        riskState: "clear" | "restricted";
-        requestedAt: string;
-      }>;
-    }
+  | MemberReviewQueueAcceptedResult
   | {
       result: "rejected";
       errorCode: "PLATFORM_ADMIN_REQUIRED";
+    };
+
+export type ListScopedMemberReviewQueueResult =
+  | {
+      result: "accepted";
+      members: MemberReviewQueueRow[];
+    }
+  | {
+      result: "rejected";
+      errorCode: "COMMUNITY_ADMIN_REQUIRED";
     };
 
 export type ConfirmJoinByPrimaryGuardianInput = {
@@ -157,102 +171,35 @@ export class CommunityAccessService {
       };
     }
 
-    const members = await this.prisma.communityMember.findMany({
-      where: {
-        status: {
-          in: ["pending_guardian", "pending_admin"]
-        }
-      },
-      orderBy: [
-        {
-          guardianConfirmedAt: "asc"
-        },
-        {
-          communityId: "asc"
-        },
-        {
-          childId: "asc"
-        }
-      ],
-      take: 100,
-      include: {
-        child: {
-          select: {
-            guardianLinks: {
-              where: {
-                role: "primary",
-                status: "active"
-              },
-              select: {
-                guardianId: true
-              },
-              take: 1
-            }
-          }
-        }
-      }
-    });
-
-    const rows = await Promise.all(
-      members.map(async (member) => {
-        const riskRestriction = await this.prisma.riskRestriction.findFirst({
-          where: {
-            status: "active",
-            type: {
-              in: ["suspended", "no_join"]
-            },
-            startsAt: {
-              lte: now
-            },
-            AND: [
-              {
-                OR: [{ expiresAt: null }, { expiresAt: { gt: now } }]
-              },
-              {
-                OR: [
-                  {
-                    scope: "community_member",
-                    targetId: member.id
-                  },
-                  {
-                    scope: "community_member",
-                    communityMemberId: member.id,
-                    communityId: member.communityId,
-                    childId: member.childId
-                  },
-                  {
-                    scope: "child",
-                    targetId: member.childId
-                  },
-                  {
-                    scope: "community",
-                    targetId: member.communityId
-                  }
-                ]
-              }
-            ]
-          },
-          select: {
-            id: true
-          }
-        });
-
-        return {
-          key: member.id,
-          communityId: member.communityId,
-          childId: member.childId,
-          guardianId: member.child.guardianLinks[0]?.guardianId ?? "",
-          memberStatus: member.status,
-          rosterVerificationStatus: member.rosterVerificationStatus,
-          riskState: riskRestriction ? ("restricted" as const) : ("clear" as const),
-          requestedAt: member.guardianConfirmedAt?.toISOString() ?? ""
-        };
+    return {
+      result: "accepted",
+      members: await this.listPendingMemberReviewRows({
+        now
       })
-    );
+    };
+  }
+
+  async listScopedMemberReviewQueue(input: {
+    actorUserId: string;
+    communityId: string;
+    now?: Date;
+  }): Promise<ListScopedMemberReviewQueueResult> {
+    const now = input.now ?? new Date();
+    const scopedAdmin =
+      await this.adminAuthorizations.findActiveScopedActivityAdmin({
+        actorUserId: input.actorUserId,
+        communityId: input.communityId
+      });
+    if (scopedAdmin.result === "rejected") {
+      return scopedAdmin;
+    }
 
     return {
       result: "accepted",
-      members: rows
+      members: await this.listPendingMemberReviewRows({
+        communityId: input.communityId,
+        now
+      })
     };
   }
 
@@ -327,6 +274,23 @@ export class CommunityAccessService {
           maxUses: input.maxUses,
           expiresAt: input.expiresAt,
           status: "active"
+        }
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorUserId: input.actorUserId,
+          action: "community_invite_code.create",
+          targetType: "community_invite_code",
+          targetId: created.id,
+          afterJson: {
+            communityId: input.communityId,
+            ruleVersionId: activeRuleVersion.id,
+            codeHash: createStableHash({ code: input.code }),
+            maxUses: input.maxUses ?? null,
+            expiresAt: input.expiresAt?.toISOString() ?? null,
+            status: created.status
+          }
         }
       });
 
@@ -415,6 +379,28 @@ export class CommunityAccessService {
     return this.prisma.$transaction(async (tx) => {
       await lockChild(tx, input.childId);
 
+      const lockedPrimaryGuardian = await findActiveJoinPrimaryGuardian(
+        tx,
+        input.childId
+      );
+      if (!lockedPrimaryGuardian) {
+        return {
+          result: "rejected",
+          errorCode: "ACTIVE_PRIMARY_GUARDIAN_REQUIRED"
+        };
+      }
+
+      const lockedChildActorUserId = lockedPrimaryGuardian.child.userId;
+      if (
+        input.actorUserId !== lockedPrimaryGuardian.guardian.userId &&
+        input.actorUserId !== lockedChildActorUserId
+      ) {
+        return {
+          result: "rejected",
+          errorCode: "JOIN_ACTOR_NOT_AUTHORIZED"
+        };
+      }
+
       if (await hasFrozenGuardianDispute(tx, input.childId)) {
         return {
           result: "rejected",
@@ -477,8 +463,8 @@ export class CommunityAccessService {
       if (
         await hasActiveJoinRiskRestriction(tx, {
           childId: input.childId,
-          primaryGuardianId: activePrimaryGuardian.guardianId,
-          primaryGuardianUserId: activePrimaryGuardian.guardian.userId,
+          primaryGuardianId: lockedPrimaryGuardian.guardianId,
+          primaryGuardianUserId: lockedPrimaryGuardian.guardian.userId,
           communityId: inviteCandidate.communityId,
           now
         })
@@ -586,7 +572,7 @@ export class CommunityAccessService {
       await lockChild(tx, input.childId);
 
       const primaryGuardian = await findActivePrimaryGuardian(tx, input.childId);
-      if (!primaryGuardian) {
+      if (!primaryGuardian || primaryGuardian.guardian.userId !== input.actorUserId) {
         return {
           result: "rejected",
           errorCode: "ACTIVE_PRIMARY_GUARDIAN_REQUIRED"
@@ -694,6 +680,21 @@ export class CommunityAccessService {
     return this.prisma.$transaction(async (tx) => {
       await lockCommunity(tx, input.communityId);
       await lockChild(tx, input.childId);
+
+      const lockedCommunity = await tx.auctionCommunity.findUnique({
+        where: {
+          id: input.communityId
+        },
+        select: {
+          status: true
+        }
+      });
+      if (!lockedCommunity || lockedCommunity.status !== "active") {
+        return {
+          result: "rejected",
+          errorCode: "COMMUNITY_MEMBER_STATE_INVALID"
+        };
+      }
 
       const scopedAdmin = await findActiveScopedActivityAdmin(
         tx,
@@ -868,7 +869,7 @@ export class CommunityAccessService {
           afterJson: {
             status: member.status,
             rosterVerificationStatus: member.rosterVerificationStatus,
-            evidenceJson: input.evidenceJson,
+            evidenceAudit: summarizeEvidenceForAudit(input.evidenceJson),
             recordedAt: now.toISOString()
           }
         }
@@ -900,6 +901,107 @@ export class CommunityAccessService {
         platformAdmin.role === "platform_admin" &&
         platformAdmin.status === "active" &&
         platformAdmin.mfaEnabled
+    );
+  }
+
+  private async listPendingMemberReviewRows(input: {
+    communityId?: string;
+    now: Date;
+  }): Promise<MemberReviewQueueRow[]> {
+    const where: Prisma.CommunityMemberWhereInput = {
+      status: "pending_admin"
+    };
+    if (input.communityId) {
+      where.communityId = input.communityId;
+    }
+
+    const members = await this.prisma.communityMember.findMany({
+      where,
+      orderBy: [
+        {
+          guardianConfirmedAt: "asc"
+        },
+        {
+          communityId: "asc"
+        },
+        {
+          childId: "asc"
+        }
+      ],
+      take: 100,
+      include: {
+        child: {
+          select: {
+            guardianLinks: {
+              where: {
+                role: "primary",
+                status: "active"
+              },
+              select: {
+                guardianId: true
+              },
+              take: 1
+            }
+          }
+        }
+      }
+    });
+
+    return Promise.all(
+      members.map(async (member) => {
+        const riskRestriction = await this.prisma.riskRestriction.findFirst({
+          where: {
+            status: "active",
+            type: {
+              in: ["suspended", "no_join"]
+            },
+            startsAt: {
+              lte: input.now
+            },
+            AND: [
+              {
+                OR: [{ expiresAt: null }, { expiresAt: { gt: input.now } }]
+              },
+              {
+                OR: [
+                  {
+                    scope: "community_member",
+                    targetId: member.id
+                  },
+                  {
+                    scope: "community_member",
+                    communityMemberId: member.id,
+                    communityId: member.communityId,
+                    childId: member.childId
+                  },
+                  {
+                    scope: "child",
+                    targetId: member.childId
+                  },
+                  {
+                    scope: "community",
+                    targetId: member.communityId
+                  }
+                ]
+              }
+            ]
+          },
+          select: {
+            id: true
+          }
+        });
+
+        return {
+          key: member.id,
+          communityId: member.communityId,
+          childId: member.childId,
+          guardianId: member.child.guardianLinks[0]?.guardianId ?? "",
+          memberStatus: member.status,
+          rosterVerificationStatus: member.rosterVerificationStatus,
+          riskState: riskRestriction ? ("restricted" as const) : ("clear" as const),
+          requestedAt: member.guardianConfirmedAt?.toISOString() ?? ""
+        };
+      })
     );
   }
 }
@@ -1038,6 +1140,16 @@ function createStableHash(value: Record<string, string>): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+function summarizeEvidenceForAudit(value: Prisma.InputJsonValue) {
+  return {
+    recorded: true,
+    kind: Array.isArray(value) ? "array" : typeof value,
+    sha256: createHash("sha256")
+      .update(JSON.stringify(value))
+      .digest("hex")
+  };
+}
+
 async function lockChild(tx: Prisma.TransactionClient, childId: string) {
   await tx.$queryRaw<Array<{ id: string }>>`
     SELECT "id"
@@ -1067,6 +1179,38 @@ async function findActiveScopedActivityAdmin(
     },
     select: {
       id: true
+    }
+  });
+}
+
+async function findActiveJoinPrimaryGuardian(
+  tx: Prisma.TransactionClient,
+  childId: string
+) {
+  return tx.guardianChildLink.findFirst({
+    where: {
+      childId,
+      role: "primary",
+      status: "active",
+      child: {
+        status: "active"
+      },
+      guardian: {
+        status: "active"
+      }
+    },
+    select: {
+      guardianId: true,
+      child: {
+        select: {
+          userId: true
+        }
+      },
+      guardian: {
+        select: {
+          userId: true
+        }
+      }
     }
   });
 }

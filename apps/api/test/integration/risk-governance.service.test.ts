@@ -24,14 +24,16 @@ const sessions = new SessionService(
   prisma,
   new SessionTokenService("risk-governance-test-signing-key")
 );
+const verificationCode = "135790";
 const sensitiveOperations = new SensitiveOperationService(
   prisma,
   sessions,
-  new FakeSensitiveOperationVerificationProvider()
+  new FakeSensitiveOperationVerificationProvider(),
+  () => verificationCode
 );
-const participation = new ChildParticipationService(prisma, sessions);
+const participation = new ChildParticipationService(prisma, sensitiveOperations);
 const access = new CommunityAccessService(prisma);
-const riskGovernance = new RiskGovernanceService(prisma);
+const riskGovernance = new RiskGovernanceService(prisma, sensitiveOperations);
 
 function unique(label: string) {
   return `${label}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -70,7 +72,6 @@ async function createChild(label: string) {
     guardianId: guardian.guardianId,
     displayName: `Risk Child ${token}`,
     gradeBand: "grade_3_4",
-    initialPoints: 100,
     idempotencyKey: `risk_child_initial_${token}`,
     now: new Date("2026-05-31T18:02:00.000Z")
   });
@@ -109,7 +110,55 @@ async function createPlatformAdmin(label: string) {
     }
   });
 
-  return user;
+  const session = await sessions.createSession({
+    userId: user.userId,
+    deviceFingerprintHash: `device_${unique(label)}`,
+    ipHash: `ip_${unique(label)}`,
+    userAgentHash: `ua_${unique(label)}`,
+    now: new Date("2026-05-31T18:03:30.000Z")
+  });
+
+  if (session.result !== "accepted") {
+    throw new Error("expected platform admin session creation to succeed");
+  }
+
+  return {
+    ...user,
+    sessionId: session.sessionId
+  };
+}
+
+async function createPassedRiskChallenge(input: {
+  actorUserId: string;
+  sessionId: string;
+  operationType: string;
+  targetType: string;
+  targetId: string;
+  now: Date;
+}) {
+  const challenge = await sensitiveOperations.createChallenge({
+    actorUserId: input.actorUserId,
+    sessionId: input.sessionId,
+    operationType: input.operationType,
+    targetType: input.targetType,
+    targetId: input.targetId,
+    riskLabels: [],
+    now: input.now
+  });
+
+  if (challenge.result !== "accepted") {
+    throw new Error(`expected risk challenge creation to succeed: ${challenge.errorCode}`);
+  }
+
+  await sensitiveOperations.markPassed({
+    challengeId: challenge.challengeId,
+    actorUserId: input.actorUserId,
+    sessionId: input.sessionId,
+    verificationCode,
+    now: new Date(input.now.getTime() + 1_000)
+  });
+
+  return challenge.challengeId;
 }
 
 async function createCommunityWithAdmin(label: string) {
@@ -208,6 +257,7 @@ describe("RiskGovernanceService", () => {
 
     await expect(
       participation.evaluateChildParticipation({
+        actorUserId: child.userId,
         childId: child.childId,
         action: "join_community",
         now: new Date("2026-05-31T18:11:00.000Z")
@@ -274,6 +324,7 @@ describe("RiskGovernanceService", () => {
 
     await expect(
       participation.evaluateChildParticipation({
+        actorUserId: child.userId,
         childId: child.childId,
         action: "join_community",
         now: new Date("2026-05-31T18:15:00.000Z")
@@ -476,6 +527,92 @@ describe("RiskGovernanceService", () => {
       communityId: community.id,
       childId: child.childId,
       memberStatus: "active"
+    });
+  });
+
+  it("requires fresh platform-admin challenges to apply and resolve manual risk restrictions", async () => {
+    const child = await createChild("manual_restriction_challenge");
+    const platformAdmin = await createPlatformAdmin(
+      "manual_restriction_platform_admin"
+    );
+
+    await expect(
+      riskGovernance.applyRiskRestriction({
+        platformAdminUserId: platformAdmin.userId,
+        type: "no_bid",
+        scope: "child",
+        targetId: child.childId,
+        reason: "manual review hold",
+        now: new Date("2026-05-31T18:31:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
+    });
+
+    const applyChallengeId = await createPassedRiskChallenge({
+      actorUserId: platformAdmin.userId,
+      sessionId: platformAdmin.sessionId,
+      operationType: SensitiveOperationType.applyRiskRestriction,
+      targetType: "child_profile",
+      targetId: child.childId,
+      now: new Date("2026-05-31T18:31:30.000Z")
+    });
+
+    const applied = await riskGovernance.applyRiskRestriction({
+      platformAdminUserId: platformAdmin.userId,
+      sessionId: platformAdmin.sessionId,
+      challengeId: applyChallengeId,
+      type: "no_bid",
+      scope: "child",
+      targetId: child.childId,
+      reason: "manual review hold",
+      now: new Date("2026-05-31T18:32:00.000Z")
+    });
+
+    expect(applied).toEqual({
+      result: "accepted",
+      restrictionId: expect.any(String),
+      status: "active"
+    });
+    if (applied.result !== "accepted") {
+      throw new Error("expected manual risk restriction application to succeed");
+    }
+
+    await expect(
+      riskGovernance.resolveRiskRestriction({
+        platformAdminUserId: platformAdmin.userId,
+        restrictionId: applied.restrictionId,
+        resolutionText: "cleared after review",
+        now: new Date("2026-05-31T18:33:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
+    });
+
+    const resolveChallengeId = await createPassedRiskChallenge({
+      actorUserId: platformAdmin.userId,
+      sessionId: platformAdmin.sessionId,
+      operationType: SensitiveOperationType.resolveRiskRestriction,
+      targetType: "risk_restriction",
+      targetId: applied.restrictionId,
+      now: new Date("2026-05-31T18:33:30.000Z")
+    });
+
+    await expect(
+      riskGovernance.resolveRiskRestriction({
+        platformAdminUserId: platformAdmin.userId,
+        sessionId: platformAdmin.sessionId,
+        challengeId: resolveChallengeId,
+        restrictionId: applied.restrictionId,
+        resolutionText: "cleared after review",
+        now: new Date("2026-05-31T18:34:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "accepted",
+      restrictionId: applied.restrictionId,
+      status: "resolved"
     });
   });
 

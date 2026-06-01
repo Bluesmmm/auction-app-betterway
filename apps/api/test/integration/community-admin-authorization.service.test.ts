@@ -1,16 +1,41 @@
 import { PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { OnboardingService } from "../../src/accounts/onboarding.service.js";
+import {
+  ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE,
+  buildAdminCommunityScopeChallengeTargetId,
+  SensitiveOperationService,
+  SensitiveOperationType
+} from "../../src/accounts/sensitive-operation.service.js";
+import { SessionService } from "../../src/accounts/session.service.js";
+import { SessionTokenService } from "../../src/accounts/session-token.service.js";
 import { CommunityAccessService } from "../../src/communities/community-access.service.js";
 import { CommunityAdminAuthorizationService } from "../../src/communities/community-admin-authorization.service.js";
-import { FakeWechatAuthProvider } from "../../src/providers/fake-providers.js";
+import {
+  FakeSensitiveOperationVerificationProvider,
+  FakeWechatAuthProvider
+} from "../../src/providers/fake-providers.js";
 
 process.env.DATABASE_URL ??=
   "postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public";
 
 const prisma = new PrismaClient();
 const onboarding = new OnboardingService(prisma, new FakeWechatAuthProvider());
-const adminAuth = new CommunityAdminAuthorizationService(prisma);
+const sessions = new SessionService(
+  prisma,
+  new SessionTokenService("community-admin-authorization-test-signing-key")
+);
+const verificationCode = "246810";
+const sensitiveOperations = new SensitiveOperationService(
+  prisma,
+  sessions,
+  new FakeSensitiveOperationVerificationProvider(),
+  () => verificationCode
+);
+const adminAuth = new CommunityAdminAuthorizationService(
+  prisma,
+  sensitiveOperations
+);
 const access = new CommunityAccessService(prisma);
 
 function unique(label: string) {
@@ -59,9 +84,110 @@ async function createPlatformAdmin(label: string) {
     }
   });
 
+  const session = await sessions.createSession({
+    userId,
+    deviceFingerprintHash: `device_${unique(label)}`,
+    ipHash: `ip_${unique(label)}`,
+    userAgentHash: `ua_${unique(label)}`,
+    now: new Date("2026-05-31T15:02:00.000Z")
+  });
+
+  if (session.result !== "accepted") {
+    throw new Error("expected platform admin session creation to succeed");
+  }
+
   return {
-    userId
+    userId,
+    sessionId: session.sessionId
   };
+}
+
+async function createPassedAdminChallenge(input: {
+  actorUserId: string;
+  sessionId: string;
+  operationType: string;
+  communityId: string;
+  targetUserId: string;
+  now: Date;
+}) {
+  const challenge = await sensitiveOperations.createChallenge({
+    actorUserId: input.actorUserId,
+    sessionId: input.sessionId,
+    operationType: input.operationType,
+    targetType: ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE,
+    targetId: buildAdminCommunityScopeChallengeTargetId(
+      input.communityId,
+      input.targetUserId
+    ),
+    riskLabels: [],
+    now: input.now
+  });
+
+  if (challenge.result !== "accepted") {
+    throw new Error(`expected admin challenge creation to succeed: ${challenge.errorCode}`);
+  }
+
+  await sensitiveOperations.markPassed({
+    challengeId: challenge.challengeId,
+    actorUserId: input.actorUserId,
+    sessionId: input.sessionId,
+    verificationCode,
+    now: new Date(input.now.getTime() + 1_000)
+  });
+
+  return challenge.challengeId;
+}
+
+async function grantActivityAdminWithChallenge(input: {
+  platformAdmin: { userId: string; sessionId: string };
+  targetUserId: string;
+  communityId: string;
+  now: Date;
+}) {
+  const challengeId = await createPassedAdminChallenge({
+    actorUserId: input.platformAdmin.userId,
+    sessionId: input.platformAdmin.sessionId,
+    operationType: SensitiveOperationType.grantActivityAdmin,
+    communityId: input.communityId,
+    targetUserId: input.targetUserId,
+    now: new Date(input.now.getTime() - 2_000)
+  });
+
+  return adminAuth.grantActivityAdmin({
+    platformAdminUserId: input.platformAdmin.userId,
+    sessionId: input.platformAdmin.sessionId,
+    challengeId,
+    targetUserId: input.targetUserId,
+    communityId: input.communityId,
+    now: input.now
+  });
+}
+
+async function revokeActivityAdminWithChallenge(input: {
+  platformAdmin: { userId: string; sessionId: string };
+  targetUserId: string;
+  communityId: string;
+  reason: string;
+  now: Date;
+}) {
+  const challengeId = await createPassedAdminChallenge({
+    actorUserId: input.platformAdmin.userId,
+    sessionId: input.platformAdmin.sessionId,
+    operationType: SensitiveOperationType.revokeActivityAdmin,
+    communityId: input.communityId,
+    targetUserId: input.targetUserId,
+    now: new Date(input.now.getTime() - 2_000)
+  });
+
+  return adminAuth.revokeActivityAdmin({
+    platformAdminUserId: input.platformAdmin.userId,
+    sessionId: input.platformAdmin.sessionId,
+    challengeId,
+    targetUserId: input.targetUserId,
+    communityId: input.communityId,
+    reason: input.reason,
+    now: input.now
+  });
 }
 
 async function createActiveCommunity(label: string) {
@@ -113,10 +239,97 @@ describe("CommunityAdminAuthorizationService", () => {
         now: new Date("2026-05-31T15:06:00.000Z")
       })
     ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
+    });
+
+    await expect(
+      grantActivityAdminWithChallenge({
+        platformAdmin,
+        targetUserId,
+        communityId: community.id,
+        now: new Date("2026-05-31T15:06:10.000Z")
+      })
+    ).resolves.toEqual({
       result: "accepted",
       adminProfileId: expect.any(String),
       communityId: community.id,
       scopeStatus: "active"
+    });
+  });
+
+  it("rejects activity-admin grants for missing or inactive target users", async () => {
+    const community = await createActiveCommunity("grant_inactive_target");
+    const platformAdmin = await createPlatformAdmin(
+      "grant_inactive_target_platform_admin"
+    );
+    const restrictedTargetUserId = await createUser("grant_restricted_target");
+    await prisma.user.update({
+      where: {
+        id: restrictedTargetUserId
+      },
+      data: {
+        status: "restricted"
+      }
+    });
+
+    await expect(
+      adminAuth.grantActivityAdmin({
+        platformAdminUserId: platformAdmin.userId,
+        targetUserId: restrictedTargetUserId,
+        communityId: community.id,
+        now: new Date("2026-05-31T15:06:30.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "TARGET_ADMIN_NOT_ACTIVE"
+    });
+    await expect(
+      adminAuth.grantActivityAdmin({
+        platformAdminUserId: platformAdmin.userId,
+        targetUserId: `missing_target_${Date.now()}`,
+        communityId: community.id,
+        now: new Date("2026-05-31T15:06:45.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "TARGET_ADMIN_NOT_ACTIVE"
+    });
+    await expect(
+      prisma.adminProfile.findUnique({
+        where: {
+          userId: restrictedTargetUserId
+        }
+      })
+    ).resolves.toBeNull();
+  });
+
+  it("binds high-risk activity-admin challenges to the target user", async () => {
+    const community = await createActiveCommunity("grant_target_bound");
+    const platformAdmin = await createPlatformAdmin("grant_target_bound_admin");
+    const firstTargetUserId = await createUser("grant_target_bound_first");
+    const secondTargetUserId = await createUser("grant_target_bound_second");
+    const firstChallengeId = await createPassedAdminChallenge({
+      actorUserId: platformAdmin.userId,
+      sessionId: platformAdmin.sessionId,
+      operationType: SensitiveOperationType.grantActivityAdmin,
+      communityId: community.id,
+      targetUserId: firstTargetUserId,
+      now: new Date("2026-05-31T15:06:20.000Z")
+    });
+
+    await expect(
+      adminAuth.grantActivityAdmin({
+        platformAdminUserId: platformAdmin.userId,
+        sessionId: platformAdmin.sessionId,
+        challengeId: firstChallengeId,
+        targetUserId: secondTargetUserId,
+        communityId: community.id,
+        now: new Date("2026-05-31T15:06:25.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
     });
   });
 
@@ -174,8 +387,8 @@ describe("CommunityAdminAuthorizationService", () => {
     const platformAdmin = await createPlatformAdmin("mfa_open_platform_admin");
     const targetUserId = await createUser("mfa_open_target");
 
-    await adminAuth.grantActivityAdmin({
-      platformAdminUserId: platformAdmin.userId,
+    await grantActivityAdminWithChallenge({
+      platformAdmin,
       targetUserId,
       communityId: community.id,
       now: new Date("2026-05-31T15:10:00.000Z")
@@ -229,8 +442,8 @@ describe("CommunityAdminAuthorizationService", () => {
     const community = await createActiveCommunity("revoke_closes");
     const platformAdmin = await createPlatformAdmin("revoke_platform_admin");
     const targetUserId = await createUser("revoke_target");
-    await adminAuth.grantActivityAdmin({
-      platformAdminUserId: platformAdmin.userId,
+    await grantActivityAdminWithChallenge({
+      platformAdmin,
       targetUserId,
       communityId: community.id,
       now: new Date("2026-05-31T15:20:00.000Z")
@@ -258,6 +471,19 @@ describe("CommunityAdminAuthorizationService", () => {
         platformAdminUserId: platformAdmin.userId,
         targetUserId,
         communityId: community.id,
+        reason: "missing challenge",
+        now: new Date("2026-05-31T15:20:30.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
+    });
+
+    await expect(
+      revokeActivityAdminWithChallenge({
+        platformAdmin,
+        targetUserId,
+        communityId: community.id,
         reason: "operator rotation",
         now: new Date("2026-05-31T15:21:00.000Z")
       })
@@ -283,8 +509,8 @@ describe("CommunityAdminAuthorizationService", () => {
     const secondCommunity = await createActiveCommunity("scope_second");
     const platformAdmin = await createPlatformAdmin("scope_platform_admin");
     const targetUserId = await createUser("scope_target");
-    await adminAuth.grantActivityAdmin({
-      platformAdminUserId: platformAdmin.userId,
+    await grantActivityAdminWithChallenge({
+      platformAdmin,
       targetUserId,
       communityId: firstCommunity.id,
       now: new Date("2026-05-31T15:30:00.000Z")

@@ -72,7 +72,6 @@ async function createChildFixture(label: string): Promise<ChildFixture> {
     guardianId: guardian.guardianId,
     displayName: `Child ${label} ${Date.now()}`,
     gradeBand: "grade_3_4",
-    initialPoints: 100,
     idempotencyKey: `child_initial_${label}_${Date.now()}`,
     now: new Date("2026-05-31T11:02:00.000Z")
   });
@@ -192,7 +191,7 @@ describe("SensitiveOperationService", () => {
     await prisma.$disconnect();
   });
 
-  it("requires a challenge for create_community, export_child_data, delete_child_profile, confirm_transaction, and change_child_permissions", async () => {
+  it("requires a challenge for every configured sensitive operation", async () => {
     const actor = await createAuthorizedActor("required_ops_actor");
     const secondaryChild = await createChildFixture("required_ops_target");
     const transaction = await createTransactionFixture("required_ops_txn");
@@ -221,6 +220,11 @@ describe("SensitiveOperationService", () => {
         operationType: SensitiveOperationType.changeChildPermissions,
         targetType: "child_profile",
         targetId: actor.childId
+      },
+      {
+        operationType: SensitiveOperationType.manageChildGuardians,
+        targetType: "child_profile",
+        targetId: actor.childId
       }
     ] as const;
 
@@ -239,6 +243,89 @@ describe("SensitiveOperationService", () => {
         errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
       });
     }
+  });
+
+  it("treats sensitive_challenge_required restrictions as step-up verification", async () => {
+    const actor = await createAuthorizedActor("step_up_restriction_actor");
+
+    await expect(
+      service.authorize({
+        actorUserId: actor.userId,
+        operationType: "view_child_summary",
+        targetType: "child_profile",
+        targetId: actor.childId,
+        sessionId: actor.sessionId,
+        now: new Date("2026-05-31T11:07:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "accepted",
+      actorUserId: actor.userId,
+      operationType: "view_child_summary",
+      targetType: "child_profile",
+      targetId: actor.childId,
+      challengeId: null
+    });
+
+    await prisma.riskRestriction.create({
+      data: {
+        type: "sensitive_challenge_required",
+        scope: "child",
+        targetId: actor.childId,
+        childId: actor.childId,
+        status: "active",
+        reason: "manual_step_up_required",
+        startsAt: new Date("2026-05-31T11:07:30.000Z")
+      }
+    });
+
+    await expect(
+      service.authorize({
+        actorUserId: actor.userId,
+        operationType: "view_child_summary",
+        targetType: "child_profile",
+        targetId: actor.childId,
+        sessionId: actor.sessionId,
+        now: new Date("2026-05-31T11:08:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
+    });
+
+    const challenge = await createAcceptedChallenge({
+      actorUserId: actor.userId,
+      sessionId: actor.sessionId,
+      operationType: "view_child_summary",
+      targetType: "child_profile",
+      targetId: actor.childId,
+      riskLabels: ["manual_step_up_required"],
+      now: new Date("2026-05-31T11:08:30.000Z")
+    });
+    await service.markPassed({
+      challengeId: challenge.challengeId,
+      actorUserId: actor.userId,
+      sessionId: actor.sessionId,
+      verificationCode,
+      now: new Date("2026-05-31T11:09:00.000Z")
+    });
+
+    await expect(
+      service.authorize({
+        actorUserId: actor.userId,
+        operationType: "view_child_summary",
+        targetType: "child_profile",
+        targetId: actor.childId,
+        sessionId: actor.sessionId,
+        now: new Date("2026-05-31T11:09:30.000Z")
+      })
+    ).resolves.toEqual({
+      result: "accepted",
+      actorUserId: actor.userId,
+      operationType: "view_child_summary",
+      targetType: "child_profile",
+      targetId: actor.childId,
+      challengeId: challenge.challengeId
+    });
   });
 
   it("a passed challenge authorizes the matching operation and target until expiry", async () => {
@@ -497,6 +584,140 @@ describe("SensitiveOperationService", () => {
     ).resolves.toEqual({
       result: "rejected",
       errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
+    });
+  });
+
+  it("rejects challenge creation for unsupported operations or unrelated targets", async () => {
+    const actor = await createAuthorizedActor("challenge_target_actor");
+    const otherChild = await createChildFixture("challenge_target_other_child");
+
+    await expect(
+      service.createChallenge({
+        actorUserId: actor.userId,
+        sessionId: actor.sessionId,
+        operationType: "view_private_notes",
+        targetType: "child_profile",
+        targetId: actor.childId,
+        riskLabels: [],
+        now: new Date("2026-05-31T11:23:05.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SENSITIVE_OPERATION_NOT_SUPPORTED"
+    });
+
+    await expect(
+      service.createChallenge({
+        actorUserId: actor.userId,
+        sessionId: actor.sessionId,
+        operationType: SensitiveOperationType.exportChildData,
+        targetType: "child_profile",
+        targetId: otherChild.childId,
+        riskLabels: [],
+        now: new Date("2026-05-31T11:23:10.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SENSITIVE_CHALLENGE_TARGET_FORBIDDEN"
+    });
+
+    await expect(
+      prisma.sensitiveOperationChallenge.findMany({
+        where: {
+          actorUserId: actor.userId,
+          operation: {
+            in: ["view_private_notes", SensitiveOperationType.exportChildData]
+          },
+          targetId: {
+            in: [actor.childId, otherChild.childId]
+          }
+        }
+      })
+    ).resolves.toEqual([]);
+  });
+
+  it("rejects passed challenges when the session device is not sensitive-trusted", async () => {
+    const actor = await createAuthorizedActor("normal_device_actor");
+    await prisma.sensitiveOperationChallenge.create({
+      data: {
+        actorUserId: actor.userId,
+        operation: SensitiveOperationType.deleteChildProfile,
+        targetType: "child_profile",
+        targetId: actor.childId,
+        status: "passed",
+        passedAt: new Date("2026-05-31T11:22:45.000Z"),
+        expiresAt: new Date("2026-05-31T11:27:45.000Z"),
+        riskLabelsJson: {
+          labels: [],
+          sessionId: actor.sessionId
+        }
+      }
+    });
+
+    await expect(
+      service.authorize({
+        actorUserId: actor.userId,
+        operationType: SensitiveOperationType.deleteChildProfile,
+        targetType: "child_profile",
+        targetId: actor.childId,
+        sessionId: actor.sessionId,
+        now: new Date("2026-05-31T11:23:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "DEVICE_NOT_TRUSTED"
+    });
+  });
+
+  it("keeps new-device sensitive challenges in cooldown before trusting the session device", async () => {
+    const actor = await createAuthorizedActor("new_device_cooldown_actor");
+    const created = await createAcceptedChallenge({
+      actorUserId: actor.userId,
+      sessionId: actor.sessionId,
+      operationType: SensitiveOperationType.exportChildData,
+      targetType: "child_profile",
+      targetId: actor.childId,
+      riskLabels: ["new_device"],
+      now: new Date("2026-05-31T11:23:10.000Z")
+    });
+
+    await service.markPassed({
+      challengeId: created.challengeId,
+      actorUserId: actor.userId,
+      sessionId: actor.sessionId,
+      verificationCode,
+      now: new Date("2026-05-31T11:23:20.000Z")
+    });
+
+    await expect(
+      service.authorize({
+        actorUserId: actor.userId,
+        operationType: SensitiveOperationType.exportChildData,
+        targetType: "child_profile",
+        targetId: actor.childId,
+        sessionId: actor.sessionId,
+        now: new Date("2026-05-31T11:24:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "DEVICE_NOT_TRUSTED"
+    });
+    await expect(
+      service.authorize({
+        actorUserId: actor.userId,
+        operationType: SensitiveOperationType.exportChildData,
+        targetType: "child_profile",
+        targetId: actor.childId,
+        sessionId: actor.sessionId,
+        now: new Date("2026-05-31T11:25:30.000Z")
+      })
+    ).resolves.toEqual({
+      result: "accepted",
+      actorUserId: actor.userId,
+      operationType: SensitiveOperationType.exportChildData,
+      targetType: "child_profile",
+      targetId: actor.childId,
+      challengeId: created.challengeId
     });
   });
 

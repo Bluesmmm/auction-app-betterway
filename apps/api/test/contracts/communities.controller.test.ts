@@ -25,6 +25,7 @@ function buildController() {
   } as unknown as CommunityAdminAuthorizationService;
   const access = {
     listMemberReviewQueue: vi.fn(),
+    listScopedMemberReviewQueue: vi.fn(),
     createInviteCode: vi.fn(),
     requestJoinWithInvite: vi.fn(),
     confirmJoinByPrimaryGuardian: vi.fn(),
@@ -190,6 +191,52 @@ describe("CommunitiesController", () => {
     });
   });
 
+  it("normalizes GET /communities/:communityId/member-review-queue", async () => {
+    setServerTime("2026-05-31T12:59:35.000Z");
+    const { controller, access } = buildController();
+    vi.mocked(access.listScopedMemberReviewQueue).mockResolvedValue({
+      result: "accepted",
+      members: [
+        {
+          key: "member_scoped_1",
+          communityId: "community_scoped_1",
+          childId: "child_1",
+          guardianId: "guardian_1",
+          memberStatus: "pending_admin",
+          rosterVerificationStatus: "matched",
+          riskState: "clear",
+          requestedAt: "2026-05-31T12:58:35.000Z"
+        }
+      ]
+    });
+
+    await expect(
+      controller.listScopedMemberReviewQueue(
+        "community_scoped_1",
+        AUTHORIZATION
+      )
+    ).resolves.toEqual({
+      result: "accepted",
+      members: [
+        {
+          key: "member_scoped_1",
+          communityId: "community_scoped_1",
+          childId: "child_1",
+          guardianId: "guardian_1",
+          memberStatus: "pending_admin",
+          rosterVerificationStatus: "matched",
+          riskState: "clear",
+          requestedAt: "2026-05-31T12:58:35.000Z"
+        }
+      ]
+    });
+    expect(access.listScopedMemberReviewQueue).toHaveBeenCalledWith({
+      actorUserId: AUTH_USER_ID,
+      communityId: "community_scoped_1",
+      now: new Date("2026-05-31T12:59:35.000Z")
+    });
+  });
+
   it("normalizes GET /communities/risk-signals", async () => {
     setServerTime("2026-05-31T12:59:40.000Z");
     const { controller, risks } = buildController();
@@ -350,13 +397,16 @@ describe("CommunitiesController", () => {
     const response = await controller.grantActivityAdmin(
       "community_3",
       {
-        targetUserId: "target_user_1"
+        targetUserId: "target_user_1",
+        challengeId: "challenge_1"
       },
       AUTHORIZATION
     );
 
     expect(adminAuthorizations.grantActivityAdmin).toHaveBeenCalledWith({
       platformAdminUserId: AUTH_USER_ID,
+      sessionId: AUTH_SESSION_ID,
+      challengeId: "challenge_1",
       targetUserId: "target_user_1",
       communityId: "community_3",
       now: new Date("2026-05-31T13:10:00.000Z")
@@ -384,13 +434,16 @@ describe("CommunitiesController", () => {
       "community_3",
       {
         targetUserId: "target_user_1",
-        reason: "rotation"
+        reason: "rotation",
+        challengeId: "challenge_2"
       },
       AUTHORIZATION
     );
 
     expect(adminAuthorizations.revokeActivityAdmin).toHaveBeenCalledWith({
       platformAdminUserId: AUTH_USER_ID,
+      sessionId: AUTH_SESSION_ID,
+      challengeId: "challenge_2",
       targetUserId: "target_user_1",
       communityId: "community_3",
       reason: "rotation",
@@ -674,13 +727,16 @@ describe("CommunitiesController", () => {
         type: "no_join",
         scope: "child",
         targetId: "child_10",
-        reason: "manual restriction"
+        reason: "manual restriction",
+        challengeId: "challenge_3"
       },
       AUTHORIZATION
     );
 
     expect(risks.applyRiskRestriction).toHaveBeenCalledWith({
       platformAdminUserId: AUTH_USER_ID,
+      sessionId: AUTH_SESSION_ID,
+      challengeId: "challenge_3",
       type: "no_join",
       scope: "child",
       targetId: "child_10",
@@ -709,13 +765,16 @@ describe("CommunitiesController", () => {
     const response = await controller.resolveRiskRestriction(
       "restriction_2",
       {
-        resolutionText: "restriction cleared"
+        resolutionText: "restriction cleared",
+        challengeId: "challenge_4"
       },
       AUTHORIZATION
     );
 
     expect(risks.resolveRiskRestriction).toHaveBeenCalledWith({
       platformAdminUserId: AUTH_USER_ID,
+      sessionId: AUTH_SESSION_ID,
+      challengeId: "challenge_4",
       restrictionId: "restriction_2",
       resolutionText: "restriction cleared",
       now: new Date("2026-05-31T13:46:00.000Z")

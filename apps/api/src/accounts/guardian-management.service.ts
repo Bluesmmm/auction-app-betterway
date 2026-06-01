@@ -37,7 +37,13 @@ export type GuardianLinkTransitionResult =
         | "CHILD_ACTIVE_GUARDIAN_LIMIT_EXCEEDED"
         | "GUARDIAN_CHILD_LIMIT_EXCEEDED"
         | "SECONDARY_GUARDIAN_NOT_ACTIVE"
-        | "SECONDARY_GUARDIAN_INVITE_NOT_PENDING";
+        | "SECONDARY_GUARDIAN_INVITE_NOT_PENDING"
+        | "SENSITIVE_CHALLENGE_REQUIRED"
+        | "SENSITIVE_CHALLENGE_EXPIRED"
+        | "DEVICE_NOT_TRUSTED"
+        | "SESSION_REVOKED"
+        | "RISK_RESTRICTED"
+        | "GUARDIAN_DISPUTE_FROZEN";
     };
 
 export type UpdateChildGuardianSettingsResult =
@@ -127,9 +133,34 @@ export class GuardianManagementService {
     actorUserId: string;
     childId: string;
     secondaryGuardianId: string;
+    challengeId?: string;
+    sessionId?: string;
     now?: Date;
   }): Promise<GuardianLinkTransitionResult> {
     const now = input.now ?? new Date();
+
+    const primaryLink = await findActivePrimaryGuardianLink(
+      this.prisma,
+      input.actorUserId,
+      input.childId
+    );
+    if (!primaryLink) {
+      return {
+        result: "rejected",
+        errorCode: "ACTIVE_PRIMARY_GUARDIAN_REQUIRED"
+      };
+    }
+
+    const authorization = await this.authorizeManageChildGuardians({
+      actorUserId: input.actorUserId,
+      childId: input.childId,
+      challengeId: input.challengeId,
+      sessionId: input.sessionId,
+      now
+    });
+    if (authorization.result === "rejected") {
+      return authorization;
+    }
 
     return this.prisma.$transaction(async (tx) => {
       const primaryLink = await findActivePrimaryGuardianLink(
@@ -145,6 +176,12 @@ export class GuardianManagementService {
       }
 
       await lockChild(tx, input.childId);
+      if (await hasOpenGuardianDispute(tx, input.childId)) {
+        return {
+          result: "rejected",
+          errorCode: "GUARDIAN_DISPUTE_FROZEN"
+        };
+      }
       await lockGuardian(tx, input.secondaryGuardianId);
 
       const secondaryGuardian = await tx.guardianProfile.findUnique({
@@ -278,9 +315,34 @@ export class GuardianManagementService {
     actorUserId: string;
     childId: string;
     secondaryGuardianId: string;
+    challengeId?: string;
+    sessionId?: string;
     now?: Date;
   }): Promise<GuardianLinkTransitionResult> {
     const now = input.now ?? new Date();
+
+    const primaryLink = await findActivePrimaryGuardianLink(
+      this.prisma,
+      input.actorUserId,
+      input.childId
+    );
+    if (!primaryLink) {
+      return {
+        result: "rejected",
+        errorCode: "ACTIVE_PRIMARY_GUARDIAN_REQUIRED"
+      };
+    }
+
+    const authorization = await this.authorizeManageChildGuardians({
+      actorUserId: input.actorUserId,
+      childId: input.childId,
+      challengeId: input.challengeId,
+      sessionId: input.sessionId,
+      now
+    });
+    if (authorization.result === "rejected") {
+      return authorization;
+    }
 
     return this.prisma.$transaction(async (tx) => {
       const primaryLink = await findActivePrimaryGuardianLink(
@@ -296,6 +358,12 @@ export class GuardianManagementService {
       }
 
       await lockChild(tx, input.childId);
+      if (await hasOpenGuardianDispute(tx, input.childId)) {
+        return {
+          result: "rejected",
+          errorCode: "GUARDIAN_DISPUTE_FROZEN"
+        };
+      }
       await lockGuardian(tx, input.secondaryGuardianId);
 
       const existingLink = await tx.guardianChildLink.findUnique({
@@ -419,6 +487,7 @@ export class GuardianManagementService {
     if (input.challengeId) {
       const challengeCheck = await this.assertFreshChallengeId({
         actorUserId: input.actorUserId,
+        operationType: SensitiveOperationType.changeChildPermissions,
         challengeId: input.challengeId,
         sessionId: input.sessionId,
         childId: input.childId,
@@ -443,6 +512,14 @@ export class GuardianManagementService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      await lockChild(tx, input.childId);
+      if (await hasOpenGuardianDispute(tx, input.childId)) {
+        return {
+          result: "rejected",
+          errorCode: "GUARDIAN_DISPUTE_FROZEN"
+        };
+      }
+
       const primaryLink = await findActivePrimaryGuardianLink(
         tx,
         input.actorUserId,
@@ -706,8 +783,54 @@ export class GuardianManagementService {
     };
   }
 
+  private async authorizeManageChildGuardians(input: {
+    actorUserId: string;
+    childId: string;
+    challengeId?: string;
+    sessionId?: string;
+    now: Date;
+  }): Promise<
+    | { result: "accepted" }
+    | Extract<GuardianLinkTransitionResult, { result: "rejected" }>
+  > {
+    if (!input.sessionId) {
+      return {
+        result: "rejected",
+        errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
+      };
+    }
+
+    if (input.challengeId) {
+      const challengeCheck = await this.assertFreshChallengeId({
+        actorUserId: input.actorUserId,
+        operationType: SensitiveOperationType.manageChildGuardians,
+        challengeId: input.challengeId,
+        sessionId: input.sessionId,
+        childId: input.childId,
+        now: input.now
+      });
+      if (challengeCheck.result === "rejected") {
+        return challengeCheck;
+      }
+    }
+
+    const authorization = await this.sensitiveOperations.authorize({
+      actorUserId: input.actorUserId,
+      operationType: SensitiveOperationType.manageChildGuardians,
+      targetType: "child_profile",
+      targetId: input.childId,
+      sessionId: input.sessionId,
+      now: input.now
+    });
+
+    return authorization.result === "accepted"
+      ? { result: "accepted" }
+      : authorization;
+  }
+
   private async assertFreshChallengeId(input: {
     actorUserId: string;
+    operationType: SensitiveOperationType;
     challengeId: string;
     sessionId: string;
     childId: string;
@@ -728,7 +851,7 @@ export class GuardianManagementService {
     if (
       !challenge ||
       challenge.actorUserId !== input.actorUserId ||
-      challenge.operation !== SensitiveOperationType.changeChildPermissions ||
+      challenge.operation !== input.operationType ||
       getChallengeSessionId(challenge.riskLabelsJson) !== input.sessionId ||
       challenge.targetType !== "child_profile" ||
       challenge.targetId !== input.childId
@@ -775,7 +898,7 @@ export class GuardianManagementService {
 }
 
 async function findActivePrimaryGuardianLink(
-  tx: Prisma.TransactionClient,
+  tx: Prisma.TransactionClient | PrismaClient,
   actorUserId: string,
   childId: string
 ) {
@@ -812,6 +935,25 @@ async function lockGuardian(tx: Prisma.TransactionClient, guardianId: string) {
     WHERE "id" = ${guardianId}
     FOR UPDATE
   `;
+}
+
+async function hasOpenGuardianDispute(
+  tx: Prisma.TransactionClient,
+  childId: string
+): Promise<boolean> {
+  const dispute = await tx.guardianDispute.findFirst({
+    where: {
+      childId,
+      status: {
+        in: ["pending_platform_review", "frozen"]
+      }
+    },
+    select: {
+      id: true
+    }
+  });
+
+  return Boolean(dispute);
 }
 
 async function countActiveGuardiansForChild(

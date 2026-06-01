@@ -30,6 +30,7 @@ const verificationCommands = [
       "--",
       "apps/api/test/runtime/admin-stage2-shell.test.ts",
       "apps/api/test/runtime/miniprogram-stage2-shell.test.ts",
+      "apps/api/test/runtime/stage2-controller-di.test.ts",
       "apps/api/test/runtime/stage2-scripts.test.ts"
     ]
   ],

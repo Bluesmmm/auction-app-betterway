@@ -1,4 +1,10 @@
 import type { AdminScopeStatus, Prisma, PrismaClient } from "@prisma/client";
+import {
+  ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE,
+  buildAdminCommunityScopeChallengeTargetId,
+  SensitiveOperationService,
+  SensitiveOperationType
+} from "../accounts/sensitive-operation.service.js";
 
 export type GrantActivityAdminResult =
   | {
@@ -13,7 +19,11 @@ export type GrantActivityAdminResult =
         | "PLATFORM_ADMIN_REQUIRED"
         | "COMMUNITY_NOT_ACTIVE"
         | "TARGET_ADMIN_ROLE_INVALID"
-        | "TARGET_ADMIN_NOT_ACTIVE";
+        | "TARGET_ADMIN_NOT_ACTIVE"
+        | "SENSITIVE_CHALLENGE_REQUIRED"
+        | "SENSITIVE_CHALLENGE_EXPIRED"
+        | "SESSION_REVOKED"
+        | "DEVICE_NOT_TRUSTED";
     };
 
 export type RevokeActivityAdminResult =
@@ -27,7 +37,11 @@ export type RevokeActivityAdminResult =
       result: "rejected";
       errorCode:
         | "PLATFORM_ADMIN_REQUIRED"
-        | "COMMUNITY_ADMIN_SCOPE_NOT_FOUND";
+        | "COMMUNITY_ADMIN_SCOPE_NOT_FOUND"
+        | "SENSITIVE_CHALLENGE_REQUIRED"
+        | "SENSITIVE_CHALLENGE_EXPIRED"
+        | "SESSION_REVOKED"
+        | "DEVICE_NOT_TRUSTED";
     };
 
 export type CommunityAdmissionOpenResult =
@@ -54,10 +68,15 @@ export type ActiveScopedActivityAdminResult =
     };
 
 export class CommunityAdminAuthorizationService {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly sensitiveOperations?: SensitiveOperationService
+  ) {}
 
   async grantActivityAdmin(input: {
     platformAdminUserId: string;
+    sessionId?: string;
+    challengeId?: string;
     targetUserId: string;
     communityId: string;
     now?: Date;
@@ -89,6 +108,23 @@ export class CommunityAdminAuthorizationService {
 
     return this.prisma.$transaction(async (tx) => {
       await lockCommunity(tx, input.communityId);
+      await lockUser(tx, input.targetUserId);
+
+      const targetUser = await tx.user.findUnique({
+        where: {
+          id: input.targetUserId
+        },
+        select: {
+          status: true
+        }
+      });
+
+      if (!targetUser || targetUser.status !== "active") {
+        return {
+          result: "rejected",
+          errorCode: "TARGET_ADMIN_NOT_ACTIVE"
+        };
+      }
 
       const existingAdminProfile = await tx.adminProfile.findUnique({
         where: {
@@ -114,6 +150,22 @@ export class CommunityAdminAuthorizationService {
           result: "rejected",
           errorCode: "TARGET_ADMIN_NOT_ACTIVE"
         };
+      }
+
+      const challengeAuthorization = await this.authorizeHighRiskAdminAction({
+        actorUserId: input.platformAdminUserId,
+        operationType: SensitiveOperationType.grantActivityAdmin,
+        targetType: ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE,
+        targetId: buildAdminCommunityScopeChallengeTargetId(
+          input.communityId,
+          input.targetUserId
+        ),
+        sessionId: input.sessionId,
+        challengeId: input.challengeId,
+        now
+      });
+      if (challengeAuthorization.result === "rejected") {
+        return challengeAuthorization;
       }
 
       const adminProfile =
@@ -170,6 +222,8 @@ export class CommunityAdminAuthorizationService {
 
   async revokeActivityAdmin(input: {
     platformAdminUserId: string;
+    sessionId?: string;
+    challengeId?: string;
     targetUserId: string;
     communityId: string;
     reason: string;
@@ -202,23 +256,49 @@ export class CommunityAdminAuthorizationService {
         };
       }
 
-      const updated = await tx.adminCommunityScope.updateMany({
+      const activeScope = await tx.adminCommunityScope.findUnique({
         where: {
-          adminProfileId: adminProfile.id,
-          communityId: input.communityId,
-          status: "active"
-        },
-        data: {
-          status: "revoked"
+          adminProfileId_communityId: {
+            adminProfileId: adminProfile.id,
+            communityId: input.communityId
+          }
         }
       });
 
-      if (updated.count !== 1) {
+      if (!activeScope || activeScope.status !== "active") {
         return {
           result: "rejected",
           errorCode: "COMMUNITY_ADMIN_SCOPE_NOT_FOUND"
         };
       }
+
+      const challengeAuthorization = await this.authorizeHighRiskAdminAction({
+        actorUserId: input.platformAdminUserId,
+        operationType: SensitiveOperationType.revokeActivityAdmin,
+        targetType: ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE,
+        targetId: buildAdminCommunityScopeChallengeTargetId(
+          input.communityId,
+          input.targetUserId
+        ),
+        sessionId: input.sessionId,
+        challengeId: input.challengeId,
+        now
+      });
+      if (challengeAuthorization.result === "rejected") {
+        return challengeAuthorization;
+      }
+
+      await tx.adminCommunityScope.update({
+        where: {
+          adminProfileId_communityId: {
+            adminProfileId: adminProfile.id,
+            communityId: input.communityId
+          }
+        },
+        data: {
+          status: "revoked"
+        }
+      });
 
       const scope = await tx.adminCommunityScope.findUniqueOrThrow({
         where: {
@@ -356,6 +436,33 @@ export class CommunityAdminAuthorizationService {
         platformAdmin.mfaEnabled
     );
   }
+
+  private async authorizeHighRiskAdminAction(input: {
+    actorUserId: string;
+    operationType: SensitiveOperationType;
+    targetType: string;
+    targetId: string;
+    sessionId?: string;
+    challengeId?: string;
+    now: Date;
+  }) {
+    if (!this.sensitiveOperations || !input.sessionId) {
+      return {
+        result: "rejected" as const,
+        errorCode: "SENSITIVE_CHALLENGE_REQUIRED" as const
+      };
+    }
+
+    return this.sensitiveOperations.authorizeFreshChallenge({
+      actorUserId: input.actorUserId,
+      operationType: input.operationType,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      sessionId: input.sessionId,
+      challengeId: input.challengeId,
+      now: input.now
+    });
+  }
 }
 
 async function lockCommunity(tx: Prisma.TransactionClient, communityId: string) {
@@ -363,6 +470,15 @@ async function lockCommunity(tx: Prisma.TransactionClient, communityId: string) 
     SELECT "id"
     FROM "AuctionCommunity"
     WHERE "id" = ${communityId}
+    FOR UPDATE
+  `;
+}
+
+async function lockUser(tx: Prisma.TransactionClient, userId: string) {
+  await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT "id"
+    FROM "User"
+    WHERE "id" = ${userId}
     FOR UPDATE
   `;
 }

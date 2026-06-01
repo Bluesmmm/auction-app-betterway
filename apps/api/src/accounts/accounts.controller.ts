@@ -6,12 +6,14 @@ import {
   Patch,
   Post
 } from "@nestjs/common";
+import "reflect-metadata";
 import {
   authenticateBearerSession,
   type AuthenticatedActor
 } from "./controller-auth.js";
 import { GuardianManagementService } from "./guardian-management.service.js";
 import { OnboardingService } from "./onboarding.service.js";
+import { SensitiveOperationService } from "./sensitive-operation.service.js";
 import { SessionService } from "./session.service.js";
 import { SessionTokenService } from "./session-token.service.js";
 
@@ -45,6 +47,7 @@ export class AccountsController {
     private readonly onboarding: OnboardingService,
     private readonly sessions: SessionService,
     private readonly guardians: GuardianManagementService,
+    private readonly sensitiveOperations: SensitiveOperationService,
     private readonly sessionTokens: SessionTokenService
   ) {}
 
@@ -199,7 +202,6 @@ export class AccountsController {
       guardianId: string;
       displayName: string;
       gradeBand: string;
-      initialPoints: number;
       idempotencyKey: string;
     },
     authorization?: string
@@ -211,7 +213,6 @@ export class AccountsController {
       guardianId: body.guardianId,
       displayName: body.displayName,
       gradeBand: body.gradeBand,
-      initialPoints: body.initialPoints,
       idempotencyKey: body.idempotencyKey,
       now
     });
@@ -338,6 +339,99 @@ export class AccountsController {
     );
   }
 
+  async createSensitiveOperationChallenge(
+    body: {
+      operationType: string;
+      targetType: string;
+      targetId: string;
+    },
+    authorization?: string
+  ) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    const result = await this.sensitiveOperations.createChallenge({
+      actorUserId: actor.userId,
+      sessionId: actor.sessionId,
+      operationType: body.operationType,
+      targetType: body.targetType,
+      targetId: body.targetId,
+      now
+    });
+
+    if (result.result === "accepted") {
+      const {
+        result: _result,
+        targetType,
+        targetId,
+        ...payload
+      } = result;
+      return acceptedWriteResponse(
+        {
+          now,
+          targetType: "sensitive_operation_challenge",
+          targetId: result.challengeId,
+          latestStatus: result.status
+        },
+        {
+          ...payload,
+          operationTargetType: targetType,
+          operationTargetId: targetId
+        }
+      );
+    }
+
+    return rejectedWriteResponse(
+      {
+        now,
+        targetType: "sensitive_operation_challenge",
+        targetId: body.targetId,
+        latestStatus: "rejected"
+      },
+      result.errorCode
+    );
+  }
+
+  async verifySensitiveOperationChallenge(
+    challengeId: string,
+    body: {
+      verificationCode: string;
+    },
+    authorization?: string
+  ) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    const result = await this.sensitiveOperations.markPassed({
+      challengeId,
+      actorUserId: actor.userId,
+      sessionId: actor.sessionId,
+      verificationCode: body.verificationCode,
+      now
+    });
+
+    if (result.result === "accepted") {
+      const { result: _result, ...payload } = result;
+      return acceptedWriteResponse(
+        {
+          now,
+          targetType: "sensitive_operation_challenge",
+          targetId: result.challengeId,
+          latestStatus: result.status
+        },
+        payload
+      );
+    }
+
+    return rejectedWriteResponse(
+      {
+        now,
+        targetType: "sensitive_operation_challenge",
+        targetId: challengeId,
+        latestStatus: "rejected"
+      },
+      result.errorCode
+    );
+  }
+
   private authenticate(
     authorization: string | undefined,
     now: Date
@@ -353,6 +447,13 @@ export class AccountsController {
   }
 }
 
+defineConstructorParamTypes(AccountsController, [
+  OnboardingService,
+  SessionService,
+  GuardianManagementService,
+  SensitiveOperationService,
+  SessionTokenService
+]);
 Controller("accounts")(AccountsController);
 applyMethodDecorator(
   Post("wechat-login"),
@@ -380,6 +481,16 @@ applyMethodDecorator(
   Post("children/:childId/guardian-disputes"),
   AccountsController.prototype,
   "openGuardianDispute"
+);
+applyMethodDecorator(
+  Post("sensitive-operation-challenges"),
+  AccountsController.prototype,
+  "createSensitiveOperationChallenge"
+);
+applyMethodDecorator(
+  Post("sensitive-operation-challenges/:challengeId/verify"),
+  AccountsController.prototype,
+  "verifySensitiveOperationChallenge"
 );
 applyParameterDecorator(Body(), AccountsController.prototype, "loginWithWechat", 0);
 applyParameterDecorator(Body(), AccountsController.prototype, "refreshSession", 0);
@@ -445,6 +556,36 @@ applyParameterDecorator(
   "openGuardianDispute",
   2
 );
+applyParameterDecorator(
+  Body(),
+  AccountsController.prototype,
+  "createSensitiveOperationChallenge",
+  0
+);
+applyParameterDecorator(
+  Headers("authorization"),
+  AccountsController.prototype,
+  "createSensitiveOperationChallenge",
+  1
+);
+applyParameterDecorator(
+  Param("challengeId"),
+  AccountsController.prototype,
+  "verifySensitiveOperationChallenge",
+  0
+);
+applyParameterDecorator(
+  Body(),
+  AccountsController.prototype,
+  "verifySensitiveOperationChallenge",
+  1
+);
+applyParameterDecorator(
+  Headers("authorization"),
+  AccountsController.prototype,
+  "verifySensitiveOperationChallenge",
+  2
+);
 
 function coerceRequiredDate(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value);
@@ -502,4 +643,8 @@ function applyMethodDecorator(
   }
 
   decorator(target, propertyKey, descriptor);
+}
+
+function defineConstructorParamTypes(target: object, paramTypes: unknown[]) {
+  Reflect.defineMetadata("design:paramtypes", paramTypes, target);
 }

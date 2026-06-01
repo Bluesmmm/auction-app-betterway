@@ -3,6 +3,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import { ChildParticipationService } from "../../src/accounts/child-participation.service.js";
 import { OnboardingService } from "../../src/accounts/onboarding.service.js";
 import {
+  ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE,
+  buildAdminCommunityScopeChallengeTargetId,
   SensitiveOperationService,
   SensitiveOperationType
 } from "../../src/accounts/sensitive-operation.service.js";
@@ -37,9 +39,12 @@ const sensitiveOperations = new SensitiveOperationService(
   () => verificationCode
 );
 const applications = new CommunityApplicationService(prisma, sensitiveOperations);
-const adminAuthorizations = new CommunityAdminAuthorizationService(prisma);
+const adminAuthorizations = new CommunityAdminAuthorizationService(
+  prisma,
+  sensitiveOperations
+);
 const access = new CommunityAccessService(prisma, adminAuthorizations);
-const participation = new ChildParticipationService(prisma, sessions);
+const participation = new ChildParticipationService(prisma, sensitiveOperations);
 
 function unique(label: string) {
   return `${label}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -76,8 +81,11 @@ async function createGuardianWithSession(label: string) {
 
 async function createPlatformAdmin(label: string) {
   const token = unique(label);
-  const login = await onboarding.loginWithWechatCode({
+  const login = await onboarding.loginWithWechatCodeAndCreateSession({
     code: `mock_openid_${token}`,
+    deviceFingerprintHash: `device_${token}`,
+    ipHash: `ip_${token}`,
+    userAgentHash: `ua_${token}`,
     now: new Date("2026-05-31T14:02:00.000Z")
   });
 
@@ -95,7 +103,8 @@ async function createPlatformAdmin(label: string) {
   });
 
   return {
-    userId: login.userId
+    userId: login.userId,
+    sessionId: login.sessionId
   };
 }
 
@@ -130,7 +139,6 @@ describe("Stage 2 accounts-community flow", () => {
       guardianId: applicant.guardianId,
       displayName: `Stage2 Flow Child ${unique("display")}`,
       gradeBand: "grade_3_4",
-      initialPoints: 100,
       idempotencyKey: unique("stage2_flow_child"),
       now: new Date("2026-05-31T14:05:00.000Z")
     });
@@ -236,8 +244,34 @@ describe("Stage 2 accounts-community flow", () => {
       errorCode: "COMMUNITY_NOT_OPEN_FOR_ADMISSION"
     });
 
+    const grantChallenge = await sensitiveOperations.createChallenge({
+      actorUserId: platformAdmin.userId,
+      sessionId: platformAdmin.sessionId,
+      operationType: SensitiveOperationType.grantActivityAdmin,
+      targetType: ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE,
+      targetId: buildAdminCommunityScopeChallengeTargetId(
+        approved.communityId,
+        activityAdminCandidate.userId
+      ),
+      riskLabels: [],
+      now: new Date("2026-05-31T14:08:30.000Z")
+    });
+
+    if (grantChallenge.result !== "accepted") {
+      throw new Error("expected activity admin grant challenge creation");
+    }
+    await sensitiveOperations.markPassed({
+      challengeId: grantChallenge.challengeId,
+      actorUserId: platformAdmin.userId,
+      sessionId: platformAdmin.sessionId,
+      verificationCode,
+      now: new Date("2026-05-31T14:08:45.000Z")
+    });
+
     const grantedAdmin = await adminAuthorizations.grantActivityAdmin({
       platformAdminUserId: platformAdmin.userId,
+      sessionId: platformAdmin.sessionId,
+      challengeId: grantChallenge.challengeId,
       targetUserId: activityAdminCandidate.userId,
       communityId: approved.communityId,
       now: new Date("2026-05-31T14:09:00.000Z")

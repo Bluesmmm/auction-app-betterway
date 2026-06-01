@@ -7,6 +7,10 @@ import type {
   RiskSignalType
 } from "@prisma/client";
 import { randomUUID } from "node:crypto";
+import {
+  SensitiveOperationService,
+  SensitiveOperationType
+} from "./sensitive-operation.service.js";
 
 export type RecordRiskSignalInput = {
   actorUserId?: string;
@@ -55,6 +59,8 @@ export type ReviewRiskSignalResult =
 
 export type ApplyRiskRestrictionInput = {
   platformAdminUserId: string;
+  sessionId?: string;
+  challengeId?: string;
   type: RiskRestrictionType;
   scope: RiskRestrictionScope;
   targetId: string;
@@ -71,11 +77,19 @@ export type ApplyRiskRestrictionResult =
     }
   | {
       result: "rejected";
-      errorCode: "PLATFORM_ADMIN_REQUIRED" | "RISK_TARGET_NOT_FOUND";
+      errorCode:
+        | "PLATFORM_ADMIN_REQUIRED"
+        | "RISK_TARGET_NOT_FOUND"
+        | "SENSITIVE_CHALLENGE_REQUIRED"
+        | "SENSITIVE_CHALLENGE_EXPIRED"
+        | "SESSION_REVOKED"
+        | "DEVICE_NOT_TRUSTED";
     };
 
 export type ResolveRiskRestrictionInput = {
   platformAdminUserId: string;
+  sessionId?: string;
+  challengeId?: string;
   restrictionId: string;
   resolutionText: string;
   now?: Date;
@@ -89,7 +103,13 @@ export type ResolveRiskRestrictionResult =
     }
   | {
       result: "rejected";
-      errorCode: "PLATFORM_ADMIN_REQUIRED" | "RISK_RESTRICTION_NOT_FOUND";
+      errorCode:
+        | "PLATFORM_ADMIN_REQUIRED"
+        | "RISK_RESTRICTION_NOT_FOUND"
+        | "SENSITIVE_CHALLENGE_REQUIRED"
+        | "SENSITIVE_CHALLENGE_EXPIRED"
+        | "SESSION_REVOKED"
+        | "DEVICE_NOT_TRUSTED";
     };
 
 export type ListRiskSignalsResult =
@@ -130,7 +150,10 @@ type RestrictionTargetData = {
 };
 
 export class RiskGovernanceService {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly sensitiveOperations?: SensitiveOperationService
+  ) {}
 
   async listRiskSignals(input: {
     platformAdminUserId: string;
@@ -373,6 +396,19 @@ export class RiskGovernanceService {
         };
       }
 
+      const challengeAuthorization = await this.authorizeHighRiskAdminAction({
+        actorUserId: input.platformAdminUserId,
+        operationType: SensitiveOperationType.applyRiskRestriction,
+        targetType: sensitiveTargetTypeForRiskScope(input.scope),
+        targetId: input.targetId,
+        sessionId: input.sessionId,
+        challengeId: input.challengeId,
+        now
+      });
+      if (challengeAuthorization.result === "rejected") {
+        return challengeAuthorization;
+      }
+
       const restrictionId = await createRiskRestriction(tx, {
         target: restrictionTarget,
         type: input.type,
@@ -416,6 +452,35 @@ export class RiskGovernanceService {
         result: "rejected",
         errorCode: "PLATFORM_ADMIN_REQUIRED"
       };
+    }
+
+    const activeRestriction = await this.prisma.riskRestriction.findFirst({
+      where: {
+        id: input.restrictionId,
+        status: "active"
+      },
+      select: {
+        id: true
+      }
+    });
+    if (!activeRestriction) {
+      return {
+        result: "rejected",
+        errorCode: "RISK_RESTRICTION_NOT_FOUND"
+      };
+    }
+
+    const challengeAuthorization = await this.authorizeHighRiskAdminAction({
+      actorUserId: input.platformAdminUserId,
+      operationType: SensitiveOperationType.resolveRiskRestriction,
+      targetType: "risk_restriction",
+      targetId: input.restrictionId,
+      sessionId: input.sessionId,
+      challengeId: input.challengeId,
+      now
+    });
+    if (challengeAuthorization.result === "rejected") {
+      return challengeAuthorization;
     }
 
     const updated = await this.prisma.riskRestriction.updateMany({
@@ -474,6 +539,33 @@ export class RiskGovernanceService {
         platformAdmin.status === "active" &&
         platformAdmin.mfaEnabled
     );
+  }
+
+  private async authorizeHighRiskAdminAction(input: {
+    actorUserId: string;
+    operationType: SensitiveOperationType;
+    targetType: string;
+    targetId: string;
+    sessionId?: string;
+    challengeId?: string;
+    now: Date;
+  }) {
+    if (!this.sensitiveOperations || !input.sessionId) {
+      return {
+        result: "rejected" as const,
+        errorCode: "SENSITIVE_CHALLENGE_REQUIRED" as const
+      };
+    }
+
+    return this.sensitiveOperations.authorizeFreshChallenge({
+      actorUserId: input.actorUserId,
+      operationType: input.operationType,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      sessionId: input.sessionId,
+      challengeId: input.challengeId,
+      now: input.now
+    });
   }
 }
 
@@ -870,6 +962,21 @@ function restrictionTypesForSignal(
         "no_transaction_confirm",
         "sensitive_challenge_required"
       ];
+  }
+}
+
+function sensitiveTargetTypeForRiskScope(scope: RiskRestrictionScope): string {
+  switch (scope) {
+    case "user":
+      return "user";
+    case "guardian":
+      return "guardian_profile";
+    case "child":
+      return "child_profile";
+    case "community_member":
+      return "community_member";
+    case "community":
+      return "community";
   }
 }
 

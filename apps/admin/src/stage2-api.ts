@@ -79,6 +79,12 @@ const riskRestrictionScopeSchema = z.enum([
   "community"
 ]);
 const riskRestrictionStatusSchema = z.enum(["active", "resolved", "expired"]);
+const highRiskSensitiveChallengeErrorCodes = [
+  "SENSITIVE_CHALLENGE_REQUIRED",
+  "SENSITIVE_CHALLENGE_EXPIRED",
+  "SESSION_REVOKED",
+  "DEVICE_NOT_TRUSTED"
+] as const;
 
 export const communityCreationRequestRowSchema = z.object({
   requestId: trimmedStringSchema,
@@ -112,14 +118,24 @@ export const memberReviewRowSchema = z.object({
   requestedAt: z.string()
 });
 
+const memberReviewQueueAcceptedResultSchema = z.object({
+  result: z.literal("accepted"),
+  members: z.array(memberReviewRowSchema)
+});
+
 export const listMemberReviewQueueResultSchema = z.union([
-  z.object({
-    result: z.literal("accepted"),
-    members: z.array(memberReviewRowSchema)
-  }),
+  memberReviewQueueAcceptedResultSchema,
   z.object({
     result: z.literal("rejected"),
     errorCode: z.enum(["PLATFORM_ADMIN_REQUIRED"])
+  })
+]);
+
+export const listScopedMemberReviewQueueResultSchema = z.union([
+  memberReviewQueueAcceptedResultSchema,
+  z.object({
+    result: z.literal("rejected"),
+    errorCode: z.enum(["COMMUNITY_ADMIN_REQUIRED"])
   })
 ]);
 
@@ -176,7 +192,8 @@ export const grantActivityAdminResultSchema = z.union([
       "PLATFORM_ADMIN_REQUIRED",
       "COMMUNITY_NOT_ACTIVE",
       "TARGET_ADMIN_ROLE_INVALID",
-      "TARGET_ADMIN_NOT_ACTIVE"
+      "TARGET_ADMIN_NOT_ACTIVE",
+      ...highRiskSensitiveChallengeErrorCodes
     ])
   })
 ]);
@@ -192,7 +209,8 @@ export const revokeActivityAdminResultSchema = z.union([
     result: z.literal("rejected"),
     errorCode: z.enum([
       "PLATFORM_ADMIN_REQUIRED",
-      "COMMUNITY_ADMIN_SCOPE_NOT_FOUND"
+      "COMMUNITY_ADMIN_SCOPE_NOT_FOUND",
+      ...highRiskSensitiveChallengeErrorCodes
     ])
   })
 ]);
@@ -283,7 +301,11 @@ export const applyRiskRestrictionResultSchema = z.union([
   }),
   z.object({
     result: z.literal("rejected"),
-    errorCode: z.enum(["PLATFORM_ADMIN_REQUIRED", "RISK_TARGET_NOT_FOUND"])
+    errorCode: z.enum([
+      "PLATFORM_ADMIN_REQUIRED",
+      "RISK_TARGET_NOT_FOUND",
+      ...highRiskSensitiveChallengeErrorCodes
+    ])
   })
 ]);
 
@@ -297,7 +319,8 @@ export const resolveRiskRestrictionResultSchema = z.union([
     result: z.literal("rejected"),
     errorCode: z.enum([
       "PLATFORM_ADMIN_REQUIRED",
-      "RISK_RESTRICTION_NOT_FOUND"
+      "RISK_RESTRICTION_NOT_FOUND",
+      ...highRiskSensitiveChallengeErrorCodes
     ])
   })
 ]);
@@ -314,13 +337,15 @@ export const rejectCommunityRequestInputSchema = stage2AuthSchema.extend({
 
 export const grantActivityAdminInputSchema = stage2AuthSchema.extend({
   communityId: trimmedStringSchema,
-  targetUserId: trimmedStringSchema
+  targetUserId: trimmedStringSchema,
+  challengeId: trimmedStringSchema.optional()
 });
 
 export const revokeActivityAdminInputSchema = stage2AuthSchema.extend({
   communityId: trimmedStringSchema,
   targetUserId: trimmedStringSchema,
-  reason: trimmedStringSchema
+  reason: trimmedStringSchema,
+  challengeId: trimmedStringSchema.optional()
 });
 
 export const createInviteCodeInputSchema = stage2AuthSchema.extend({
@@ -342,6 +367,10 @@ export const approveCommunityMemberInputSchema = stage2AuthSchema.extend({
   childId: trimmedStringSchema
 });
 
+export const listScopedMemberReviewQueueInputSchema = stage2AuthSchema.extend({
+  communityId: trimmedStringSchema
+});
+
 export const reviewRiskSignalInputSchema = stage2AuthSchema.extend({
   signalId: trimmedStringSchema,
   decision: riskSignalDecisionSchema,
@@ -361,12 +390,14 @@ export const applyRiskRestrictionInputSchema = stage2AuthSchema.extend({
   scope: riskRestrictionScopeSchema,
   targetId: trimmedStringSchema,
   reason: trimmedStringSchema,
+  challengeId: trimmedStringSchema.optional(),
   expiresAt: z.string().datetime().optional()
 });
 
 export const resolveRiskRestrictionInputSchema = stage2AuthSchema.extend({
   restrictionId: trimmedStringSchema,
-  resolutionText: trimmedStringSchema
+  resolutionText: trimmedStringSchema,
+  challengeId: trimmedStringSchema.optional()
 });
 
 export type Stage2Auth = z.infer<typeof stage2AuthSchema>;
@@ -379,6 +410,9 @@ export type ListCommunityCreationRequestsResult = z.infer<
 >;
 export type ListMemberReviewQueueResult = z.infer<
   typeof listMemberReviewQueueResultSchema
+>;
+export type ListScopedMemberReviewQueueResult = z.infer<
+  typeof listScopedMemberReviewQueueResultSchema
 >;
 export type ListRiskSignalsResult = z.infer<
   typeof listRiskSignalsResultSchema
@@ -433,6 +467,9 @@ export type RecordRosterVerificationInput = z.infer<
 export type ApproveCommunityMemberInput = z.infer<
   typeof approveCommunityMemberInputSchema
 >;
+export type ListScopedMemberReviewQueueInput = z.infer<
+  typeof listScopedMemberReviewQueueInputSchema
+>;
 export type ReviewRiskSignalInput = z.infer<
   typeof reviewRiskSignalInputSchema
 >;
@@ -456,6 +493,11 @@ export const stage2AdminCommandCatalog = {
     method: "GET",
     path: "/communities/member-review-queue",
     resultSchema: listMemberReviewQueueResultSchema
+  },
+  listScopedMemberReviewQueue: {
+    method: "GET",
+    path: "/communities/:communityId/member-review-queue",
+    resultSchema: listScopedMemberReviewQueueResultSchema
   },
   listRiskSignals: {
     method: "GET",
@@ -563,6 +605,23 @@ export async function listMemberReviewQueue(
   );
 }
 
+export async function listScopedMemberReviewQueue(
+  apiBaseUrl: string,
+  input: ListScopedMemberReviewQueueInput,
+  fetcher: Stage2Fetch = fetch
+): Promise<ListScopedMemberReviewQueueResult> {
+  const parsed = listScopedMemberReviewQueueInputSchema.parse(input);
+  return executeStage2Query(
+    apiBaseUrl,
+    buildStage2AdminCommandPath("listScopedMemberReviewQueue", {
+      communityId: parsed.communityId
+    }),
+    listScopedMemberReviewQueueResultSchema,
+    fetcher,
+    parsed.accessToken
+  );
+}
+
 export async function listRiskSignals(
   apiBaseUrl: string,
   auth: Stage2Auth,
@@ -630,7 +689,8 @@ export async function grantActivityAdmin(
       communityId: parsed.communityId
     }),
     {
-      targetUserId: parsed.targetUserId
+      targetUserId: parsed.targetUserId,
+      challengeId: parsed.challengeId
     },
     grantActivityAdminResultSchema,
     fetcher,
@@ -651,7 +711,8 @@ export async function revokeActivityAdmin(
     }),
     {
       targetUserId: parsed.targetUserId,
-      reason: parsed.reason
+      reason: parsed.reason,
+      challengeId: parsed.challengeId
     },
     revokeActivityAdminResultSchema,
     fetcher,
@@ -779,6 +840,7 @@ export async function applyRiskRestriction(
       scope: parsed.scope,
       targetId: parsed.targetId,
       reason: parsed.reason,
+      challengeId: parsed.challengeId,
       expiresAt: parsed.expiresAt
     },
     applyRiskRestrictionResultSchema,
@@ -799,7 +861,8 @@ export async function resolveRiskRestriction(
       restrictionId: parsed.restrictionId
     }),
     {
-      resolutionText: parsed.resolutionText
+      resolutionText: parsed.resolutionText,
+      challengeId: parsed.challengeId
     },
     resolveRiskRestrictionResultSchema,
     fetcher,
