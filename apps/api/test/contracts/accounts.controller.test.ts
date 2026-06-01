@@ -30,7 +30,10 @@ function buildController() {
   } as unknown as SessionService;
   const guardians = {
     updateChildGuardianSettings: vi.fn(),
-    openGuardianDispute: vi.fn()
+    inviteSecondaryGuardian: vi.fn(),
+    confirmSecondaryGuardian: vi.fn(),
+    openGuardianDispute: vi.fn(),
+    resolveGuardianDispute: vi.fn()
   } as unknown as GuardianManagementService;
   const sensitiveOperations = {
     createChallenge: vi.fn(),
@@ -362,6 +365,123 @@ describe("AccountsController", () => {
       targetType: "guardian_dispute",
       targetId: "dispute_1",
       latestStatus: "frozen"
+    });
+  });
+
+  it("exposes secondary guardian invitation over HTTP", async () => {
+    setServerTime("2026-05-31T12:27:00.000Z");
+    const { controller, guardians } = buildController();
+    vi.mocked(guardians.inviteSecondaryGuardian).mockResolvedValue({
+      result: "accepted",
+      childId: "child_2",
+      guardianId: "guardian_secondary_1",
+      role: "secondary",
+      status: "pending",
+      confirmedAt: null
+    });
+
+    const response = await controller.inviteSecondaryGuardian(
+      "child_2",
+      {
+        secondaryGuardianId: "guardian_secondary_1",
+        challengeId: "challenge_manage_guardians_1"
+      },
+      AUTHORIZATION
+    );
+
+    expect(guardians.inviteSecondaryGuardian).toHaveBeenCalledWith({
+      actorUserId: AUTH_USER_ID,
+      childId: "child_2",
+      secondaryGuardianId: "guardian_secondary_1",
+      sessionId: AUTH_SESSION_ID,
+      challengeId: "challenge_manage_guardians_1",
+      now: new Date("2026-05-31T12:27:00.000Z")
+    });
+    expectWriteEnvelope(response, {
+      result: "accepted",
+      serverTime: "2026-05-31T12:27:00.000Z",
+      targetType: "guardian_child_link",
+      targetId: "child_2:guardian_secondary_1",
+      latestStatus: "pending"
+    });
+  });
+
+  it("exposes secondary guardian confirmation over HTTP", async () => {
+    setServerTime("2026-05-31T12:28:00.000Z");
+    const { controller, guardians } = buildController();
+    vi.mocked(guardians.confirmSecondaryGuardian).mockResolvedValue({
+      result: "accepted",
+      childId: "child_2",
+      guardianId: "guardian_secondary_1",
+      role: "secondary",
+      status: "active",
+      confirmedAt: "2026-05-31T12:28:00.000Z"
+    });
+
+    const response = await controller.confirmSecondaryGuardian(
+      "child_2",
+      "guardian_secondary_1",
+      {
+        challengeId: "challenge_manage_guardians_2"
+      },
+      AUTHORIZATION
+    );
+
+    expect(guardians.confirmSecondaryGuardian).toHaveBeenCalledWith({
+      actorUserId: AUTH_USER_ID,
+      childId: "child_2",
+      secondaryGuardianId: "guardian_secondary_1",
+      sessionId: AUTH_SESSION_ID,
+      challengeId: "challenge_manage_guardians_2",
+      now: new Date("2026-05-31T12:28:00.000Z")
+    });
+    expectWriteEnvelope(response, {
+      result: "accepted",
+      serverTime: "2026-05-31T12:28:00.000Z",
+      targetType: "guardian_child_link",
+      targetId: "child_2:guardian_secondary_1",
+      latestStatus: "active"
+    });
+  });
+
+  it("exposes guardian dispute resolution over HTTP", async () => {
+    setServerTime("2026-05-31T12:30:30.000Z");
+    const { controller, guardians } = buildController();
+    vi.mocked(guardians.resolveGuardianDispute).mockResolvedValue({
+      result: "accepted",
+      disputeId: "dispute_1",
+      childId: "child_3",
+      status: "resolved",
+      frozenAt: "2026-05-31T12:30:00.000Z",
+      resolvedAt: "2026-05-31T12:30:30.000Z",
+      resolutionSummary: "verified primary guardian"
+    });
+
+    const response = await controller.resolveGuardianDispute(
+      "dispute_1",
+      {
+        status: "resolved",
+        summary: "verified primary guardian"
+      },
+      AUTHORIZATION
+    );
+
+    expect(guardians.resolveGuardianDispute).toHaveBeenCalledWith({
+      platformAdminUserId: AUTH_USER_ID,
+      sessionId: AUTH_SESSION_ID,
+      disputeId: "dispute_1",
+      resolution: {
+        status: "resolved",
+        summary: "verified primary guardian"
+      },
+      now: new Date("2026-05-31T12:30:30.000Z")
+    });
+    expectWriteEnvelope(response, {
+      result: "accepted",
+      serverTime: "2026-05-31T12:30:30.000Z",
+      targetType: "guardian_dispute",
+      targetId: "dispute_1",
+      latestStatus: "resolved"
     });
   });
 

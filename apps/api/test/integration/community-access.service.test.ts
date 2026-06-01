@@ -262,6 +262,121 @@ describe("CommunityAccessService", () => {
         }
       ]
     });
+
+    await prisma.riskRestriction.create({
+      data: {
+        type: "no_join",
+        scope: "guardian",
+        targetId: childGuardian.guardianId,
+        guardianId: childGuardian.guardianId,
+        status: "active",
+        reason: "queue_risk_state_guardian_scope",
+        startsAt: new Date("2026-05-27T14:03:30.000Z")
+      }
+    });
+
+    await expect(
+      access.listScopedMemberReviewQueue({
+        actorUserId: activityAdmin.userId,
+        communityId: community.id,
+        now: new Date("2026-05-27T14:04:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "accepted",
+      members: [
+        {
+          key: member.id,
+          communityId: community.id,
+          childId: child.childId,
+          guardianId: childGuardian.guardianId,
+          memberStatus: "pending_admin",
+          rosterVerificationStatus: "matched",
+          riskState: "restricted",
+          requestedAt: "2026-05-27T14:02:00.000Z"
+        }
+      ]
+    });
+  });
+
+  it("turns rejected roster verification into a terminal member state", async () => {
+    const onboarding = new OnboardingService(prisma, new FakeWechatAuthProvider());
+    const access = new CommunityAccessService(prisma);
+    const activityAdmin = await createGuardian(onboarding, "roster_reject_admin");
+    const childGuardian = await createGuardian(onboarding, "roster_reject_child");
+    const child = await onboarding.createChildWithPrimaryGuardian({
+      actorUserId: childGuardian.userId,
+      guardianId: childGuardian.guardianId,
+      displayName: `Roster Reject Child ${Date.now()}`,
+      gradeBand: "grade_3_4",
+      idempotencyKey: `roster_reject_child_${Date.now()}`,
+      now: new Date("2026-05-27T14:04:30.000Z")
+    });
+
+    if (child.result !== "accepted") {
+      throw new Error("expected child creation to succeed");
+    }
+
+    const community = await prisma.auctionCommunity.create({
+      data: {
+        name: `Roster Reject Community ${Date.now()}`,
+        creatorGuardianId: activityAdmin.guardianId,
+        status: "active",
+        defaultAuctionDurationMinutes: 1440
+      }
+    });
+    await grantCommunityAdminScope(activityAdmin.userId, community.id);
+    const member = await prisma.communityMember.create({
+      data: {
+        communityId: community.id,
+        childId: child.childId,
+        status: "pending_admin",
+        rosterVerificationStatus: "pending",
+        guardianConfirmedAt: new Date("2026-05-27T14:05:00.000Z")
+      }
+    });
+
+    await expect(
+      access.recordRosterVerification({
+        actorUserId: activityAdmin.userId,
+        communityId: community.id,
+        childId: child.childId,
+        status: "rejected",
+        evidenceJson: {
+          rosterId: "not-in-pilot-roster"
+        },
+        now: new Date("2026-05-27T14:05:30.000Z")
+      })
+    ).resolves.toEqual({
+      result: "accepted",
+      communityId: community.id,
+      childId: child.childId,
+      memberStatus: "removed"
+    });
+
+    await expect(
+      access.listScopedMemberReviewQueue({
+        actorUserId: activityAdmin.userId,
+        communityId: community.id,
+        now: new Date("2026-05-27T14:06:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "accepted",
+      members: []
+    });
+    await expect(
+      prisma.communityMember.findUniqueOrThrow({
+        where: {
+          id: member.id
+        },
+        select: {
+          status: true,
+          rosterVerificationStatus: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "removed",
+      rosterVerificationStatus: "rejected"
+    });
   });
 
   it("keeps invite validation, guardian confirmation, and admin approval separate", async () => {
@@ -793,6 +908,131 @@ describe("CommunityAccessService", () => {
         memberStatus: "pending_guardian"
       })
     );
+  });
+
+  it("rejects removed or banned members instead of accepting a fresh invite retry", async () => {
+    const onboarding = new OnboardingService(prisma, new FakeWechatAuthProvider());
+    const access = new CommunityAccessService(prisma);
+    const admin = await createGuardian(onboarding, "removed_retry_admin");
+    const childGuardian = await createGuardian(onboarding, "removed_retry_child");
+    const child = await onboarding.createChildWithPrimaryGuardian({
+      actorUserId: childGuardian.userId,
+      guardianId: childGuardian.guardianId,
+      displayName: `Removed Retry Child ${Date.now()}`,
+      gradeBand: "grade_3_4",
+      idempotencyKey: `removed_retry_child_initial_${Date.now()}`,
+      now: new Date("2026-05-27T16:05:00.000Z")
+    });
+
+    if (child.result !== "accepted") {
+      throw new Error("expected child creation to succeed");
+    }
+
+    const community = await prisma.auctionCommunity.create({
+      data: {
+        name: `Removed Retry Community ${Date.now()}`,
+        creatorGuardianId: admin.guardianId,
+        status: "active",
+        defaultAuctionDurationMinutes: 1440
+      }
+    });
+    await grantCommunityAdminScope(admin.userId, community.id);
+    await createActiveRuleVersion(community.id);
+    const invite = await access.createInviteCode({
+      actorUserId: admin.userId,
+      communityId: community.id,
+      code: `REMOVEDRETRY${Date.now()}`,
+      maxUses: 2
+    });
+
+    if (invite.result !== "accepted") {
+      throw new Error("expected invite creation to succeed");
+    }
+
+    const first = await access.requestJoinWithInvite({
+      actorUserId: childGuardian.userId,
+      childId: child.childId,
+      code: invite.code,
+      idempotencyKey: `removed_retry_join_${child.childId}`,
+      now: new Date("2026-05-27T16:06:00.000Z")
+    });
+    expect(first.result).toBe("accepted");
+
+    await prisma.communityMember.update({
+      where: {
+        communityId_childId: {
+          communityId: community.id,
+          childId: child.childId
+        }
+      },
+      data: {
+        status: "removed"
+      }
+    });
+
+    await expect(
+      access.requestJoinWithInvite({
+        actorUserId: childGuardian.userId,
+        childId: child.childId,
+        code: invite.code,
+        idempotencyKey: `removed_retry_again_${child.childId}`,
+        now: new Date("2026-05-27T16:07:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "COMMUNITY_MEMBER_STATE_INVALID"
+    });
+
+    await expect(
+      prisma.communityInviteCode.findUniqueOrThrow({
+        where: {
+          code: invite.code
+        },
+        select: {
+          usedCount: true
+        }
+      })
+    ).resolves.toEqual({
+      usedCount: 1
+    });
+
+    await prisma.communityMember.update({
+      where: {
+        communityId_childId: {
+          communityId: community.id,
+          childId: child.childId
+        }
+      },
+      data: {
+        status: "banned"
+      }
+    });
+
+    await expect(
+      access.requestJoinWithInvite({
+        actorUserId: childGuardian.userId,
+        childId: child.childId,
+        code: invite.code,
+        idempotencyKey: `banned_retry_again_${child.childId}`,
+        now: new Date("2026-05-27T16:08:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "COMMUNITY_MEMBER_STATE_INVALID"
+    });
+
+    await expect(
+      prisma.communityInviteCode.findUniqueOrThrow({
+        where: {
+          code: invite.code
+        },
+        select: {
+          usedCount: true
+        }
+      })
+    ).resolves.toEqual({
+      usedCount: 1
+    });
   });
 
   it("does not consume another invite slot when the same child repeats a join request concurrently", async () => {

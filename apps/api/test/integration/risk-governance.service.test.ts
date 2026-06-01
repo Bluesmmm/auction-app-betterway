@@ -212,6 +212,9 @@ describe("RiskGovernanceService", () => {
     const child = await createChild("adult_impersonation");
     const platformAdmin = await createPlatformAdmin("adult_impersonation_admin");
     const nonPlatformReviewer = await createGuardian("adult_impersonation_non_admin");
+    const { community } = await createCommunityWithAdmin(
+      "adult_impersonation_join"
+    );
 
     const signal = await riskGovernance.recordRiskSignal({
       actorUserId: platformAdmin.userId,
@@ -260,6 +263,7 @@ describe("RiskGovernanceService", () => {
         actorUserId: child.userId,
         childId: child.childId,
         action: "join_community",
+        communityId: community.id,
         now: new Date("2026-05-31T18:11:00.000Z")
       })
     ).resolves.toEqual({
@@ -351,6 +355,7 @@ describe("RiskGovernanceService", () => {
         actorUserId: child.userId,
         childId: child.childId,
         action: "join_community",
+        communityId: community.id,
         now: new Date("2026-05-31T18:15:00.000Z")
       })
     ).resolves.toEqual({
@@ -386,6 +391,181 @@ describe("RiskGovernanceService", () => {
         }
       })
     ).resolves.toEqual([]);
+  });
+
+  it("prevents concurrent risk signal reviews from overwriting each other", async () => {
+    const child = await createChild("concurrent_risk_review_child");
+    const signalCreator = await createPlatformAdmin("concurrent_risk_creator");
+    const firstReviewer = await createPlatformAdmin("concurrent_risk_first");
+    const secondReviewer = await createPlatformAdmin("concurrent_risk_second");
+    const signal = await riskGovernance.recordRiskSignal({
+      actorUserId: signalCreator.userId,
+      type: "adult_impersonation_suspected",
+      scope: "child",
+      targetId: child.childId,
+      evidenceJson: {
+        source: "concurrent_review_regression"
+      },
+      now: new Date("2026-05-31T18:16:10.000Z")
+    });
+
+    if (signal.result !== "accepted") {
+      throw new Error("expected risk signal creation to succeed");
+    }
+
+    const firstChallengeId = await createPassedRiskChallenge({
+      actorUserId: firstReviewer.userId,
+      sessionId: firstReviewer.sessionId,
+      operationType: SensitiveOperationType.reviewRiskSignal,
+      targetType: "risk_signal",
+      targetId: signal.signalId,
+      now: new Date("2026-05-31T18:16:20.000Z")
+    });
+    const secondChallengeId = await createPassedRiskChallenge({
+      actorUserId: secondReviewer.userId,
+      sessionId: secondReviewer.sessionId,
+      operationType: SensitiveOperationType.reviewRiskSignal,
+      targetType: "risk_signal",
+      targetId: signal.signalId,
+      now: new Date("2026-05-31T18:16:25.000Z")
+    });
+
+    const results = await Promise.all([
+      riskGovernance.reviewRiskSignal({
+        platformAdminUserId: firstReviewer.userId,
+        sessionId: firstReviewer.sessionId,
+        challengeId: firstChallengeId,
+        signalId: signal.signalId,
+        decision: "resolved",
+        resolutionText: "first decision",
+        now: new Date("2026-05-31T18:16:30.000Z")
+      }),
+      riskGovernance.reviewRiskSignal({
+        platformAdminUserId: secondReviewer.userId,
+        sessionId: secondReviewer.sessionId,
+        challengeId: secondChallengeId,
+        signalId: signal.signalId,
+        decision: "dismissed",
+        resolutionText: "second decision",
+        now: new Date("2026-05-31T18:16:31.000Z")
+      })
+    ]);
+
+    const accepted = results.filter((result) => result.result === "accepted");
+    const rejected = results.filter((result) => result.result === "rejected");
+    expect(accepted).toHaveLength(1);
+    expect(rejected).toEqual([
+      {
+        result: "rejected",
+        errorCode: "RISK_SIGNAL_STATE_INVALID"
+      }
+    ]);
+    const acceptedReview = accepted[0];
+    if (!acceptedReview || acceptedReview.result !== "accepted") {
+      throw new Error("expected exactly one accepted risk review");
+    }
+
+    const finalSignal = await prisma.riskSignal.findUniqueOrThrow({
+      where: {
+        id: signal.signalId
+      },
+      select: {
+        status: true
+      }
+    });
+    expect(finalSignal.status).toBe(acceptedReview.status);
+  });
+
+  it("lets activity admins report scoped risk without directly imposing restrictions", async () => {
+    const { admin, community } = await createCommunityWithAdmin(
+      "activity_admin_risk_report"
+    );
+    const child = await createChild("activity_admin_risk_report_child");
+    const invite = await access.createInviteCode({
+      actorUserId: admin.userId,
+      communityId: community.id,
+      code: `ACTRISK${Date.now()}`,
+      maxUses: 3
+    });
+
+    if (invite.result !== "accepted") {
+      throw new Error("expected invite creation to succeed");
+    }
+
+    await access.requestJoinWithInvite({
+      actorUserId: child.userId,
+      childId: child.childId,
+      code: invite.code,
+      idempotencyKey: `activity_admin_risk_join_${child.childId}`,
+      now: new Date("2026-05-31T18:17:00.000Z")
+    });
+    await access.confirmJoinByPrimaryGuardian({
+      actorUserId: child.userId,
+      communityId: community.id,
+      childId: child.childId,
+      now: new Date("2026-05-31T18:18:00.000Z")
+    });
+    await access.recordRosterVerification({
+      actorUserId: admin.userId,
+      communityId: community.id,
+      childId: child.childId,
+      status: "matched",
+      evidenceJson: {
+        rosterId: "activity-admin-risk-roster"
+      },
+      now: new Date("2026-05-31T18:19:00.000Z")
+    });
+
+    const member = await prisma.communityMember.findUniqueOrThrow({
+      where: {
+        communityId_childId: {
+          communityId: community.id,
+          childId: child.childId
+        }
+      }
+    });
+    const signal = await riskGovernance.recordRiskSignal({
+      actorUserId: admin.userId,
+      type: "cross_community_anomaly",
+      scope: "community_member",
+      targetId: member.id,
+      evidenceJson: {
+        reportedBy: "activity_admin"
+      },
+      now: new Date("2026-05-31T18:19:30.000Z")
+    });
+
+    expect(signal).toEqual({
+      result: "accepted",
+      signalId: expect.any(String),
+      status: "under_review",
+      restrictionIds: []
+    });
+    if (signal.result !== "accepted") {
+      throw new Error("expected activity-admin risk report to succeed");
+    }
+
+    await expect(
+      prisma.riskRestriction.findMany({
+        where: {
+          riskSignalId: signal.signalId,
+          status: "active"
+        }
+      })
+    ).resolves.toEqual([]);
+    await expect(
+      access.approveCommunityMember({
+        actorUserId: admin.userId,
+        communityId: community.id,
+        childId: child.childId,
+        now: new Date("2026-05-31T18:19:45.000Z")
+      })
+    ).resolves.toEqual({
+      result: "accepted",
+      communityId: community.id,
+      childId: child.childId,
+      memberStatus: "active"
+    });
   });
 
   it("blocks restricted children before invite consumption and before admin member approval", async () => {
@@ -495,7 +675,7 @@ describe("RiskGovernanceService", () => {
       }
     });
     const memberRisk = await riskGovernance.recordRiskSignal({
-      actorUserId: admin.userId,
+      actorUserId: platformAdmin.userId,
       type: "cross_community_anomaly",
       scope: "community_member",
       targetId: member.id,

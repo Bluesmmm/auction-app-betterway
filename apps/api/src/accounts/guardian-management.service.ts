@@ -706,81 +706,83 @@ export class GuardianManagementService {
       return authorization;
     }
 
-    const dispute = await this.prisma.guardianDispute.findUnique({
-      where: {
-        id: input.disputeId
-      }
-    });
-
-    if (!dispute) {
-      return {
-        result: "rejected",
-        errorCode: "DISPUTE_NOT_FOUND"
-      };
-    }
-
-    if (dispute.status === "resolved" || dispute.status === "rejected") {
-      return {
-        result: "rejected",
-        errorCode: "DISPUTE_ALREADY_RESOLVED"
-      };
-    }
-
-    const updatedCount = await this.prisma.guardianDispute.updateMany({
-      where: {
-        id: input.disputeId,
-        status: {
-          in: ["pending_platform_review", "frozen"]
+    return this.prisma.$transaction(async (tx) => {
+      const dispute = await tx.guardianDispute.findUnique({
+        where: {
+          id: input.disputeId
         }
-      },
-      data: {
-        status: input.resolution.status,
-        resolvedAt: now,
-        resolutionSummary: input.resolution.summary ?? null
+      });
+
+      if (!dispute) {
+        return {
+          result: "rejected" as const,
+          errorCode: "DISPUTE_NOT_FOUND" as const
+        };
       }
-    });
 
-    if (updatedCount.count !== 1) {
-      return {
-        result: "rejected",
-        errorCode: "DISPUTE_ALREADY_RESOLVED"
-      };
-    }
-
-    const updated = await this.prisma.guardianDispute.findUniqueOrThrow({
-      where: {
-        id: input.disputeId
+      if (dispute.status === "resolved" || dispute.status === "rejected") {
+        return {
+          result: "rejected" as const,
+          errorCode: "DISPUTE_ALREADY_RESOLVED" as const
+        };
       }
-    });
 
-    await this.prisma.auditLog.create({
-      data: {
-        actorUserId: input.platformAdminUserId,
-        action: "guardian_dispute.resolve",
-        targetType: "guardian_dispute",
-        targetId: updated.id,
-        beforeJson: {
-          status: dispute.status,
-          resolutionSummary: dispute.resolutionSummary
+      const updatedCount = await tx.guardianDispute.updateMany({
+        where: {
+          id: input.disputeId,
+          status: {
+            in: ["pending_platform_review", "frozen"]
+          }
         },
-        afterJson: {
-          status: updated.status,
-          resolutionSummary: updated.resolutionSummary,
-          resolvedAt: updated.resolvedAt?.toISOString() ?? now.toISOString(),
-          challengeId: authorization.challengeId
+        data: {
+          status: input.resolution.status,
+          resolvedAt: now,
+          resolutionSummary: input.resolution.summary ?? null
         }
-      }
-    });
+      });
 
-    return {
-      result: "accepted",
-      disputeId: updated.id,
-      childId: updated.childId,
-      status: updated.status,
-      frozenAt: updated.frozenAt?.toISOString() ?? null,
-      resolvedAt: updated.resolvedAt?.toISOString() ?? null,
-      resolutionSummary: updated.resolutionSummary
-    };
+      if (updatedCount.count !== 1) {
+        return {
+          result: "rejected" as const,
+          errorCode: "DISPUTE_ALREADY_RESOLVED" as const
+        };
+      }
+
+      const updated = await tx.guardianDispute.findUniqueOrThrow({
+        where: {
+          id: input.disputeId
+        }
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorUserId: input.platformAdminUserId,
+          action: "guardian_dispute.resolve",
+          targetType: "guardian_dispute",
+          targetId: updated.id,
+          beforeJson: {
+            status: dispute.status,
+            resolutionSummary: dispute.resolutionSummary
+          },
+          afterJson: {
+            status: updated.status,
+            resolutionSummary: updated.resolutionSummary,
+            resolvedAt: updated.resolvedAt?.toISOString() ?? now.toISOString(),
+            challengeId: authorization.challengeId
+          }
+        }
+      });
+
+      return {
+        result: "accepted" as const,
+        disputeId: updated.id,
+        childId: updated.childId,
+        status: updated.status,
+        frozenAt: updated.frozenAt?.toISOString() ?? null,
+        resolvedAt: updated.resolvedAt?.toISOString() ?? null,
+        resolutionSummary: updated.resolutionSummary
+      };
+    });
   }
 
   private async authorizeManageChildGuardians(input: {

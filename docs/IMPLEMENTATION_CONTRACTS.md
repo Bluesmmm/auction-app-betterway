@@ -372,6 +372,8 @@ invite_code_validated
 
 约束：
 
+- 认证前失败（缺少 Bearer token、access token 无效、session 已撤销）返回传输层 `401 Unauthorized`，不进入业务写入裁决 envelope。
+- 已通过认证后的业务拒绝必须使用本节的写入响应 envelope，不能用裸异常替代稳定 `error_code`。
 - 出价、结算、确认、交付、管理员裁决和积分调整必须返回服务端裁决后的最新状态。
 - 事务超时、锁等待超时、死锁重试耗尽、网络中断或事务结果不明时，服务端不能返回业务成功。
 - 结果不确定时，响应必须表达 `pending` 或 `unknown`，并要求客户端刷新目标状态。

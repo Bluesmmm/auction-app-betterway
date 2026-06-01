@@ -489,6 +489,16 @@ export class CommunityAccessService {
       });
 
       if (existingMember) {
+        if (
+          existingMember.status === "removed" ||
+          existingMember.status === "banned"
+        ) {
+          return completeIdempotentJoinRequest(tx, idempotency.id, {
+            result: "rejected",
+            errorCode: "COMMUNITY_MEMBER_STATE_INVALID"
+          });
+        }
+
         return completeIdempotentJoinRequest(tx, idempotency.id, {
           result: "accepted",
           communityId: existingMember.communityId,
@@ -901,6 +911,7 @@ export class CommunityAccessService {
           status: "pending_admin"
         },
         data: {
+          ...(input.status === "rejected" ? { status: "removed" as const } : {}),
           rosterVerificationStatus: input.status,
           rosterEvidenceJson: input.evidenceJson
         }
@@ -1000,7 +1011,12 @@ export class CommunityAccessService {
                 status: "active"
               },
               select: {
-                guardianId: true
+                guardianId: true,
+                guardian: {
+                  select: {
+                    userId: true
+                  }
+                }
               },
               take: 1
             }
@@ -1011,56 +1027,25 @@ export class CommunityAccessService {
 
     return Promise.all(
       members.map(async (member) => {
-        const riskRestriction = await this.prisma.riskRestriction.findFirst({
-          where: {
-            status: "active",
-            type: {
-              in: ["suspended", "no_join"]
-            },
-            startsAt: {
-              lte: input.now
-            },
-            AND: [
-              {
-                OR: [{ expiresAt: null }, { expiresAt: { gt: input.now } }]
-              },
-              {
-                OR: [
-                  {
-                    scope: "community_member",
-                    targetId: member.id
-                  },
-                  {
-                    scope: "community_member",
-                    communityMemberId: member.id,
-                    communityId: member.communityId,
-                    childId: member.childId
-                  },
-                  {
-                    scope: "child",
-                    targetId: member.childId
-                  },
-                  {
-                    scope: "community",
-                    targetId: member.communityId
-                  }
-                ]
-              }
-            ]
-          },
-          select: {
-            id: true
-          }
-        });
+        const primaryGuardian = member.child.guardianLinks[0];
+        const riskRestricted = primaryGuardian
+          ? await hasActiveJoinRiskRestriction(this.prisma, {
+              childId: member.childId,
+              primaryGuardianId: primaryGuardian.guardianId,
+              primaryGuardianUserId: primaryGuardian.guardian.userId,
+              communityId: member.communityId,
+              now: input.now
+            })
+          : true;
 
         return {
           key: member.id,
           communityId: member.communityId,
           childId: member.childId,
-          guardianId: member.child.guardianLinks[0]?.guardianId ?? "",
+          guardianId: primaryGuardian?.guardianId ?? "",
           memberStatus: member.status,
           rosterVerificationStatus: member.rosterVerificationStatus,
-          riskState: riskRestriction ? ("restricted" as const) : ("clear" as const),
+          riskState: riskRestricted ? ("restricted" as const) : ("clear" as const),
           requestedAt: member.guardianConfirmedAt?.toISOString() ?? ""
         };
       })
@@ -1321,7 +1306,7 @@ async function hasFrozenGuardianDispute(
 }
 
 async function hasActiveJoinRiskRestriction(
-  tx: Prisma.TransactionClient,
+  tx: Prisma.TransactionClient | PrismaClient,
   input: {
     childId: string;
     primaryGuardianId: string;

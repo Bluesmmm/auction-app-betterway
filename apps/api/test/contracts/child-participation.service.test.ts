@@ -134,6 +134,37 @@ async function createActiveCommunityMembership(
   return community.id;
 }
 
+async function createOpenAdmissionCommunity(
+  child: Pick<ChildFixture, "guardianId" | "userId">,
+  label: string
+) {
+  const community = await prisma.auctionCommunity.create({
+    data: {
+      name: `Join Community ${unique(label)}`,
+      creatorGuardianId: child.guardianId,
+      status: "active",
+      defaultAuctionDurationMinutes: 1440
+    }
+  });
+  const adminProfile = await prisma.adminProfile.create({
+    data: {
+      userId: child.userId,
+      role: "activity_admin",
+      mfaEnabled: true,
+      status: "active"
+    }
+  });
+  await prisma.adminCommunityScope.create({
+    data: {
+      adminProfileId: adminProfile.id,
+      communityId: community.id,
+      status: "active"
+    }
+  });
+
+  return community.id;
+}
+
 async function createPassedChallenge(input: {
   actorUserId: string;
   sessionId: string;
@@ -250,7 +281,7 @@ describe("ChildParticipationService", () => {
     });
   });
 
-  it("enforces browse membership and allows join_community when the child is otherwise eligible", async () => {
+  it("enforces browse membership and allows join_community when the community is open for admission", async () => {
     const child = await createChildFixture("browse_membership");
     const community = await prisma.auctionCommunity.create({
       data: {
@@ -260,13 +291,17 @@ describe("ChildParticipationService", () => {
         defaultAuctionDurationMinutes: 1440
       }
     });
+    const joinCommunityId = await createOpenAdmissionCommunity(
+      child,
+      "browse_membership_join"
+    );
 
     await expect(
       participation.evaluateChildParticipation({
         actorUserId: child.userId,
         childId: child.childId,
         action: "join_community",
-        communityId: community.id,
+        communityId: joinCommunityId,
         now: new Date("2026-05-31T13:20:00.000Z")
       })
     ).resolves.toEqual({
@@ -388,7 +423,7 @@ describe("ChildParticipationService", () => {
       }
     });
 
-    for (const action of ["browse_community", "publish", "bid"] as const) {
+    for (const action of ["join_community", "browse_community", "publish", "bid"] as const) {
       await expect(
         participation.evaluateChildParticipation({
           actorUserId: child.userId,
@@ -408,7 +443,7 @@ describe("ChildParticipationService", () => {
   it("rejects community-scoped actions when the community id is missing", async () => {
     const child = await createChildFixture("missing_community_id");
 
-    for (const action of ["browse_community", "publish", "bid"] as const) {
+    for (const action of ["join_community", "browse_community", "publish", "bid"] as const) {
       await expect(
         participation.evaluateChildParticipation({
           actorUserId: child.userId,
@@ -422,6 +457,31 @@ describe("ChildParticipationService", () => {
         errorCode: "COMMUNITY_ID_REQUIRED"
       });
     }
+  });
+
+  it("rejects join_community when admission is not open", async () => {
+    const child = await createChildFixture("join_admission_closed");
+    const community = await prisma.auctionCommunity.create({
+      data: {
+        name: `Closed Admission ${unique("community")}`,
+        creatorGuardianId: child.guardianId,
+        status: "active",
+        defaultAuctionDurationMinutes: 1440
+      }
+    });
+
+    await expect(
+      participation.evaluateChildParticipation({
+        actorUserId: child.userId,
+        childId: child.childId,
+        action: "join_community",
+        communityId: community.id,
+        now: new Date("2026-05-31T13:27:45.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "COMMUNITY_NOT_OPEN_FOR_ADMISSION"
+    });
   });
 
   it("enforces guardian controls, disputes, and risk restrictions for publish and bid", async () => {

@@ -292,6 +292,92 @@ export class AccountsController {
     );
   }
 
+  async inviteSecondaryGuardian(
+    childId: string,
+    body: {
+      secondaryGuardianId: string;
+      challengeId?: string;
+    },
+    authorization?: string
+  ) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    const result = await this.guardians.inviteSecondaryGuardian({
+      actorUserId: actor.userId,
+      childId,
+      secondaryGuardianId: body.secondaryGuardianId,
+      sessionId: actor.sessionId,
+      challengeId: body.challengeId,
+      now
+    });
+
+    if (result.result === "accepted") {
+      const { result: _result, ...payload } = result;
+      return acceptedWriteResponse(
+        {
+          now,
+          targetType: "guardian_child_link",
+          targetId: guardianLinkTargetId(childId, result.guardianId),
+          latestStatus: result.status
+        },
+        payload
+      );
+    }
+
+    return rejectedWriteResponse(
+      {
+        now,
+        targetType: "guardian_child_link",
+        targetId: guardianLinkTargetId(childId, body.secondaryGuardianId),
+        latestStatus: "rejected"
+      },
+      result.errorCode
+    );
+  }
+
+  async confirmSecondaryGuardian(
+    childId: string,
+    guardianId: string,
+    body: {
+      challengeId?: string;
+    },
+    authorization?: string
+  ) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    const result = await this.guardians.confirmSecondaryGuardian({
+      actorUserId: actor.userId,
+      childId,
+      secondaryGuardianId: guardianId,
+      sessionId: actor.sessionId,
+      challengeId: body.challengeId,
+      now
+    });
+
+    if (result.result === "accepted") {
+      const { result: _result, ...payload } = result;
+      return acceptedWriteResponse(
+        {
+          now,
+          targetType: "guardian_child_link",
+          targetId: guardianLinkTargetId(childId, result.guardianId),
+          latestStatus: result.status
+        },
+        payload
+      );
+    }
+
+    return rejectedWriteResponse(
+      {
+        now,
+        targetType: "guardian_child_link",
+        targetId: guardianLinkTargetId(childId, guardianId),
+        latestStatus: "rejected"
+      },
+      result.errorCode
+    );
+  }
+
   async openGuardianDispute(
     childId: string,
     body: {
@@ -333,6 +419,51 @@ export class AccountsController {
         now,
         targetType: "guardian_dispute",
         targetId: childId,
+        latestStatus: "rejected"
+      },
+      result.errorCode
+    );
+  }
+
+  async resolveGuardianDispute(
+    disputeId: string,
+    body: {
+      status: "resolved" | "rejected";
+      summary?: string;
+    },
+    authorization?: string
+  ) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    const result = await this.guardians.resolveGuardianDispute({
+      platformAdminUserId: actor.userId,
+      sessionId: actor.sessionId,
+      disputeId,
+      resolution: {
+        status: body.status,
+        summary: body.summary
+      },
+      now
+    });
+
+    if (result.result === "accepted") {
+      const { result: _result, ...payload } = result;
+      return acceptedWriteResponse(
+        {
+          now,
+          targetType: "guardian_dispute",
+          targetId: result.disputeId,
+          latestStatus: result.status
+        },
+        payload
+      );
+    }
+
+    return rejectedWriteResponse(
+      {
+        now,
+        targetType: "guardian_dispute",
+        targetId: disputeId,
         latestStatus: "rejected"
       },
       result.errorCode
@@ -478,9 +609,24 @@ applyMethodDecorator(
   "updateChildSettings"
 );
 applyMethodDecorator(
+  Post("children/:childId/secondary-guardians"),
+  AccountsController.prototype,
+  "inviteSecondaryGuardian"
+);
+applyMethodDecorator(
+  Post("children/:childId/secondary-guardians/:guardianId/confirm"),
+  AccountsController.prototype,
+  "confirmSecondaryGuardian"
+);
+applyMethodDecorator(
   Post("children/:childId/guardian-disputes"),
   AccountsController.prototype,
   "openGuardianDispute"
+);
+applyMethodDecorator(
+  Post("guardian-disputes/:disputeId/resolve"),
+  AccountsController.prototype,
+  "resolveGuardianDispute"
 );
 applyMethodDecorator(
   Post("sensitive-operation-challenges"),
@@ -541,6 +687,48 @@ applyParameterDecorator(
 applyParameterDecorator(
   Param("childId"),
   AccountsController.prototype,
+  "inviteSecondaryGuardian",
+  0
+);
+applyParameterDecorator(
+  Body(),
+  AccountsController.prototype,
+  "inviteSecondaryGuardian",
+  1
+);
+applyParameterDecorator(
+  Headers("authorization"),
+  AccountsController.prototype,
+  "inviteSecondaryGuardian",
+  2
+);
+applyParameterDecorator(
+  Param("childId"),
+  AccountsController.prototype,
+  "confirmSecondaryGuardian",
+  0
+);
+applyParameterDecorator(
+  Param("guardianId"),
+  AccountsController.prototype,
+  "confirmSecondaryGuardian",
+  1
+);
+applyParameterDecorator(
+  Body(),
+  AccountsController.prototype,
+  "confirmSecondaryGuardian",
+  2
+);
+applyParameterDecorator(
+  Headers("authorization"),
+  AccountsController.prototype,
+  "confirmSecondaryGuardian",
+  3
+);
+applyParameterDecorator(
+  Param("childId"),
+  AccountsController.prototype,
   "openGuardianDispute",
   0
 );
@@ -554,6 +742,24 @@ applyParameterDecorator(
   Headers("authorization"),
   AccountsController.prototype,
   "openGuardianDispute",
+  2
+);
+applyParameterDecorator(
+  Param("disputeId"),
+  AccountsController.prototype,
+  "resolveGuardianDispute",
+  0
+);
+applyParameterDecorator(
+  Body(),
+  AccountsController.prototype,
+  "resolveGuardianDispute",
+  1
+);
+applyParameterDecorator(
+  Headers("authorization"),
+  AccountsController.prototype,
+  "resolveGuardianDispute",
   2
 );
 applyParameterDecorator(
@@ -589,6 +795,10 @@ applyParameterDecorator(
 
 function coerceRequiredDate(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value);
+}
+
+function guardianLinkTargetId(childId: string, guardianId: string): string {
+  return `${childId}:${guardianId}`;
 }
 
 function acceptedWriteResponse<T extends Record<string, unknown>>(

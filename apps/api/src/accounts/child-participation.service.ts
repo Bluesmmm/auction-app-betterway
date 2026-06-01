@@ -44,6 +44,7 @@ export type ChildParticipationDecision =
         | "COMMUNITY_ID_REQUIRED"
         | "COMMUNITY_MEMBER_REQUIRED"
         | "COMMUNITY_NOT_ACTIVE"
+        | "COMMUNITY_NOT_OPEN_FOR_ADMISSION"
         | "SENSITIVE_CHALLENGE_REQUIRED"
         | "SENSITIVE_CHALLENGE_EXPIRED"
         | "SESSION_REVOKED"
@@ -122,9 +123,13 @@ export class ChildParticipationService {
 
     switch (input.action) {
       case "join_community":
-        return {
-          result: "accepted"
-        };
+        if (!input.communityId) {
+          return {
+            result: "rejected",
+            errorCode: "COMMUNITY_ID_REQUIRED"
+          };
+        }
+        return this.evaluateJoinCommunity(input.communityId);
       case "browse_community":
         if (!input.communityId) {
           return {
@@ -256,6 +261,51 @@ export class ChildParticipationService {
     communityId: string
   ): Promise<ChildParticipationDecision> {
     return this.evaluateCommunityMembership(childId, communityId);
+  }
+
+  private async evaluateJoinCommunity(
+    communityId: string
+  ): Promise<ChildParticipationDecision> {
+    const community = await this.prisma.auctionCommunity.findUnique({
+      where: {
+        id: communityId
+      },
+      select: {
+        status: true,
+        adminScopes: {
+          where: {
+            status: "active",
+            adminProfile: {
+              role: "activity_admin",
+              status: "active",
+              mfaEnabled: true
+            }
+          },
+          select: {
+            id: true
+          },
+          take: 1
+        }
+      }
+    });
+
+    if (!community || community.status !== "active") {
+      return {
+        result: "rejected",
+        errorCode: "COMMUNITY_NOT_ACTIVE"
+      };
+    }
+
+    if (community.adminScopes.length === 0) {
+      return {
+        result: "rejected",
+        errorCode: "COMMUNITY_NOT_OPEN_FOR_ADMISSION"
+      };
+    }
+
+    return {
+      result: "accepted"
+    };
   }
 
   private async evaluateCommunityMembership(

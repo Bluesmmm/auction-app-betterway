@@ -18,6 +18,8 @@ import {
 import {
   approveCommunityMember,
   approveCommunityRequest,
+  buildAdminCommunityScopeChallengeTargetId,
+  createSensitiveOperationChallenge,
   createInviteCode,
   grantActivityAdmin,
   listCommunityCreationRequests,
@@ -27,9 +29,11 @@ import {
   rejectCommunityRequest,
   reviewRiskSignal,
   revokeActivityAdmin,
+  verifySensitiveOperationChallenge,
   type ApproveCommunityMemberInput,
   type ApproveCommunityRequestInput,
   type CommunityMemberTransitionResult,
+  type CreateSensitiveOperationChallengeResult,
   type CreateInviteCodeInput,
   type CreateInviteCodeResult,
   type GrantActivityAdminInput,
@@ -40,7 +44,9 @@ import {
   type ReviewRiskSignalInput,
   type ReviewRiskSignalResult,
   type RevokeActivityAdminInput,
-  type RevokeActivityAdminResult
+  type RevokeActivityAdminResult,
+  type SensitiveOperationType,
+  type VerifySensitiveOperationChallengeResult
 } from "./stage2-api.js";
 
 type MutationAlertState =
@@ -50,7 +56,15 @@ type MutationAlertState =
   | CreateInviteCodeResult
   | CommunityMemberTransitionResult
   | ReviewRiskSignalResult
+  | CreateSensitiveOperationChallengeResult
+  | VerifySensitiveOperationChallengeResult
   | null;
+
+type SensitiveChallengeFormFields = {
+  accessToken: string;
+  challengeId?: string;
+  verificationCode?: string;
+};
 
 type CommunityRequestRow = {
   key: string;
@@ -349,9 +363,58 @@ export function CommunityRequestsView({ apiBaseUrl }: { apiBaseUrl: string }) {
 }
 
 export function ActivityAdminsView({ apiBaseUrl }: { apiBaseUrl: string }) {
-  const [form] = Form.useForm<GrantActivityAdminInput & RevokeActivityAdminInput>();
+  const [form] = Form.useForm<
+    GrantActivityAdminInput &
+      RevokeActivityAdminInput &
+      SensitiveChallengeFormFields
+  >();
   const [result, setResult] = useState<MutationAlertState>(null);
   const { message } = AntApp.useApp();
+
+  const challengeMutation = useMutation({
+    mutationFn: (values: {
+      accessToken: string;
+      operationType: SensitiveOperationType;
+      communityId: string;
+      targetUserId: string;
+    }) =>
+      createSensitiveOperationChallenge(apiBaseUrl, {
+        accessToken: values.accessToken,
+        operationType: values.operationType,
+        targetType: "admin_community_scope_request",
+        targetId: buildAdminCommunityScopeChallengeTargetId(
+          values.communityId,
+          values.targetUserId
+        )
+      }),
+    onSuccess: (payload) => {
+      setResult(payload);
+      if (payload.result === "accepted") {
+        form.setFieldsValue({ challengeId: payload.challengeId });
+      }
+      void message.success(
+        payload.result === "accepted"
+          ? `Challenge ${payload.challengeId}`
+          : payload.errorCode
+      );
+    }
+  });
+
+  const verifyChallengeMutation = useMutation({
+    mutationFn: (values: {
+      accessToken: string;
+      challengeId: string;
+      verificationCode: string;
+    }) => verifySensitiveOperationChallenge(apiBaseUrl, values),
+    onSuccess: (payload) => {
+      setResult(payload);
+      void message.success(
+        payload.result === "accepted"
+          ? `Verified ${payload.challengeId}`
+          : payload.errorCode
+      );
+    }
+  });
 
   const grantMutation = useMutation({
     mutationFn: (values: GrantActivityAdminInput) =>
@@ -493,7 +556,64 @@ export function ActivityAdminsView({ apiBaseUrl }: { apiBaseUrl: string }) {
             <Form.Item label="Revoke Reason" name="reason">
               <Input.TextArea rows={3} />
             </Form.Item>
+            <Form.Item label="Challenge ID" name="challengeId">
+              <Input placeholder="fresh challenge id" />
+            </Form.Item>
+            <Form.Item label="Verification Code" name="verificationCode">
+              <Input placeholder="out-of-band code" />
+            </Form.Item>
             <Space wrap>
+              <Button
+                loading={challengeMutation.isPending}
+                onClick={async () => {
+                  const values = await form.validateFields([
+                    "communityId",
+                    "targetUserId",
+                    "accessToken"
+                  ]);
+                  challengeMutation.mutate({
+                    ...values,
+                    operationType: "grant_activity_admin"
+                  });
+                }}
+              >
+                Create Grant Challenge
+              </Button>
+              <Button
+                loading={challengeMutation.isPending}
+                onClick={async () => {
+                  const values = await form.validateFields([
+                    "communityId",
+                    "targetUserId",
+                    "accessToken"
+                  ]);
+                  challengeMutation.mutate({
+                    ...values,
+                    operationType: "revoke_activity_admin"
+                  });
+                }}
+              >
+                Create Revoke Challenge
+              </Button>
+              <Button
+                loading={verifyChallengeMutation.isPending}
+                onClick={async () => {
+                  const values = await form.validateFields([
+                    "accessToken",
+                    "challengeId",
+                    "verificationCode"
+                  ]);
+                  verifyChallengeMutation.mutate(
+                    values as {
+                      accessToken: string;
+                      challengeId: string;
+                      verificationCode: string;
+                    }
+                  );
+                }}
+              >
+                Verify Challenge
+              </Button>
               <Button
                 type="primary"
                 loading={grantMutation.isPending}
@@ -501,7 +621,8 @@ export function ActivityAdminsView({ apiBaseUrl }: { apiBaseUrl: string }) {
                   const values = await form.validateFields([
                     "communityId",
                     "targetUserId",
-                    "accessToken"
+                    "accessToken",
+                    "challengeId"
                   ]);
                   grantMutation.mutate(values as GrantActivityAdminInput);
                 }}
@@ -516,7 +637,8 @@ export function ActivityAdminsView({ apiBaseUrl }: { apiBaseUrl: string }) {
                     "communityId",
                     "targetUserId",
                     "accessToken",
-                    "reason"
+                    "reason",
+                    "challengeId"
                   ]);
                   revokeMutation.mutate(values as RevokeActivityAdminInput);
                 }}
@@ -838,7 +960,9 @@ export function MemberReviewView({ apiBaseUrl }: { apiBaseUrl: string }) {
 }
 
 export function RiskReviewView({ apiBaseUrl }: { apiBaseUrl: string }) {
-  const [form] = Form.useForm<ReviewRiskSignalInput>();
+  const [form] = Form.useForm<
+    ReviewRiskSignalInput & SensitiveChallengeFormFields
+  >();
   const [result, setResult] = useState<MutationAlertState>(null);
   const { message } = AntApp.useApp();
   const riskQueueAccessToken = Form.useWatch("accessToken", form) ?? "";
@@ -855,6 +979,43 @@ export function RiskReviewView({ apiBaseUrl }: { apiBaseUrl: string }) {
 
   const riskReviewRows: RiskReviewRow[] =
     riskQueue.data?.result === "accepted" ? riskQueue.data.signals : [];
+
+  const challengeMutation = useMutation({
+    mutationFn: (values: { accessToken: string; signalId: string }) =>
+      createSensitiveOperationChallenge(apiBaseUrl, {
+        accessToken: values.accessToken,
+        operationType: "review_risk_signal",
+        targetType: "risk_signal",
+        targetId: values.signalId
+      }),
+    onSuccess: (payload) => {
+      setResult(payload);
+      if (payload.result === "accepted") {
+        form.setFieldsValue({ challengeId: payload.challengeId });
+      }
+      void message.success(
+        payload.result === "accepted"
+          ? `Challenge ${payload.challengeId}`
+          : payload.errorCode
+      );
+    }
+  });
+
+  const verifyChallengeMutation = useMutation({
+    mutationFn: (values: {
+      accessToken: string;
+      challengeId: string;
+      verificationCode: string;
+    }) => verifySensitiveOperationChallenge(apiBaseUrl, values),
+    onSuccess: (payload) => {
+      setResult(payload);
+      void message.success(
+        payload.result === "accepted"
+          ? `Verified ${payload.challengeId}`
+          : payload.errorCode
+      );
+    }
+  });
 
   const reviewMutation = useMutation({
     mutationFn: (values: ReviewRiskSignalInput) => reviewRiskSignal(apiBaseUrl, values),
@@ -984,19 +1145,64 @@ export function RiskReviewView({ apiBaseUrl }: { apiBaseUrl: string }) {
             <Form.Item label="Challenge ID" name="challengeId">
               <Input />
             </Form.Item>
+            <Form.Item label="Verification Code" name="verificationCode">
+              <Input />
+            </Form.Item>
             <Form.Item name="resolveRestrictions" valuePropName="checked">
               <Checkbox>Resolve linked restrictions</Checkbox>
             </Form.Item>
-            <Button
-              type="primary"
-              loading={reviewMutation.isPending}
-              onClick={async () => {
-                const values = await form.validateFields();
-                reviewMutation.mutate(values);
-              }}
-            >
-              Submit Review
-            </Button>
+            <Space wrap>
+              <Button
+                loading={challengeMutation.isPending}
+                onClick={async () => {
+                  const values = await form.validateFields([
+                    "accessToken",
+                    "signalId"
+                  ]);
+                  challengeMutation.mutate(
+                    values as { accessToken: string; signalId: string }
+                  );
+                }}
+              >
+                Create Review Challenge
+              </Button>
+              <Button
+                loading={verifyChallengeMutation.isPending}
+                onClick={async () => {
+                  const values = await form.validateFields([
+                    "accessToken",
+                    "challengeId",
+                    "verificationCode"
+                  ]);
+                  verifyChallengeMutation.mutate(
+                    values as {
+                      accessToken: string;
+                      challengeId: string;
+                      verificationCode: string;
+                    }
+                  );
+                }}
+              >
+                Verify Challenge
+              </Button>
+              <Button
+                type="primary"
+                loading={reviewMutation.isPending}
+                onClick={async () => {
+                  const values = await form.validateFields([
+                    "accessToken",
+                    "signalId",
+                    "decision",
+                    "resolutionText",
+                    "resolveRestrictions",
+                    "challengeId"
+                  ]);
+                  reviewMutation.mutate(values as ReviewRiskSignalInput);
+                }}
+              >
+                Submit Review
+              </Button>
+            </Space>
           </Form>
           <MutationResultAlert result={result} />
         </section>

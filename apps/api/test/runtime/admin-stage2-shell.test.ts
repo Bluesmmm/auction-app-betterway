@@ -8,7 +8,9 @@ import {
   applyRiskRestriction,
   approveCommunityMember,
   approveCommunityRequest,
+  buildAdminCommunityScopeChallengeTargetId,
   buildStage2AdminCommandPath,
+  createSensitiveOperationChallenge,
   createInviteCode,
   grantActivityAdmin,
   listCommunityCreationRequests,
@@ -20,6 +22,7 @@ import {
   reviewCommunityRequestResultSchema,
   reviewRiskSignal,
   revokeActivityAdmin,
+  verifySensitiveOperationChallenge,
   stage2AdminCommandCatalog
 } from "../../../admin/src/stage2-api.js";
 import { stage2AdminViewDefinitions } from "../../../admin/src/stage2-nav.js";
@@ -75,6 +78,9 @@ describe("admin Stage 2 shell", () => {
     expect(typeof approveCommunityRequest).toBe("function");
     expect(typeof listCommunityCreationRequests).toBe("function");
     expect(typeof rejectCommunityRequest).toBe("function");
+    expect(typeof createSensitiveOperationChallenge).toBe("function");
+    expect(typeof verifySensitiveOperationChallenge).toBe("function");
+    expect(typeof buildAdminCommunityScopeChallengeTargetId).toBe("function");
     expect(typeof grantActivityAdmin).toBe("function");
     expect(typeof revokeActivityAdmin).toBe("function");
     expect(typeof createInviteCode).toBe("function");
@@ -154,6 +160,12 @@ describe("admin Stage 2 shell", () => {
         communityId: "community_alpha"
       })
     ).toBe("/communities/community_alpha/member-review-queue");
+    expect(
+      buildAdminCommunityScopeChallengeTargetId(
+        "community_alpha",
+        "user_alpha"
+      )
+    ).toBe("community_alpha:user_alpha");
   });
 
   it("parses review results and sends Stage 2 command payloads through the typed helpers", async () => {
@@ -226,5 +238,140 @@ describe("admin Stage 2 shell", () => {
         })
       })
     );
+  });
+
+  it("creates and verifies sensitive challenges from the admin shell helpers", async () => {
+    const createFetcher = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        result: "accepted",
+        challengeId: "challenge_alpha",
+        actorUserId: "platform_admin_alpha",
+        operationType: "grant_activity_admin",
+        operationTargetType: "admin_community_scope_request",
+        operationTargetId: "community_alpha:user_alpha",
+        expiresAt: "2026-05-31T13:05:00.000Z",
+        status: "pending"
+      }),
+      status: 200,
+      headers: new Headers(),
+      redirected: false,
+      statusText: "OK",
+      type: "basic",
+      url: "https://api.example.com/accounts/sensitive-operation-challenges",
+      clone() {
+        return this as unknown as Response;
+      },
+      body: null,
+      bodyUsed: false,
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      bytes: async () => new Uint8Array(),
+      formData: async () => new FormData(),
+      text: async () => ""
+    }) as Response);
+
+    await expect(
+      createSensitiveOperationChallenge(
+        "https://api.example.com",
+        {
+          accessToken: "access_platform_admin",
+          operationType: "grant_activity_admin",
+          targetType: "admin_community_scope_request",
+          targetId: "community_alpha:user_alpha"
+        },
+        createFetcher
+      )
+    ).resolves.toEqual({
+      result: "accepted",
+      challengeId: "challenge_alpha",
+      actorUserId: "platform_admin_alpha",
+      operationType: "grant_activity_admin",
+      operationTargetType: "admin_community_scope_request",
+      operationTargetId: "community_alpha:user_alpha",
+      expiresAt: "2026-05-31T13:05:00.000Z",
+      status: "pending"
+    });
+    expect(createFetcher).toHaveBeenCalledWith(
+      "https://api.example.com/accounts/sensitive-operation-challenges",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          authorization: "Bearer access_platform_admin"
+        }),
+        body: JSON.stringify({
+          operationType: "grant_activity_admin",
+          targetType: "admin_community_scope_request",
+          targetId: "community_alpha:user_alpha"
+        })
+      })
+    );
+
+    const verifyFetcher = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        result: "accepted",
+        challengeId: "challenge_alpha",
+        actorUserId: "platform_admin_alpha",
+        status: "passed",
+        passedAt: "2026-05-31T13:01:00.000Z",
+        expiresAt: "2026-05-31T13:05:00.000Z"
+      }),
+      status: 200,
+      headers: new Headers(),
+      redirected: false,
+      statusText: "OK",
+      type: "basic",
+      url: "https://api.example.com/accounts/sensitive-operation-challenges/challenge_alpha/verify",
+      clone() {
+        return this as unknown as Response;
+      },
+      body: null,
+      bodyUsed: false,
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      bytes: async () => new Uint8Array(),
+      formData: async () => new FormData(),
+      text: async () => ""
+    }) as Response);
+
+    await expect(
+      verifySensitiveOperationChallenge(
+        "https://api.example.com",
+        {
+          accessToken: "access_platform_admin",
+          challengeId: "challenge_alpha",
+          verificationCode: "135790"
+        },
+        verifyFetcher
+      )
+    ).resolves.toEqual({
+      result: "accepted",
+      challengeId: "challenge_alpha",
+      actorUserId: "platform_admin_alpha",
+      status: "passed",
+      passedAt: "2026-05-31T13:01:00.000Z",
+      expiresAt: "2026-05-31T13:05:00.000Z"
+    });
+    expect(verifyFetcher).toHaveBeenCalledWith(
+      "https://api.example.com/accounts/sensitive-operation-challenges/challenge_alpha/verify",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          verificationCode: "135790"
+        })
+      })
+    );
+  });
+
+  it("keeps high-risk admin views self-contained for sensitive challenge entry", () => {
+    const viewSource = readFileSync("apps/admin/src/stage2-views.tsx", "utf8");
+
+    expect(viewSource).toContain("Create Grant Challenge");
+    expect(viewSource).toContain("Create Revoke Challenge");
+    expect(viewSource).toContain("Create Review Challenge");
+    expect(viewSource).toContain("Verify Challenge");
+    expect(viewSource).toContain("createSensitiveOperationChallenge");
+    expect(viewSource).toContain("verifySensitiveOperationChallenge");
   });
 });

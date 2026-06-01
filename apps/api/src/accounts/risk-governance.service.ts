@@ -255,7 +255,10 @@ export class RiskGovernanceService {
 
     const restrictionIds: string[] = [];
     const restrictionTarget = restrictionTargetForContext(targetContext);
-    if (restrictionTarget) {
+    if (
+      restrictionTarget &&
+      (await canAutoCreateRestrictionsForRiskSignal(tx, input.actorUserId))
+    ) {
       for (const restrictionType of restrictionTypesForSignal(input.type)) {
         const restrictionId = await createRiskRestriction(tx, {
           target: restrictionTarget,
@@ -339,15 +342,31 @@ export class RiskGovernanceService {
         return challengeAuthorization;
       }
 
-      const updatedSignal = await tx.riskSignal.update({
+      const updatedCount = await tx.riskSignal.updateMany({
         where: {
-          id: input.signalId
+          id: input.signalId,
+          status: {
+            in: ["open", "under_review"]
+          }
         },
         data: {
           status: input.decision,
           reviewerUserId: input.platformAdminUserId,
           reviewedAt: now,
           resolutionText: input.resolutionText
+        }
+      });
+
+      if (updatedCount.count !== 1) {
+        return {
+          result: "rejected" as const,
+          errorCode: "RISK_SIGNAL_STATE_INVALID" as const
+        };
+      }
+
+      const updatedSignal = await tx.riskSignal.findUniqueOrThrow({
+        where: {
+          id: input.signalId
         }
       });
 
@@ -481,22 +500,6 @@ export class RiskGovernanceService {
       };
     }
 
-    const activeRestriction = await this.prisma.riskRestriction.findFirst({
-      where: {
-        id: input.restrictionId,
-        status: "active"
-      },
-      select: {
-        id: true
-      }
-    });
-    if (!activeRestriction) {
-      return {
-        result: "rejected",
-        errorCode: "RISK_RESTRICTION_NOT_FOUND"
-      };
-    }
-
     const challengeAuthorization = await this.authorizeHighRiskAdminAction({
       actorUserId: input.platformAdminUserId,
       operationType: SensitiveOperationType.resolveRiskRestriction,
@@ -510,42 +513,44 @@ export class RiskGovernanceService {
       return challengeAuthorization;
     }
 
-    const updated = await this.prisma.riskRestriction.updateMany({
-      where: {
-        id: input.restrictionId,
-        status: "active"
-      },
-      data: {
-        status: "resolved",
-        resolvedAt: now
-      }
-    });
-
-    if (updated.count !== 1) {
-      return {
-        result: "rejected",
-        errorCode: "RISK_RESTRICTION_NOT_FOUND"
-      };
-    }
-
-    await this.prisma.auditLog.create({
-      data: {
-        actorUserId: input.platformAdminUserId,
-        action: "risk_restriction.resolve",
-        targetType: "risk_restriction",
-        targetId: input.restrictionId,
-        reason: input.resolutionText,
-        afterJson: {
-          resolvedAt: now.toISOString()
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.riskRestriction.updateMany({
+        where: {
+          id: input.restrictionId,
+          status: "active"
+        },
+        data: {
+          status: "resolved",
+          resolvedAt: now
         }
-      }
-    });
+      });
 
-    return {
-      result: "accepted",
-      restrictionId: input.restrictionId,
-      status: "resolved"
-    };
+      if (updated.count !== 1) {
+        return {
+          result: "rejected" as const,
+          errorCode: "RISK_RESTRICTION_NOT_FOUND" as const
+        };
+      }
+
+      await tx.auditLog.create({
+        data: {
+          actorUserId: input.platformAdminUserId,
+          action: "risk_restriction.resolve",
+          targetType: "risk_restriction",
+          targetId: input.restrictionId,
+          reason: input.resolutionText,
+          afterJson: {
+            resolvedAt: now.toISOString()
+          }
+        }
+      });
+
+      return {
+        result: "accepted" as const,
+        restrictionId: input.restrictionId,
+        status: "resolved" as const
+      };
+    });
   }
 
   private async isActiveMfaPlatformAdmin(userId: string): Promise<boolean> {
@@ -967,6 +972,29 @@ async function isAuthorizedRiskSignalActor(
   });
 
   return Boolean(scopedActivityAdmin);
+}
+
+async function canAutoCreateRestrictionsForRiskSignal(
+  tx: Prisma.TransactionClient,
+  actorUserId: string | undefined
+): Promise<boolean> {
+  if (!actorUserId) {
+    return true;
+  }
+
+  const platformAdmin = await tx.adminProfile.findFirst({
+    where: {
+      userId: actorUserId,
+      role: "platform_admin",
+      status: "active",
+      mfaEnabled: true
+    },
+    select: {
+      id: true
+    }
+  });
+
+  return Boolean(platformAdmin);
 }
 
 function restrictionTypesForSignal(

@@ -79,6 +79,20 @@ const riskRestrictionScopeSchema = z.enum([
   "community"
 ]);
 const riskRestrictionStatusSchema = z.enum(["active", "resolved", "expired"]);
+const sensitiveOperationTypeSchema = z.enum([
+  "create_community",
+  "export_child_data",
+  "delete_child_profile",
+  "confirm_transaction",
+  "change_child_permissions",
+  "manage_child_guardians",
+  "resolve_guardian_dispute",
+  "grant_activity_admin",
+  "revoke_activity_admin",
+  "apply_risk_restriction",
+  "resolve_risk_restriction",
+  "review_risk_signal"
+]);
 const highRiskSensitiveChallengeErrorCodes = [
   "SENSITIVE_CHALLENGE_REQUIRED",
   "SENSITIVE_CHALLENGE_EXPIRED",
@@ -326,6 +340,48 @@ export const resolveRiskRestrictionResultSchema = z.union([
   })
 ]);
 
+export const createSensitiveOperationChallengeResultSchema = z.union([
+  z.object({
+    result: z.literal("accepted"),
+    challengeId: trimmedStringSchema,
+    actorUserId: trimmedStringSchema,
+    operationType: sensitiveOperationTypeSchema,
+    operationTargetType: trimmedStringSchema,
+    operationTargetId: trimmedStringSchema,
+    expiresAt: z.string().datetime(),
+    status: z.literal("pending")
+  }),
+  z.object({
+    result: z.literal("rejected"),
+    errorCode: z.enum([
+      "SESSION_REVOKED",
+      "SENSITIVE_CHALLENGE_DELIVERY_FAILED",
+      "SENSITIVE_OPERATION_NOT_SUPPORTED",
+      "SENSITIVE_CHALLENGE_TARGET_FORBIDDEN"
+    ])
+  })
+]);
+
+export const verifySensitiveOperationChallengeResultSchema = z.union([
+  z.object({
+    result: z.literal("accepted"),
+    challengeId: trimmedStringSchema,
+    actorUserId: trimmedStringSchema,
+    status: z.literal("passed"),
+    passedAt: z.string().datetime(),
+    expiresAt: z.string().datetime()
+  }),
+  z.object({
+    result: z.literal("rejected"),
+    errorCode: z.enum([
+      "SENSITIVE_CHALLENGE_REQUIRED",
+      "SENSITIVE_CHALLENGE_EXPIRED",
+      "SENSITIVE_CHALLENGE_VERIFICATION_FAILED",
+      "SESSION_REVOKED"
+    ])
+  })
+]);
+
 export const approveCommunityRequestInputSchema = stage2AuthSchema.extend({
   requestId: trimmedStringSchema,
   defaultAuctionDurationMinutes: z.number().int().positive()
@@ -402,7 +458,21 @@ export const resolveRiskRestrictionInputSchema = stage2AuthSchema.extend({
   challengeId: trimmedStringSchema.optional()
 });
 
+export const createSensitiveOperationChallengeInputSchema =
+  stage2AuthSchema.extend({
+    operationType: sensitiveOperationTypeSchema,
+    targetType: trimmedStringSchema,
+    targetId: trimmedStringSchema
+  });
+
+export const verifySensitiveOperationChallengeInputSchema =
+  stage2AuthSchema.extend({
+    challengeId: trimmedStringSchema,
+    verificationCode: trimmedStringSchema
+  });
+
 export type Stage2Auth = z.infer<typeof stage2AuthSchema>;
+export type SensitiveOperationType = z.infer<typeof sensitiveOperationTypeSchema>;
 
 export type CommunityCreationRequestRow = z.infer<
   typeof communityCreationRequestRowSchema
@@ -447,6 +517,12 @@ export type ApplyRiskRestrictionResult = z.infer<
 export type ResolveRiskRestrictionResult = z.infer<
   typeof resolveRiskRestrictionResultSchema
 >;
+export type CreateSensitiveOperationChallengeResult = z.infer<
+  typeof createSensitiveOperationChallengeResultSchema
+>;
+export type VerifySensitiveOperationChallengeResult = z.infer<
+  typeof verifySensitiveOperationChallengeResultSchema
+>;
 
 export type ApproveCommunityRequestInput = z.infer<
   typeof approveCommunityRequestInputSchema
@@ -483,6 +559,12 @@ export type ApplyRiskRestrictionInput = z.infer<
 >;
 export type ResolveRiskRestrictionInput = z.infer<
   typeof resolveRiskRestrictionInputSchema
+>;
+export type CreateSensitiveOperationChallengeInput = z.infer<
+  typeof createSensitiveOperationChallengeInputSchema
+>;
+export type VerifySensitiveOperationChallengeInput = z.infer<
+  typeof verifySensitiveOperationChallengeInputSchema
 >;
 
 export const stage2AdminCommandCatalog = {
@@ -577,6 +659,13 @@ export function buildStage2AdminCommandPath(
   );
 }
 
+export function buildAdminCommunityScopeChallengeTargetId(
+  communityId: string,
+  targetUserId: string
+): string {
+  return `${communityId}:${targetUserId}`;
+}
+
 export async function listCommunityCreationRequests(
   apiBaseUrl: string,
   auth: Stage2Auth,
@@ -654,6 +743,46 @@ export async function approveCommunityRequest(
       defaultAuctionDurationMinutes: parsed.defaultAuctionDurationMinutes
     },
     reviewCommunityRequestResultSchema,
+    fetcher,
+    parsed.accessToken
+  );
+}
+
+export async function createSensitiveOperationChallenge(
+  apiBaseUrl: string,
+  input: CreateSensitiveOperationChallengeInput,
+  fetcher: Stage2Fetch = fetch
+): Promise<CreateSensitiveOperationChallengeResult> {
+  const parsed = createSensitiveOperationChallengeInputSchema.parse(input);
+  return executeStage2Command(
+    apiBaseUrl,
+    "/accounts/sensitive-operation-challenges",
+    {
+      operationType: parsed.operationType,
+      targetType: parsed.targetType,
+      targetId: parsed.targetId
+    },
+    createSensitiveOperationChallengeResultSchema,
+    fetcher,
+    parsed.accessToken
+  );
+}
+
+export async function verifySensitiveOperationChallenge(
+  apiBaseUrl: string,
+  input: VerifySensitiveOperationChallengeInput,
+  fetcher: Stage2Fetch = fetch
+): Promise<VerifySensitiveOperationChallengeResult> {
+  const parsed = verifySensitiveOperationChallengeInputSchema.parse(input);
+  return executeStage2Command(
+    apiBaseUrl,
+    `/accounts/sensitive-operation-challenges/${encodeURIComponent(
+      parsed.challengeId
+    )}/verify`,
+    {
+      verificationCode: parsed.verificationCode
+    },
+    verifySensitiveOperationChallengeResultSchema,
     fetcher,
     parsed.accessToken
   );
