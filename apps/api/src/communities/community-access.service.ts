@@ -6,7 +6,10 @@ import type {
   RosterVerificationStatus
 } from "@prisma/client";
 import { createHash } from "node:crypto";
+import { RiskGovernanceService } from "../accounts/risk-governance.service.js";
 import { CommunityAdminAuthorizationService } from "./community-admin-authorization.service.js";
+
+const ABNORMAL_JOIN_ACTIVE_COMMUNITY_THRESHOLD = 2;
 
 export type CreateInviteCodeInput = {
   actorUserId: string;
@@ -156,7 +159,8 @@ export class CommunityAccessService {
     private readonly prisma: PrismaClient,
     private readonly adminAuthorizations = new CommunityAdminAuthorizationService(
       prisma
-    )
+    ),
+    private readonly riskGovernance = new RiskGovernanceService(prisma)
   ) {}
 
   async listMemberReviewQueue(input: {
@@ -493,6 +497,19 @@ export class CommunityAccessService {
         });
       }
 
+      if (
+        await this.recordAbnormalJoinRiskIfNeeded(tx, {
+          childId: input.childId,
+          attemptedCommunityId: inviteCandidate.communityId,
+          now
+        })
+      ) {
+        return completeIdempotentJoinRequest(tx, idempotency.id, {
+          result: "rejected",
+          errorCode: "RISK_RESTRICTED"
+        });
+      }
+
       const inviteCodes = await tx.$queryRaw<ConsumedInviteCode[]>`
         UPDATE "CommunityInviteCode"
         SET "usedCount" = "usedCount" + 1
@@ -543,6 +560,51 @@ export class CommunityAccessService {
         memberStatus: member.status
       });
     });
+  }
+
+  private async recordAbnormalJoinRiskIfNeeded(
+    tx: Prisma.TransactionClient,
+    input: {
+      childId: string;
+      attemptedCommunityId: string;
+      now: Date;
+    }
+  ): Promise<boolean> {
+    const activeCommunityCount = await tx.communityMember.count({
+      where: {
+        childId: input.childId,
+        status: "active",
+        communityId: {
+          not: input.attemptedCommunityId
+        },
+        community: {
+          status: "active"
+        }
+      }
+    });
+
+    if (activeCommunityCount < ABNORMAL_JOIN_ACTIVE_COMMUNITY_THRESHOLD) {
+      return false;
+    }
+
+    await this.riskGovernance.recordRiskSignalInTransaction(
+      tx,
+      {
+        type: "abnormal_join_pattern",
+        scope: "child",
+        targetId: input.childId,
+        evidenceJson: {
+          source: "community_member.request_with_invite",
+          activeCommunityCount,
+          attemptedCommunityId: input.attemptedCommunityId,
+          threshold: ABNORMAL_JOIN_ACTIVE_COMMUNITY_THRESHOLD
+        },
+        now: input.now
+      },
+      input.now
+    );
+
+    return true;
   }
 
   async confirmJoinByPrimaryGuardian(
@@ -1246,7 +1308,9 @@ async function hasFrozenGuardianDispute(
   const dispute = await tx.guardianDispute.findFirst({
     where: {
       childId,
-      status: "frozen"
+      status: {
+        in: ["pending_platform_review", "frozen"]
+      }
     },
     select: {
       id: true

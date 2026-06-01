@@ -691,7 +691,8 @@ describe("CommunitiesController", () => {
       {
         decision: "resolved",
         resolutionText: "manual review complete",
-        resolveRestrictions: true
+        resolveRestrictions: true,
+        challengeId: "challenge_1"
       },
       AUTHORIZATION
     );
@@ -702,6 +703,8 @@ describe("CommunitiesController", () => {
       decision: "resolved",
       resolutionText: "manual review complete",
       resolveRestrictions: true,
+      sessionId: AUTH_SESSION_ID,
+      challengeId: "challenge_1",
       now: new Date("2026-05-31T13:42:00.000Z")
     });
     expectWriteEnvelope(response, {

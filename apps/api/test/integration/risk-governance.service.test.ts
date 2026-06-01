@@ -303,6 +303,30 @@ describe("RiskGovernanceService", () => {
         now: new Date("2026-05-31T18:14:00.000Z")
       })
     ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SENSITIVE_CHALLENGE_REQUIRED"
+    });
+
+    const reviewChallengeId = await createPassedRiskChallenge({
+      actorUserId: platformAdmin.userId,
+      sessionId: platformAdmin.sessionId,
+      operationType: SensitiveOperationType.reviewRiskSignal,
+      targetType: "risk_signal",
+      targetId: signal.signalId,
+      now: new Date("2026-05-31T18:14:30.000Z")
+    });
+
+    await expect(
+      riskGovernance.reviewRiskSignal({
+        platformAdminUserId: platformAdmin.userId,
+        sessionId: platformAdmin.sessionId,
+        challengeId: reviewChallengeId,
+        signalId: signal.signalId,
+        decision: "dismissed",
+        resolutionText: "verified by platform admin",
+        now: new Date("2026-05-31T18:15:00.000Z")
+      })
+    ).resolves.toEqual({
       result: "accepted",
       signalId: signal.signalId,
       status: "dismissed",
@@ -419,8 +443,19 @@ describe("RiskGovernanceService", () => {
       usedCount: 0
     });
 
+    const joinReviewChallengeId = await createPassedRiskChallenge({
+      actorUserId: platformAdmin.userId,
+      sessionId: platformAdmin.sessionId,
+      operationType: SensitiveOperationType.reviewRiskSignal,
+      targetType: "risk_signal",
+      targetId: joinRisk.signalId,
+      now: new Date("2026-05-31T18:21:30.000Z")
+    });
+
     await riskGovernance.reviewRiskSignal({
       platformAdminUserId: platformAdmin.userId,
+      sessionId: platformAdmin.sessionId,
+      challengeId: joinReviewChallengeId,
       signalId: joinRisk.signalId,
       decision: "resolved",
       resolutionText: "cleared for pilot admission",
@@ -507,8 +542,19 @@ describe("RiskGovernanceService", () => {
       errorCode: "RISK_RESTRICTED"
     });
 
+    const memberReviewChallengeId = await createPassedRiskChallenge({
+      actorUserId: platformAdmin.userId,
+      sessionId: platformAdmin.sessionId,
+      operationType: SensitiveOperationType.reviewRiskSignal,
+      targetType: "risk_signal",
+      targetId: memberRisk.signalId,
+      now: new Date("2026-05-31T18:27:30.000Z")
+    });
+
     await riskGovernance.reviewRiskSignal({
       platformAdminUserId: platformAdmin.userId,
+      sessionId: platformAdmin.sessionId,
+      challengeId: memberReviewChallengeId,
       signalId: memberRisk.signalId,
       decision: "resolved",
       resolutionText: "manual review approved membership",

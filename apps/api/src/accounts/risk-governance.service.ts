@@ -35,6 +35,8 @@ export type RecordRiskSignalResult =
 
 export type ReviewRiskSignalInput = {
   platformAdminUserId: string;
+  sessionId?: string;
+  challengeId?: string;
   signalId: string;
   decision: Extract<RiskSignalStatus, "resolved" | "dismissed">;
   resolutionText: string;
@@ -54,7 +56,11 @@ export type ReviewRiskSignalResult =
       errorCode:
         | "PLATFORM_ADMIN_REQUIRED"
         | "RISK_SIGNAL_NOT_FOUND"
-        | "RISK_SIGNAL_STATE_INVALID";
+        | "RISK_SIGNAL_STATE_INVALID"
+        | "SENSITIVE_CHALLENGE_REQUIRED"
+        | "SENSITIVE_CHALLENGE_EXPIRED"
+        | "SESSION_REVOKED"
+        | "DEVICE_NOT_TRUSTED";
     };
 
 export type ApplyRiskRestrictionInput = {
@@ -207,77 +213,85 @@ export class RiskGovernanceService {
   ): Promise<RecordRiskSignalResult> {
     const now = input.now ?? new Date();
 
-    return this.prisma.$transaction(async (tx) => {
-      const targetContext = await resolveRiskTargetContext(
-        tx,
-        input.scope,
-        input.targetId
-      );
+    return this.prisma.$transaction((tx) =>
+      this.recordRiskSignalInTransaction(tx, input, now)
+    );
+  }
 
-      if (!targetContext) {
-        return {
-          result: "rejected" as const,
-          errorCode: "RISK_TARGET_NOT_FOUND" as const
-        };
-      }
+  async recordRiskSignalInTransaction(
+    tx: Prisma.TransactionClient,
+    input: RecordRiskSignalInput,
+    now: Date = input.now ?? new Date()
+  ): Promise<RecordRiskSignalResult> {
+    const targetContext = await resolveRiskTargetContext(
+      tx,
+      input.scope,
+      input.targetId
+    );
 
-      if (
-        !(await isAuthorizedRiskSignalActor(
-          tx,
-          input.actorUserId,
-          targetContext
-        ))
-      ) {
-        return {
-          result: "rejected" as const,
-          errorCode: "RISK_SIGNAL_ACTOR_NOT_AUTHORIZED" as const
-        };
-      }
-
-      await lockRiskTarget(tx, targetContext);
-
-      const signal = await createRiskSignal(tx, input, targetContext, now);
-
-      const restrictionIds: string[] = [];
-      const restrictionTarget = restrictionTargetForContext(targetContext);
-      if (restrictionTarget) {
-        for (const restrictionType of restrictionTypesForSignal(input.type)) {
-          const restrictionId = await createRiskRestriction(tx, {
-            target: restrictionTarget,
-            type: restrictionType,
-            riskSignalId: signal.id,
-            reason: `risk_signal:${signal.id}:${input.type}`,
-            imposedByUserId: input.actorUserId,
-            now
-          });
-          restrictionIds.push(restrictionId);
-        }
-      }
-
-      await tx.auditLog.create({
-        data: {
-          actorUserId: input.actorUserId,
-          action: "risk_signal.record",
-          targetType: "risk_signal",
-          targetId: signal.id,
-          afterJson: {
-            type: input.type,
-            scope: input.scope,
-            targetId: input.targetId,
-            status: signal.status,
-            restrictionIds,
-            recordedAt: now.toISOString()
-          }
-        }
-      });
-
+    if (!targetContext) {
       return {
-        result: "accepted" as const,
-        signalId: signal.id,
-        status: signal.status,
-        restrictionIds
+        result: "rejected" as const,
+        errorCode: "RISK_TARGET_NOT_FOUND" as const
       };
+    }
+
+    if (
+      !(await isAuthorizedRiskSignalActor(
+        tx,
+        input.actorUserId,
+        targetContext
+      ))
+    ) {
+      return {
+        result: "rejected" as const,
+        errorCode: "RISK_SIGNAL_ACTOR_NOT_AUTHORIZED" as const
+      };
+    }
+
+    await lockRiskTarget(tx, targetContext);
+
+    const signal = await createRiskSignal(tx, input, targetContext, now);
+
+    const restrictionIds: string[] = [];
+    const restrictionTarget = restrictionTargetForContext(targetContext);
+    if (restrictionTarget) {
+      for (const restrictionType of restrictionTypesForSignal(input.type)) {
+        const restrictionId = await createRiskRestriction(tx, {
+          target: restrictionTarget,
+          type: restrictionType,
+          riskSignalId: signal.id,
+          reason: `risk_signal:${signal.id}:${input.type}`,
+          imposedByUserId: input.actorUserId,
+          now
+        });
+        restrictionIds.push(restrictionId);
+      }
+    }
+
+    await tx.auditLog.create({
+      data: {
+        actorUserId: input.actorUserId,
+        action: "risk_signal.record",
+        targetType: "risk_signal",
+        targetId: signal.id,
+        afterJson: {
+          type: input.type,
+          scope: input.scope,
+          targetId: input.targetId,
+          status: signal.status,
+          restrictionIds,
+          recordedAt: now.toISOString()
+        }
+      }
     });
+
+    return {
+      result: "accepted" as const,
+      signalId: signal.id,
+      status: signal.status,
+      restrictionIds
+    };
   }
 
   async reviewRiskSignal(
@@ -310,6 +324,19 @@ export class RiskGovernanceService {
           result: "rejected" as const,
           errorCode: "RISK_SIGNAL_STATE_INVALID" as const
         };
+      }
+
+      const challengeAuthorization = await this.authorizeHighRiskAdminAction({
+        actorUserId: input.platformAdminUserId,
+        operationType: SensitiveOperationType.reviewRiskSignal,
+        targetType: "risk_signal",
+        targetId: input.signalId,
+        sessionId: input.sessionId,
+        challengeId: input.challengeId,
+        now
+      });
+      if (challengeAuthorization.result === "rejected") {
+        return challengeAuthorization;
       }
 
       const updatedSignal = await tx.riskSignal.update({

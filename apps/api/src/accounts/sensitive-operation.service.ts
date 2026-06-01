@@ -14,7 +14,8 @@ export const SensitiveOperationType = {
   grantActivityAdmin: "grant_activity_admin",
   revokeActivityAdmin: "revoke_activity_admin",
   applyRiskRestriction: "apply_risk_restriction",
-  resolveRiskRestriction: "resolve_risk_restriction"
+  resolveRiskRestriction: "resolve_risk_restriction",
+  reviewRiskSignal: "review_risk_signal"
 } as const;
 
 export type SensitiveOperationType =
@@ -746,6 +747,12 @@ export class SensitiveOperationService {
             (await this.isActiveMfaPlatformAdmin(input.actorUserId)) &&
             (await this.activeRiskRestrictionExists(input.targetId))
         );
+      case SensitiveOperationType.reviewRiskSignal:
+        return this.acceptIf(
+          input.targetType === "risk_signal" &&
+            (await this.isActiveMfaPlatformAdmin(input.actorUserId)) &&
+            (await this.activeRiskSignalExists(input.targetId))
+        );
       default:
         return {
           result: "rejected",
@@ -816,6 +823,8 @@ export class SensitiveOperationService {
           ))
         );
       case "risk_restriction":
+        return this.isActiveMfaPlatformAdmin(input.actorUserId);
+      case "risk_signal":
         return this.isActiveMfaPlatformAdmin(input.actorUserId);
       case ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE:
         return this.canRequestAdminCommunityScopeChallenge(input);
@@ -1121,6 +1130,8 @@ export class SensitiveOperationService {
         );
       case "risk_restriction":
         return this.activeRiskRestrictionExists(targetId);
+      case "risk_signal":
+        return this.activeRiskSignalExists(targetId);
       case ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE:
         return Boolean(parseAdminCommunityScopeChallengeTargetId(targetId));
       default:
@@ -1140,6 +1151,22 @@ export class SensitiveOperationService {
     });
 
     return Boolean(restriction);
+  }
+
+  private async activeRiskSignalExists(signalId: string): Promise<boolean> {
+    const signal = await this.prisma.riskSignal.findFirst({
+      where: {
+        id: signalId,
+        status: {
+          in: ["open", "under_review"]
+        }
+      },
+      select: {
+        id: true
+      }
+    });
+
+    return Boolean(signal);
   }
 
   private async trustSessionDeviceForSensitiveOperations(input: {
@@ -1406,7 +1433,9 @@ export class SensitiveOperationService {
         childId: {
           in: targetContext.childIds
         },
-        status: "frozen"
+        status: {
+          in: ["pending_platform_review", "frozen"]
+        }
       },
       select: {
         id: true

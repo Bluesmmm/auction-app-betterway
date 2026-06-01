@@ -467,7 +467,9 @@ export class CommunityApplicationService {
   private async hasFrozenChildForGuardian(guardianId: string): Promise<boolean> {
     const frozenDispute = await this.prisma.guardianDispute.findFirst({
       where: {
-        status: "frozen",
+        status: {
+          in: ["pending_platform_review", "frozen"]
+        },
         child: {
           guardianLinks: {
             some: {

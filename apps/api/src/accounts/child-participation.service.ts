@@ -330,7 +330,9 @@ export class ChildParticipationService {
     const dispute = await this.prisma.guardianDispute.findFirst({
       where: {
         childId,
-        status: "frozen"
+        status: {
+          in: ["pending_platform_review", "frozen"]
+        }
       },
       select: {
         id: true

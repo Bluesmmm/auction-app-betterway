@@ -572,6 +572,7 @@ export class CommunitiesController {
       decision: "resolved" | "dismissed";
       resolutionText: string;
       resolveRestrictions?: boolean;
+      challengeId?: string;
     },
     authorization?: string
   ) {
@@ -583,6 +584,8 @@ export class CommunitiesController {
       decision: body.decision,
       resolutionText: body.resolutionText,
       resolveRestrictions: body.resolveRestrictions,
+      sessionId: actor.sessionId,
+      challengeId: body.challengeId,
       now
     });
 

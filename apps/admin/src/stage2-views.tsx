@@ -981,6 +981,9 @@ export function RiskReviewView({ apiBaseUrl }: { apiBaseUrl: string }) {
             <Form.Item label="Resolution Text" name="resolutionText">
               <Input.TextArea rows={4} />
             </Form.Item>
+            <Form.Item label="Challenge ID" name="challengeId">
+              <Input />
+            </Form.Item>
             <Form.Item name="resolveRestrictions" valuePropName="checked">
               <Checkbox>Resolve linked restrictions</Checkbox>
             </Form.Item>

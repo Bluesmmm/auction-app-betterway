@@ -488,6 +488,28 @@ describe("ChildParticipationService", () => {
       errorCode: "GUARDIAN_DISPUTE_FROZEN"
     });
 
+    const pendingDisputeChild = await createChildFixture("publish_pending_dispute");
+    await prisma.guardianDispute.create({
+      data: {
+        childId: pendingDisputeChild.childId,
+        submittingGuardianId: pendingDisputeChild.guardianId,
+        type: "guardian_change",
+        status: "pending_platform_review"
+      }
+    });
+
+    await expect(
+      participation.evaluateChildParticipation({
+        actorUserId: pendingDisputeChild.userId,
+        childId: pendingDisputeChild.childId,
+        action: "join_community",
+        now: new Date("2026-05-31T13:33:30.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "GUARDIAN_DISPUTE_FROZEN"
+    });
+
     const bidChild = await createChildFixture("bid_limits");
     const bidCommunityId = await createActiveCommunityMembership(
       bidChild,

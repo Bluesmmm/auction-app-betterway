@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { OnboardingService } from "../../src/accounts/onboarding.service.js";
+import { RiskGovernanceService } from "../../src/accounts/risk-governance.service.js";
 import { CommunityAccessService } from "../../src/communities/community-access.service.js";
 import { FakeWechatAuthProvider } from "../../src/providers/fake-providers.js";
 
@@ -1178,5 +1179,149 @@ describe("CommunityAccessService", () => {
       childId: child.childId,
       memberStatus: "active"
     });
+  });
+
+  it("records abnormal join risk before allowing a child to request a third active community", async () => {
+    const onboarding = new OnboardingService(prisma, new FakeWechatAuthProvider());
+    const risks = new RiskGovernanceService(prisma);
+    const access = new CommunityAccessService(prisma, undefined, risks);
+    const admin = await createGuardian(onboarding, "abnormal_join_admin");
+    const childGuardian = await createGuardian(onboarding, "abnormal_join_child");
+    const child = await onboarding.createChildWithPrimaryGuardian({
+      actorUserId: childGuardian.userId,
+      guardianId: childGuardian.guardianId,
+      displayName: `Abnormal Join Child ${Date.now()}`,
+      gradeBand: "grade_3_4",
+      idempotencyKey: `abnormal_join_initial_${Date.now()}`,
+      now: new Date("2026-05-27T17:10:00.000Z")
+    });
+
+    if (child.result !== "accepted") {
+      throw new Error("expected child creation to succeed");
+    }
+
+    const firstCommunity = await prisma.auctionCommunity.create({
+      data: {
+        name: `Abnormal Join First ${Date.now()}`,
+        creatorGuardianId: admin.guardianId,
+        status: "active",
+        defaultAuctionDurationMinutes: 1440,
+        members: {
+          create: {
+            childId: child.childId,
+            status: "active"
+          }
+        }
+      }
+    });
+    const secondCommunity = await prisma.auctionCommunity.create({
+      data: {
+        name: `Abnormal Join Second ${Date.now()}`,
+        creatorGuardianId: admin.guardianId,
+        status: "active",
+        defaultAuctionDurationMinutes: 1440,
+        members: {
+          create: {
+            childId: child.childId,
+            status: "active"
+          }
+        }
+      }
+    });
+    const targetCommunity = await prisma.auctionCommunity.create({
+      data: {
+        name: `Abnormal Join Target ${Date.now()}`,
+        creatorGuardianId: admin.guardianId,
+        status: "active",
+        defaultAuctionDurationMinutes: 1440
+      }
+    });
+    await grantCommunityAdminScope(admin.userId, targetCommunity.id);
+    await createActiveRuleVersion(firstCommunity.id);
+    await createActiveRuleVersion(secondCommunity.id);
+    await createActiveRuleVersion(targetCommunity.id);
+    const invite = await access.createInviteCode({
+      actorUserId: admin.userId,
+      communityId: targetCommunity.id,
+      code: `ABNORMAL${Date.now()}`,
+      maxUses: 2
+    });
+
+    if (invite.result !== "accepted") {
+      throw new Error("expected invite creation to succeed");
+    }
+
+    await expect(
+      access.requestJoinWithInvite({
+        actorUserId: childGuardian.userId,
+        childId: child.childId,
+        code: invite.code,
+        idempotencyKey: `abnormal_join_attempt_${child.childId}`,
+        now: new Date("2026-05-27T17:11:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "RISK_RESTRICTED"
+    });
+
+    await expect(
+      prisma.communityInviteCode.findUniqueOrThrow({
+        where: {
+          id: invite.inviteCodeId
+        },
+        select: {
+          usedCount: true
+        }
+      })
+    ).resolves.toEqual({
+      usedCount: 0
+    });
+    await expect(
+      prisma.communityMember.findUnique({
+        where: {
+          communityId_childId: {
+            communityId: targetCommunity.id,
+            childId: child.childId
+          }
+        }
+      })
+    ).resolves.toBeNull();
+
+    const signal = await prisma.riskSignal.findFirstOrThrow({
+      where: {
+        type: "abnormal_join_pattern",
+        scope: "child",
+        targetId: child.childId,
+        status: "under_review"
+      },
+      include: {
+        restrictions: {
+          select: {
+            type: true,
+            status: true
+          },
+          orderBy: {
+            type: "asc"
+          }
+        }
+      }
+    });
+    expect(signal.evidenceJson).toEqual(
+      expect.objectContaining({
+        attemptedCommunityId: targetCommunity.id,
+        activeCommunityCount: 2,
+        source: "community_member.request_with_invite"
+      })
+    );
+    expect(signal.restrictions).toEqual([
+      {
+        type: "no_join",
+        status: "active"
+      },
+      {
+        type: "suspended",
+        status: "active"
+      }
+    ]);
   });
 });

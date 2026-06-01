@@ -272,7 +272,8 @@ export const reviewRiskSignalResultSchema = z.union([
     errorCode: z.enum([
       "PLATFORM_ADMIN_REQUIRED",
       "RISK_SIGNAL_NOT_FOUND",
-      "RISK_SIGNAL_STATE_INVALID"
+      "RISK_SIGNAL_STATE_INVALID",
+      ...highRiskSensitiveChallengeErrorCodes
     ])
   })
 ]);
@@ -375,7 +376,8 @@ export const reviewRiskSignalInputSchema = stage2AuthSchema.extend({
   signalId: trimmedStringSchema,
   decision: riskSignalDecisionSchema,
   resolutionText: trimmedStringSchema,
-  resolveRestrictions: z.boolean().optional()
+  resolveRestrictions: z.boolean().optional(),
+  challengeId: trimmedStringSchema.optional()
 });
 
 export const recordRiskSignalInputSchema = stage2AuthSchema.extend({
@@ -797,7 +799,8 @@ export async function reviewRiskSignal(
     {
       decision: parsed.decision,
       resolutionText: parsed.resolutionText,
-      resolveRestrictions: parsed.resolveRestrictions
+      resolveRestrictions: parsed.resolveRestrictions,
+      challengeId: parsed.challengeId
     },
     reviewRiskSignalResultSchema,
     fetcher,

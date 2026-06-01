@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { AccountsModule } from "../accounts/accounts.module.js";
+import { RiskGovernanceService } from "../accounts/risk-governance.service.js";
 import { SensitiveOperationService } from "../accounts/sensitive-operation.service.js";
 import { PrismaModule } from "../prisma/prisma.module.js";
 import { PrismaService } from "../prisma/prisma.service.js";
@@ -15,11 +16,16 @@ import { CommunitiesController } from "./communities.controller.js";
   providers: [
     {
       provide: CommunityAccessService,
-      inject: [PrismaService, CommunityAdminAuthorizationService],
+      inject: [
+        PrismaService,
+        CommunityAdminAuthorizationService,
+        RiskGovernanceService
+      ],
       useFactory: (
         prisma: PrismaService,
-        adminAuthorizations: CommunityAdminAuthorizationService
-      ) => new CommunityAccessService(prisma, adminAuthorizations)
+        adminAuthorizations: CommunityAdminAuthorizationService,
+        riskGovernance: RiskGovernanceService
+      ) => new CommunityAccessService(prisma, adminAuthorizations, riskGovernance)
     },
     {
       provide: CommunityApplicationService,
