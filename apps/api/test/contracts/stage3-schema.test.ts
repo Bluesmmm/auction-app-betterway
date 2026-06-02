@@ -91,6 +91,8 @@ describe("Stage 3 content schema", () => {
     expect(schemaNormalized).toContain("manualReviewRecords ManualReviewRecord[]");
     expect(schemaNormalized).toContain("providerStatus AiProviderStatus");
     expect(schemaNormalized).toContain("decision ManualReviewDecision");
+    expect(schemaNormalized).toContain("blocked");
+    expect(schemaNormalized).toContain("block");
   });
 
   it("creates migration constraints for review evidence", () => {
@@ -109,6 +111,12 @@ describe("Stage 3 content schema", () => {
     );
     expect(migrationNormalized).toContain(
       'ALTER TABLE "ManualReviewRecord" ADD CONSTRAINT "ManualReviewRecord_reviewerUserId_fkey"'
+    );
+    expect(migrationNormalized).toContain(
+      'ALTER TYPE "ModerationTaskStatus" ADD VALUE \'blocked\''
+    );
+    expect(migrationNormalized).toContain(
+      'ALTER TYPE "ManualReviewDecision" ADD VALUE \'block\''
     );
   });
 });

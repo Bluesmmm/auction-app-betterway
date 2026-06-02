@@ -127,12 +127,27 @@ export async function createStage3Fixture(prisma: PrismaClient) {
     }
   });
 
+  const platformAdminUser = await prisma.user.create({
+    data: {
+      status: "active"
+    }
+  });
+  await prisma.adminProfile.create({
+    data: {
+      userId: platformAdminUser.id,
+      role: "platform_admin",
+      mfaEnabled: true,
+      status: "active"
+    }
+  });
+
   return {
     guardianUserId: guardianLogin.userId,
     guardianId: guardian.guardianId,
     childId: child.childId,
     communityId: community.id,
     activityAdminUserId: adminUser.id,
+    platformAdminUserId: platformAdminUser.id,
     participation,
     adminAuthorizations
   };

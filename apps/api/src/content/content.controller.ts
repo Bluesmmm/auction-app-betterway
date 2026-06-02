@@ -329,6 +329,35 @@ export class ContentController {
     );
   }
 
+  async platformReviewModerationTask(
+    taskId: string,
+    body: {
+      decision: "block" | "reject";
+      reason: string;
+    },
+    authorization?: string
+  ) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    const result = await this.reviews.platformReviewModerationTask({
+      actorUserId: actor.userId,
+      taskId,
+      decision: body.decision,
+      reason: body.reason,
+      now
+    });
+    return writeResponse(
+      {
+        now,
+        targetType: "moderation_task",
+        targetId: taskId,
+        latestStatus:
+          result.result === "accepted" ? result.taskStatus : "rejected"
+      },
+      result
+    );
+  }
+
   async getVisibleItemDetail(
     communityId: string,
     itemId: string,
@@ -546,6 +575,11 @@ applyMethodDecorator(
   "reviewModerationTask"
 );
 applyMethodDecorator(
+  Post("moderation-tasks/:taskId/platform-review"),
+  ContentController.prototype,
+  "platformReviewModerationTask"
+);
+applyMethodDecorator(
   Get("communities/:communityId/items/:itemId/visible-detail"),
   ContentController.prototype,
   "getVisibleItemDetail"
@@ -599,6 +633,9 @@ applyParameterDecorator(Headers("authorization"), ContentController.prototype, "
 applyParameterDecorator(Param("taskId"), ContentController.prototype, "reviewModerationTask", 0);
 applyParameterDecorator(Body(), ContentController.prototype, "reviewModerationTask", 1);
 applyParameterDecorator(Headers("authorization"), ContentController.prototype, "reviewModerationTask", 2);
+applyParameterDecorator(Param("taskId"), ContentController.prototype, "platformReviewModerationTask", 0);
+applyParameterDecorator(Body(), ContentController.prototype, "platformReviewModerationTask", 1);
+applyParameterDecorator(Headers("authorization"), ContentController.prototype, "platformReviewModerationTask", 2);
 applyParameterDecorator(Param("communityId"), ContentController.prototype, "getVisibleItemDetail", 0);
 applyParameterDecorator(Param("itemId"), ContentController.prototype, "getVisibleItemDetail", 1);
 applyParameterDecorator(Query("childId"), ContentController.prototype, "getVisibleItemDetail", 2);

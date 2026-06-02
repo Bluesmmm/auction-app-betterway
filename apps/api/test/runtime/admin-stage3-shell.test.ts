@@ -17,10 +17,12 @@ describe("admin stage3 shell", () => {
     expect(api).toContain("aiEvidence");
     expect(api).toContain("originalImageGrants");
     expect(api).toContain("versionDiff");
+    expect(api).toContain("historyContext");
     expect(view).toContain("wanted response");
     expect(view).toContain("targetLabel");
     expect(view).toContain("AI Evidence");
     expect(view).toContain("Version Diff");
     expect(view).toContain("Original Grants");
+    expect(view).toContain("History Context");
   });
 });

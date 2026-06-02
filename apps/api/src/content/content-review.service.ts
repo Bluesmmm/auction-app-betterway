@@ -165,6 +165,7 @@ export type EditItemResult =
     };
 
 export type ReviewDecision = "approve" | "reject" | "escalate";
+export type PlatformReviewDecision = "block" | "reject";
 
 export type ModerationActionResult =
   | {
@@ -181,6 +182,8 @@ export type ModerationActionResult =
         | "COMMUNITY_ADMIN_REQUIRED"
         | "HIGH_RISK_REQUIRES_ESCALATION"
         | "FAILED_TASK_REQUIRES_RETRY"
+        | "PLATFORM_ADMIN_REQUIRED"
+        | "PLATFORM_DECISION_INVALID"
         | "REASON_REQUIRED";
     };
 
@@ -299,6 +302,16 @@ export type ContentReviewTaskDetailResult =
         };
         changedFields: string[];
       };
+      historyContext: Array<{
+        targetType: string;
+        targetId: string;
+        contentVersionId: string;
+        versionNo: number;
+        title: string;
+        status: string;
+        riskLevel: string | null;
+        createdAt: string;
+      }>;
       images: Array<{
         mediaAssetId: string;
         mediaRole: string;
@@ -437,6 +450,10 @@ export class ContentReviewService {
         granteeUserId: input.actorUserId
       }),
       versionDiff: await this.buildVersionDiff(task.contentVersion),
+      historyContext: await this.findHistoryContext({
+        target,
+        currentContentVersionId: task.contentVersionId
+      }),
       images
     };
   }
@@ -1106,6 +1123,95 @@ export class ContentReviewService {
     };
   }
 
+  async platformReviewModerationTask(input: {
+    actorUserId: string;
+    taskId: string;
+    decision: PlatformReviewDecision;
+    reason: string;
+    now?: Date;
+  }): Promise<ModerationActionResult> {
+    const now = input.now ?? new Date();
+    if (!input.reason.trim()) {
+      return { result: "rejected", errorCode: "REASON_REQUIRED" };
+    }
+    if (!["block", "reject"].includes(input.decision)) {
+      return { result: "rejected", errorCode: "PLATFORM_DECISION_INVALID" };
+    }
+    if (!(await this.isActivePlatformAdmin(input.actorUserId))) {
+      return { result: "rejected", errorCode: "PLATFORM_ADMIN_REQUIRED" };
+    }
+
+    const task = await this.prisma.moderationTask.findUnique({
+      where: { id: input.taskId },
+      include: { contentVersion: true }
+    });
+    if (!task) {
+      return { result: "rejected", errorCode: "MODERATION_TASK_NOT_FOUND" };
+    }
+    if (task.status !== "escalated") {
+      return { result: "rejected", errorCode: "MODERATION_TASK_STATE_INVALID" };
+    }
+
+    const target = await this.resolveReviewTarget(task.contentVersion);
+    if (!target) {
+      return { result: "rejected", errorCode: "MODERATION_TASK_NOT_FOUND" };
+    }
+
+    const risk = task.providerRiskLevel ?? task.contentVersion.riskLevel ?? "low";
+    if (!highRiskLevels.has(risk)) {
+      return { result: "rejected", errorCode: "MODERATION_TASK_STATE_INVALID" };
+    }
+
+    const nextTaskStatus = input.decision === "block" ? "blocked" : "rejected";
+    const nextVersionStatus = input.decision === "block" ? "blocked" : "rejected";
+    await this.prisma.$transaction(async (tx) => {
+      await tx.moderationTask.update({
+        where: { id: task.id },
+        data: {
+          status: nextTaskStatus,
+          reviewerUserId: input.actorUserId,
+          reviewedAt: now,
+          failureReason: input.reason
+        }
+      });
+      await tx.contentVersion.update({
+        where: { id: task.contentVersionId },
+        data: { status: nextVersionStatus }
+      });
+      if (input.decision === "block") {
+        await this.markTargetBlocked(tx, target);
+      } else {
+        await this.markTargetReviewOutcome(tx, target, "reject");
+      }
+      await tx.manualReviewRecord.create({
+        data: {
+          taskId: task.id,
+          contentVersionId: task.contentVersionId,
+          reviewerUserId: input.actorUserId,
+          decision: input.decision,
+          reason: input.reason,
+          createdAt: now
+        }
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: input.actorUserId,
+          action: `moderation_task.platform_${input.decision}`,
+          targetType: "content_version",
+          targetId: task.contentVersionId,
+          reason: input.reason,
+          createdAt: now
+        }
+      });
+    });
+
+    return {
+      result: "accepted",
+      taskStatus: nextTaskStatus,
+      contentVersionStatus: nextVersionStatus
+    };
+  }
+
   async delistItem(input: {
     actorUserId: string;
     itemId: string;
@@ -1583,6 +1689,156 @@ export class ContentReviewService {
     }
   }
 
+  private async markTargetBlocked(
+    tx: Prisma.TransactionClient,
+    target: ReviewTarget
+  ) {
+    if (target.targetType === "item") {
+      if (target.target.currentPublicVersionId) {
+        await incrementVersionMediaPolicy(tx, target.target.currentPublicVersionId);
+      }
+      await tx.item.update({
+        where: { id: target.target.id },
+        data: {
+          status: target.target.currentPublicVersionId ? "delisted" : "rejected"
+        }
+      });
+      return;
+    }
+    if (target.targetType === "wanted_request") {
+      if (target.target.currentPublicVersionId) {
+        await incrementVersionMediaPolicy(tx, target.target.currentPublicVersionId);
+      }
+      await tx.wantedPost.update({
+        where: { id: target.target.id },
+        data: {
+          status: target.target.currentPublicVersionId ? "delisted" : "rejected"
+        }
+      });
+      return;
+    }
+    if (target.target.currentPublicVersionId) {
+      await incrementVersionMediaPolicy(tx, target.target.currentPublicVersionId);
+    }
+    await tx.wantedResponse.update({
+      where: { id: target.target.id },
+      data: {
+        status: target.target.currentPublicVersionId ? "cancelled" : "rejected"
+      }
+    });
+  }
+
+  private async isActivePlatformAdmin(actorUserId: string): Promise<boolean> {
+    const admin = await this.prisma.adminProfile.findFirst({
+      where: {
+        userId: actorUserId,
+        role: "platform_admin",
+        status: "active",
+        mfaEnabled: true
+      },
+      select: { id: true }
+    });
+    return Boolean(admin);
+  }
+
+  private async findHistoryContext(input: {
+    target: ReviewTarget;
+    currentContentVersionId: string;
+  }): Promise<
+    Array<{
+      targetType: string;
+      targetId: string;
+      contentVersionId: string;
+      versionNo: number;
+      title: string;
+      status: string;
+      riskLevel: string | null;
+      createdAt: string;
+    }>
+  > {
+    const context = await this.reviewTargetChildCommunity(input.target);
+    if (!context) return [];
+
+    const [items, wantedPosts, wantedResponses] = await Promise.all([
+      this.prisma.item.findMany({
+        where: {
+          communityId: context.communityId,
+          sellerChildId: context.childId
+        },
+        select: { id: true }
+      }),
+      this.prisma.wantedPost.findMany({
+        where: {
+          communityId: context.communityId,
+          childId: context.childId
+        },
+        select: { id: true }
+      }),
+      this.prisma.wantedResponse.findMany({
+        where: {
+          responderChildId: context.childId,
+          wantedPost: { communityId: context.communityId }
+        },
+        select: { id: true }
+      })
+    ]);
+
+    const versions = await this.prisma.contentVersion.findMany({
+      where: {
+        id: { not: input.currentContentVersionId },
+        status: { in: ["rejected", "escalated", "blocked"] },
+        OR: [
+          {
+            targetType: "item",
+            targetId: { in: items.map((item) => item.id) }
+          },
+          {
+            targetType: "wanted_request",
+            targetId: { in: wantedPosts.map((post) => post.id) }
+          },
+          {
+            targetType: "wanted_response",
+            targetId: { in: wantedResponses.map((response) => response.id) }
+          }
+        ]
+      },
+      orderBy: { createdAt: "desc" },
+      take: 5
+    });
+
+    return versions.map((version) => ({
+      targetType: version.targetType,
+      targetId: version.targetId,
+      contentVersionId: version.id,
+      versionNo: version.versionNo,
+      title: version.title ?? "",
+      status: version.status,
+      riskLevel: version.riskLevel,
+      createdAt: version.createdAt.toISOString()
+    }));
+  }
+
+  private async reviewTargetChildCommunity(
+    target: ReviewTarget
+  ): Promise<{ childId: string; communityId: string } | null> {
+    if (target.targetType === "item") {
+      return {
+        childId: target.target.sellerChildId,
+        communityId: target.target.communityId
+      };
+    }
+    if (target.targetType === "wanted_request") {
+      return {
+        childId: target.target.childId,
+        communityId: target.target.communityId
+      };
+    }
+    return {
+      childId: target.target.responderChildId,
+      communityId: target.target.wantedPost.communityId
+    };
+  }
+
   private async findVersionMediaIds(contentVersionId: string): Promise<string[]> {
     const media = await this.prisma.$queryRaw<Array<{ mediaAssetId: string }>>`
       SELECT "mediaAssetId"
@@ -1804,6 +2060,23 @@ async function insertContentVersionMedia(
       )
     `;
   }
+}
+
+async function incrementVersionMediaPolicy(
+  tx: Prisma.TransactionClient,
+  contentVersionId: string
+) {
+  const rows = await tx.$queryRaw<Array<{ mediaAssetId: string }>>`
+    SELECT "mediaAssetId"
+    FROM "ContentVersionMedia"
+    WHERE "contentVersionId" = ${contentVersionId}
+  `;
+  if (rows.length === 0) return;
+
+  await tx.mediaAsset.updateMany({
+    where: { id: { in: rows.map((row) => row.mediaAssetId) } },
+    data: { accessPolicyVersion: { increment: 1 } }
+  });
 }
 
 function summarizeContentVersion(contentVersion: ContentVersion) {

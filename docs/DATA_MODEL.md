@@ -420,7 +420,7 @@
 | `target_id` | 目标 ID |
 | `content_version_id` | 内容版本，可空；内容类审核必须填写 |
 | `community_id` | 社区，可空 |
-| `status` | pending_ai / pending_manual / approved / rejected / escalated / blocked |
+| `status` | pending / processing / needs_manual_review / approved / rejected / escalated / blocked / failed |
 | `risk_level` | none / low / medium / high / severe |
 | `assigned_to` | 审核人 |
 | `created_at` | 创建时间 |
@@ -450,7 +450,7 @@
 | `id` | 主键 |
 | `task_id` | 审核任务 |
 | `reviewer_user_id` | 审核人 |
-| `decision` | approve / reject / escalate |
+| `decision` | approve / reject / escalate / block |
 | `reason` | 原因 |
 | `content_version_id` | 审核的内容版本，可空；内容类审核必须填写 |
 | `created_at` | 审核时间 |

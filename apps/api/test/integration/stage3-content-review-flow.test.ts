@@ -250,6 +250,28 @@ describe("Stage 3 content review flow", () => {
         })
       })
     );
+    if (detail.result !== "accepted") {
+      throw new Error("expected moderation detail accepted");
+    }
+    const reviewGrantToken =
+      new URL(detail.originalImageGrants[0].url).searchParams.get("grant") ?? "";
+    const fileAccess = new ContentFileAccessService(
+      prisma,
+      "stage3-object-grant-key"
+    );
+    await expect(
+      fileAccess.verifyItemImageGrant({
+        grantToken: reviewGrantToken,
+        granteeUserId: fixture.activityAdminUserId,
+        purpose: "content_review_original"
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        purpose: "content_review_original",
+        moderationTaskId: submitted.moderationTaskId
+      })
+    );
     await expect(
       prisma.item.findUnique({ where: { id: submitted.itemId } })
     ).resolves.toEqual(expect.objectContaining({ currentPublicVersionId: null }));
@@ -280,6 +302,16 @@ describe("Stage 3 content review flow", () => {
         reason: "safe low risk item"
       })
     );
+    await expect(
+      fileAccess.verifyItemImageGrant({
+        grantToken: reviewGrantToken,
+        granteeUserId: fixture.activityAdminUserId,
+        purpose: "content_review_original"
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "REVIEW_TASK_NOT_ACTIVE"
+    });
   });
 
   it("submits, reviews, and exposes a wanted post through approved content versions only", async () => {
@@ -493,6 +525,56 @@ describe("Stage 3 content review flow", () => {
         reason: "platform review required"
       })
     );
+
+    await expect(
+      service.platformReviewModerationTask({
+        actorUserId: fixture.activityAdminUserId,
+        taskId: submitted.moderationTaskId,
+        decision: "block",
+        reason: "activity admin cannot close platform escalations",
+        now: new Date("2026-06-02T12:52:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "PLATFORM_ADMIN_REQUIRED"
+    });
+
+    await expect(
+      service.platformReviewModerationTask({
+        actorUserId: fixture.platformAdminUserId,
+        taskId: submitted.moderationTaskId,
+        decision: "block",
+        reason: "unsafe high risk content",
+        now: new Date("2026-06-02T12:53:00.000Z")
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        taskStatus: "blocked",
+        contentVersionStatus: "blocked"
+      })
+    );
+    await expect(
+      prisma.contentVersion.findUnique({
+        where: { id: submitted.contentVersionId }
+      })
+    ).resolves.toEqual(expect.objectContaining({ status: "blocked" }));
+    await expect(
+      prisma.item.findUnique({ where: { id: submitted.itemId } })
+    ).resolves.toEqual(expect.objectContaining({ status: "rejected" }));
+    await expect(
+      prisma.manualReviewRecord.findMany({
+        where: { taskId: submitted.moderationTaskId },
+        orderBy: { createdAt: "asc" }
+      })
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          decision: "block",
+          reason: "unsafe high risk content"
+        })
+      ])
+    );
   });
 
   it("does not allow activity admins to approve high risk wanted content", async () => {
@@ -540,6 +622,115 @@ describe("Stage 3 content review flow", () => {
       result: "rejected",
       errorCode: "HIGH_RISK_REQUIRES_ESCALATION"
     });
+  });
+
+  it("records product safety rule labels for unsafe item descriptions", async () => {
+    const fixture = await createStage3Fixture(prisma);
+    const media = await createTempMediaSet(
+      prisma,
+      fixture.guardianUserId,
+      "safety-labels"
+    );
+    const service = createReviewService(fixture);
+    const result = await service.submitItem({
+      actorUserId: fixture.guardianUserId,
+      childId: fixture.childId,
+      communityId: fixture.communityId,
+      title: "召回玩具和磁力珠",
+      description:
+        "包含破损电池、小零件误食风险、尖锐边角，需要审核识别",
+      startPoints: 10,
+      minIncrementPoints: 1,
+      images: media.map((asset, index) => ({
+        mediaAssetId: asset.id,
+        mediaRole: itemImageRoles[index],
+        sortOrder: index + 1
+      })),
+      idempotencyKey: `safety-labels-${fixture.childId}`
+    });
+    if (result.result !== "accepted") {
+      throw new Error("expected safety item accepted");
+    }
+
+    await service.processModerationTask({ taskId: result.moderationTaskId });
+
+    await expect(
+      prisma.aiReviewResult.findFirst({
+        where: { taskId: result.moderationTaskId }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        providerStatus: "success",
+        riskLevel: "severe",
+        labelsJson: expect.arrayContaining([
+          "safety_recalled_item",
+          "safety_damaged_battery",
+          "safety_magnetic_beads",
+          "safety_small_parts_ingestion",
+          "safety_sharp_parts"
+        ])
+      })
+    );
+  });
+
+  it("includes recent rejected or escalated content in review detail history context", async () => {
+    const fixture = await createStage3Fixture(prisma);
+    const review = createReviewService(fixture);
+    const riskyMedia = await createTempMediaSet(
+      prisma,
+      fixture.guardianUserId,
+      "history-risky"
+    );
+    await prisma.mediaAsset.update({
+      where: { id: riskyMedia[0].id },
+      data: { checksum: "risk:high:ocr-contact" }
+    });
+    const risky = await submitValidStage3Item(
+      review,
+      fixture,
+      riskyMedia,
+      "history-risky"
+    );
+    await review.processModerationTask({ taskId: risky.moderationTaskId });
+    await review.reviewModerationTask({
+      actorUserId: fixture.activityAdminUserId,
+      taskId: risky.moderationTaskId,
+      decision: "escalate",
+      reason: "history context seed",
+      now: new Date("2026-06-02T12:58:00.000Z")
+    });
+
+    const nextMedia = await createTempMediaSet(
+      prisma,
+      fixture.guardianUserId,
+      "history-next"
+    );
+    const next = await submitValidStage3Item(
+      review,
+      fixture,
+      nextMedia,
+      "history-next"
+    );
+    await review.processModerationTask({ taskId: next.moderationTaskId });
+
+    await expect(
+      review.getModerationTask({
+        actorUserId: fixture.activityAdminUserId,
+        taskId: next.moderationTaskId
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        historyContext: expect.arrayContaining([
+          expect.objectContaining({
+            targetType: "item",
+            targetId: risky.itemId,
+            status: "escalated",
+            riskLevel: "high"
+          })
+        ])
+      })
+    );
   });
 
   it("keeps edited new versions invisible until manual approval", async () => {

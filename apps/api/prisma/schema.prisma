@@ -95,6 +95,7 @@ enum ModerationTaskStatus {
   approved
   rejected
   escalated
+  blocked
   failed
 }
 
@@ -109,6 +110,7 @@ enum ManualReviewDecision {
   approve
   reject
   escalate
+  block
 }
 
 enum MediaVisibility {

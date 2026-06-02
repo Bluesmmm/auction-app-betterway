@@ -7,6 +7,8 @@ export type VerifyItemImageGrantResult =
       mediaAssetId: string;
       granteeUserId: string;
       purpose: string;
+      contentVersionId?: string;
+      moderationTaskId?: string;
     }
   | {
       result: "rejected";
@@ -15,6 +17,8 @@ export type VerifyItemImageGrantResult =
         | "GRANT_EXPIRED"
         | "MEDIA_NOT_VISIBLE"
         | "CONTENT_NOT_VISIBLE"
+        | "REVIEW_TASK_NOT_ACTIVE"
+        | "COMMUNITY_ADMIN_REQUIRED"
         | "GRANTEE_MISMATCH"
         | "PURPOSE_MISMATCH";
     };
@@ -48,6 +52,14 @@ export class ContentFileAccessService {
     }
     if (grant.purpose !== input.purpose) {
       return { result: "rejected", errorCode: "PURPOSE_MISMATCH" };
+    }
+
+    if (grant.purpose === "content_review_original") {
+      return this.verifyContentReviewOriginalGrant({
+        mediaAssetId: grant.mediaAssetId,
+        granteeUserId: grant.granteeUserId,
+        accessPolicyVersion: grant.accessPolicyVersion
+      });
     }
 
     const media = await this.prisma.mediaAsset.findUnique({
@@ -93,6 +105,66 @@ export class ContentFileAccessService {
       mediaAssetId: grant.mediaAssetId,
       granteeUserId: grant.granteeUserId,
       purpose: grant.purpose
+    };
+  }
+
+  private async verifyContentReviewOriginalGrant(input: {
+    mediaAssetId: string;
+    granteeUserId: string;
+    accessPolicyVersion: number;
+  }): Promise<VerifyItemImageGrantResult> {
+    const media = await this.prisma.mediaAsset.findUnique({
+      where: { id: input.mediaAssetId }
+    });
+    if (!media || media.accessPolicyVersion !== input.accessPolicyVersion || media.revokedAt) {
+      return { result: "rejected", errorCode: "MEDIA_NOT_VISIBLE" };
+    }
+
+    const contentVersionBinding = await this.findContentVersionForMedia(media.id);
+    if (!contentVersionBinding) {
+      return { result: "rejected", errorCode: "MEDIA_NOT_VISIBLE" };
+    }
+
+    const contentVersion = await this.prisma.contentVersion.findUnique({
+      where: { id: contentVersionBinding.contentVersionId },
+      include: { task: true }
+    });
+    if (!contentVersion || !contentVersion.task) {
+      return { result: "rejected", errorCode: "CONTENT_NOT_VISIBLE" };
+    }
+
+    if (
+      !["pending_ai", "pending_manual", "escalated"].includes(
+        contentVersion.status
+      ) ||
+      !["needs_manual_review", "failed", "escalated"].includes(
+        contentVersion.task.status
+      )
+    ) {
+      return { result: "rejected", errorCode: "REVIEW_TASK_NOT_ACTIVE" };
+    }
+
+    const communityId = await this.findContentVersionCommunityId({
+      targetType: contentVersion.targetType,
+      targetId: contentVersion.targetId
+    });
+    if (
+      !communityId ||
+      !(await this.canAdminReviewCommunity({
+        actorUserId: input.granteeUserId,
+        communityId
+      }))
+    ) {
+      return { result: "rejected", errorCode: "COMMUNITY_ADMIN_REQUIRED" };
+    }
+
+    return {
+      result: "accepted",
+      mediaAssetId: input.mediaAssetId,
+      granteeUserId: input.granteeUserId,
+      purpose: "content_review_original",
+      contentVersionId: contentVersion.id,
+      moderationTaskId: contentVersion.task.id
     };
   }
 
@@ -157,5 +229,60 @@ export class ContentFileAccessService {
     `;
 
     return rows[0] ?? null;
+  }
+
+  private async findContentVersionCommunityId(input: {
+    targetType: string;
+    targetId: string;
+  }): Promise<string | null> {
+    if (input.targetType === "item") {
+      const item = await this.prisma.item.findUnique({
+        where: { id: input.targetId },
+        select: { communityId: true }
+      });
+      return item?.communityId ?? null;
+    }
+    if (input.targetType === "wanted_request") {
+      const wantedPost = await this.prisma.wantedPost.findUnique({
+        where: { id: input.targetId },
+        select: { communityId: true }
+      });
+      return wantedPost?.communityId ?? null;
+    }
+    if (input.targetType === "wanted_response") {
+      const wantedResponse = await this.prisma.wantedResponse.findUnique({
+        where: { id: input.targetId },
+        select: { wantedPost: { select: { communityId: true } } }
+      });
+      return wantedResponse?.wantedPost.communityId ?? null;
+    }
+    return null;
+  }
+
+  private async canAdminReviewCommunity(input: {
+    actorUserId: string;
+    communityId: string;
+  }): Promise<boolean> {
+    const admin = await this.prisma.adminProfile.findFirst({
+      where: {
+        userId: input.actorUserId,
+        status: "active",
+        mfaEnabled: true,
+        OR: [
+          { role: "platform_admin" },
+          {
+            role: "activity_admin",
+            communityScopes: {
+              some: {
+                communityId: input.communityId,
+                status: "active"
+              }
+            }
+          }
+        ]
+      },
+      select: { id: true }
+    });
+    return Boolean(admin);
   }
 }

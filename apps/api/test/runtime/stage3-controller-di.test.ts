@@ -19,6 +19,9 @@ describe("Stage 3 content controller wiring", () => {
     expect(contentController).toContain('Post("wanted-posts")');
     expect(contentController).toContain('Post("wanted-posts/:wantedPostId/responses")');
     expect(contentController).toContain(
+      'Post("moderation-tasks/:taskId/platform-review")'
+    );
+    expect(contentController).toContain(
       'Get("communities/:communityId/wanted-posts/:wantedPostId/visible-detail")'
     );
     expect(contentController).toContain(

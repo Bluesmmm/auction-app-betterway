@@ -92,6 +92,18 @@ const taskDetailSchema = z.object({
     }),
     changedFields: z.array(z.string())
   }),
+  historyContext: z.array(
+    z.object({
+      targetType: z.string(),
+      targetId: trimmedStringSchema,
+      contentVersionId: trimmedStringSchema,
+      versionNo: z.number().int().positive(),
+      title: z.string(),
+      status: z.string(),
+      riskLevel: z.string().nullable(),
+      createdAt: z.string()
+    })
+  ),
   images: z.array(
     z.object({
       mediaAssetId: trimmedStringSchema,

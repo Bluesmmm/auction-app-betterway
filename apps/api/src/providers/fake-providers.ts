@@ -65,6 +65,15 @@ export class FakeContentSafetyProvider implements ContentSafetyProvider {
       };
     }
 
+    const safetySignals = productSafetySignals(text);
+    if (safetySignals.labels.length > 0) {
+      return {
+        ok: true,
+        riskLevel: safetySignals.riskLevel,
+        labels: safetySignals.labels
+      };
+    }
+
     return { ok: true, riskLevel: "low", labels: [] };
   }
 
@@ -119,6 +128,31 @@ export class FakeContentSafetyProvider implements ContentSafetyProvider {
 
       if (media.checksum.includes("risk:severe")) {
         riskLevel = maxRisk(riskLevel, "severe");
+      }
+
+      if (media.checksum.includes("safety:recalled")) {
+        labels.add("safety_recalled_item");
+        riskLevel = maxRisk(riskLevel, "high");
+      }
+
+      if (media.checksum.includes("safety:battery")) {
+        labels.add("safety_damaged_battery");
+        riskLevel = maxRisk(riskLevel, "high");
+      }
+
+      if (media.checksum.includes("safety:magnet")) {
+        labels.add("safety_magnetic_beads");
+        riskLevel = maxRisk(riskLevel, "severe");
+      }
+
+      if (media.checksum.includes("safety:small-parts")) {
+        labels.add("safety_small_parts_ingestion");
+        riskLevel = maxRisk(riskLevel, "high");
+      }
+
+      if (media.checksum.includes("safety:sharp")) {
+        labels.add("safety_sharp_parts");
+        riskLevel = maxRisk(riskLevel, "high");
       }
     }
 
@@ -212,4 +246,35 @@ const riskOrder: RiskLevel[] = ["low", "medium", "high", "severe"];
 
 function maxRisk(left: RiskLevel, right: RiskLevel): RiskLevel {
   return riskOrder.indexOf(left) >= riskOrder.indexOf(right) ? left : right;
+}
+
+function productSafetySignals(text: string): {
+  riskLevel: RiskLevel;
+  labels: string[];
+} {
+  const labels = new Set<string>();
+  let riskLevel: RiskLevel = "low";
+
+  if (/召回/.test(text)) {
+    labels.add("safety_recalled_item");
+    riskLevel = maxRisk(riskLevel, "high");
+  }
+  if (/破损电池|鼓包电池|漏液电池|电池破损/.test(text)) {
+    labels.add("safety_damaged_battery");
+    riskLevel = maxRisk(riskLevel, "high");
+  }
+  if (/磁力珠|强磁/.test(text)) {
+    labels.add("safety_magnetic_beads");
+    riskLevel = maxRisk(riskLevel, "severe");
+  }
+  if (/小零件|误食/.test(text)) {
+    labels.add("safety_small_parts_ingestion");
+    riskLevel = maxRisk(riskLevel, "high");
+  }
+  if (/尖锐|锋利|尖角/.test(text)) {
+    labels.add("safety_sharp_parts");
+    riskLevel = maxRisk(riskLevel, "high");
+  }
+
+  return { riskLevel, labels: [...labels] };
 }

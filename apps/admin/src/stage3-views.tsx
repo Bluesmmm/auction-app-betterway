@@ -283,6 +283,26 @@ function ReviewDetail({
             .join(" | ")}
         </Typography.Text>
       </div>
+      <div className="stage3-review-block">
+        <Typography.Title level={4}>History Context</Typography.Title>
+        {detail.historyContext.length === 0 ? (
+          <Typography.Text type="secondary">No recent violations</Typography.Text>
+        ) : (
+          detail.historyContext.map((entry) => (
+            <div key={entry.contentVersionId}>
+              <Space wrap>
+                <Tag>{targetLabel(entry.targetType)}</Tag>
+                <Tag>{entry.status}</Tag>
+                <Tag>{entry.riskLevel ?? "unknown"}</Tag>
+                <Tag>v{entry.versionNo}</Tag>
+              </Space>
+              <Typography.Text type="secondary">
+                {entry.title || entry.targetId}
+              </Typography.Text>
+            </div>
+          ))
+        )}
+      </div>
       <Input.TextArea
         rows={3}
         value={reason}

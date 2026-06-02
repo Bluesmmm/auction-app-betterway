@@ -14,10 +14,12 @@ const commands = [
       "apps/api/test/contracts/content-provider-and-upload.test.ts",
       "apps/api/test/integration/stage3-content-review-flow.test.ts",
       "apps/api/test/runtime/stage3-controller-di.test.ts",
+      "apps/api/test/runtime/stage3-readiness-script.test.ts",
       "apps/api/test/runtime/admin-stage3-shell.test.ts",
       "apps/api/test/runtime/miniprogram-stage3-shell.test.ts"
     ]
   ],
+  ["npm", ["run", "stage3:readiness"]],
   ["npm", ["run", "typecheck"]]
 ];
 
