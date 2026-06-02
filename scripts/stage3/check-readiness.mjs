@@ -56,6 +56,24 @@ const checks = [
     markers: ["History Context", "historyContext"]
   },
   {
+    name: "admin platform closure action",
+    file: "apps/admin/src/stage3-views.tsx",
+    markers: [
+      "platformReviewContentTask",
+      "Platform Block",
+      "Platform Reject"
+    ]
+  },
+  {
+    name: "admin platform closure api",
+    file: "apps/admin/src/stage3-api.ts",
+    markers: [
+      "platformReviewContentTask",
+      "PlatformReviewContentTaskInput",
+      "platform-review"
+    ]
+  },
+  {
     name: "stage3 hardening docs",
     file: "docs/MVP_ROADMAP.md",
     markers: [

@@ -179,6 +179,13 @@
 4. 第五轮验证门槛包括 Stage 3 contract tests、integration flow、runtime shell、readiness 静态检查、typecheck 和完整 build；没有这些验证证据，不得声明阶段 3 可提交或可合并。
 5. 阶段 3 收口后仍保留明确边界：不接真实第三方内容安全供应商，不开放搜索/列表/排序/收藏，不创建拍卖场次，不实现阶段 8 完整抽检、投诉、双审质量看板。
 
+第六轮合并前验收：
+
+1. 第六轮只做 merge-readiness，不扩展阶段 3 功能范围。
+2. 后台调用链必须和后端审核契约一致：既然后端暴露 `platformReviewModerationTask`，Web 管理后台也必须提供 `platform-review` 调用入口，让平台管理员能对已升级内容执行 `block` 或 `reject` 收口。
+3. readiness 检查必须覆盖后台平台收口 API 和页面动作，防止只保留后端路由、丢失后台可操作入口。
+4. 合并前仍以 `stage3:verify`、完整 build 和 `git diff --check` 作为最低验证证据。
+
 ### 阶段 4：积分账本
 
 范围：

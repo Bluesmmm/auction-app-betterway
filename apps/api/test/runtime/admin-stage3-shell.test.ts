@@ -18,11 +18,15 @@ describe("admin stage3 shell", () => {
     expect(api).toContain("originalImageGrants");
     expect(api).toContain("versionDiff");
     expect(api).toContain("historyContext");
+    expect(api).toContain("platformReviewContentTask");
+    expect(api).toContain("/platform-review");
     expect(view).toContain("wanted response");
     expect(view).toContain("targetLabel");
     expect(view).toContain("AI Evidence");
     expect(view).toContain("Version Diff");
     expect(view).toContain("Original Grants");
     expect(view).toContain("History Context");
+    expect(view).toContain("Platform Block");
+    expect(view).toContain("Platform Reject");
   });
 });

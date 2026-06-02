@@ -9,6 +9,7 @@ describe("Stage 3 readiness script", () => {
 
     expect(script).toContain("content_review_original");
     expect(script).toContain("platformReviewModerationTask");
+    expect(script).toContain("platformReviewContentTask");
     expect(script).toContain("safety_magnetic_beads");
     expect(script).toContain("historyContext");
     expect(script).toContain("stage3 readiness passed");

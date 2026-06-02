@@ -147,6 +147,11 @@ export type ReviewContentTaskInput = Stage3Auth & {
   decision: "approve" | "reject" | "escalate";
   reason: string;
 };
+export type PlatformReviewContentTaskInput = Stage3Auth & {
+  taskId: string;
+  decision: "block" | "reject";
+  reason: string;
+};
 
 export async function listContentReviewQueue(
   apiBaseUrl: string,
@@ -224,6 +229,29 @@ export async function retryContentTask(
       method: "POST",
       headers: authHeaders(auth.accessToken),
       body: JSON.stringify({})
+    }
+  );
+  return parseStage3Response(response, reviewContentTaskResultSchema);
+}
+
+export async function platformReviewContentTask(
+  apiBaseUrl: string,
+  input: PlatformReviewContentTaskInput,
+  fetcher: Stage3Fetch = fetch
+): Promise<ReviewContentTaskResult> {
+  const auth = authSchema.parse(input);
+  const response = await fetcher(
+    buildStage3Url(
+      apiBaseUrl,
+      `/content/moderation-tasks/${encodeURIComponent(input.taskId)}/platform-review`
+    ),
+    {
+      method: "POST",
+      headers: authHeaders(auth.accessToken),
+      body: JSON.stringify({
+        decision: input.decision,
+        reason: input.reason
+      })
     }
   );
   return parseStage3Response(response, reviewContentTaskResultSchema);

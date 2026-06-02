@@ -15,10 +15,12 @@ import {
 import {
   getContentReviewTask,
   listContentReviewQueue,
+  platformReviewContentTask,
   retryContentTask,
   reviewContentTask,
   type GetContentReviewTaskResult,
   type ListContentReviewQueueResult,
+  type PlatformReviewContentTaskInput,
   type ReviewContentTaskInput,
   type ReviewContentTaskResult
 } from "./stage3-api.js";
@@ -69,6 +71,19 @@ export function ContentReviewView({ apiBaseUrl }: { apiBaseUrl: string }) {
   const reviewMutation = useMutation({
     mutationFn: (input: ReviewContentTaskInput) =>
       reviewContentTask(apiBaseUrl, input),
+    onSuccess: (payload) => {
+      setLastResult(payload);
+      void message.success(
+        payload.result === "accepted" ? payload.taskStatus : payload.errorCode
+      );
+      void queue.refetch();
+      void detail.refetch();
+    }
+  });
+
+  const platformReviewMutation = useMutation({
+    mutationFn: (input: PlatformReviewContentTaskInput) =>
+      platformReviewContentTask(apiBaseUrl, input),
     onSuccess: (payload) => {
       setLastResult(payload);
       void message.success(
@@ -194,6 +209,15 @@ export function ContentReviewView({ apiBaseUrl }: { apiBaseUrl: string }) {
             reason
           });
         }}
+        onPlatformReview={(decision) => {
+          if (!selectedTaskId) return;
+          platformReviewMutation.mutate({
+            accessToken,
+            taskId: selectedTaskId,
+            decision,
+            reason
+          });
+        }}
         onRetry={() => {
           if (selectedTaskId) retryMutation.mutate(selectedTaskId);
         }}
@@ -207,6 +231,7 @@ function ReviewDetail({
   reason,
   onReasonChange,
   onReview,
+  onPlatformReview,
   onRetry
 }: {
   accessToken: string;
@@ -214,6 +239,7 @@ function ReviewDetail({
   reason: string;
   onReasonChange: (value: string) => void;
   onReview: (decision: "approve" | "reject" | "escalate") => void;
+  onPlatformReview: (decision: "block" | "reject") => void;
   onRetry: () => void;
 }) {
   if (!detail) return null;
@@ -315,6 +341,16 @@ function ReviewDetail({
         </Button>
         <Button onClick={() => onReview("reject")}>Reject</Button>
         <Button onClick={() => onReview("escalate")}>Escalate</Button>
+        {detail.taskStatus === "escalated" ? (
+          <>
+            <Button danger onClick={() => onPlatformReview("block")}>
+              Platform Block
+            </Button>
+            <Button onClick={() => onPlatformReview("reject")}>
+              Platform Reject
+            </Button>
+          </>
+        ) : null}
         <Button onClick={onRetry}>Retry</Button>
       </Space>
     </section>
