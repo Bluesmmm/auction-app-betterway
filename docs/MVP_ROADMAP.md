@@ -146,6 +146,15 @@
 - fake provider 必须可稳定模拟 `low`、`medium`、`high`、`severe`、失败、超时、不可解析、OCR 联系方式命中、二维码/条码命中、EXIF 隐私命中和恶意文件拒绝路径。
 - 真实第三方内容安全、OCR、二维码/条码和图片安全供应商接入留到阶段 3 后半段或阶段 9 试点前验证，并复用同一套 contract tests。
 
+第二轮实施顺序：
+
+1. 新增 `wanted_posts` 和 `wanted_responses` 业务事实表，并复用 `content_versions`、`content_version_media` 与 `moderation_tasks`。
+2. 求购和求购响应提交同样先创建事实与待审核内容版本，不自动公开、不创建拍卖场次。
+3. 求购和求购响应第一版同样要求 4 张临时私有图片，先用同一 fake provider 和人工审核闭环验证文件、版本和失败关闭契约。
+4. 审核后台队列从 item-only 扩展为按 `target_type` 展示拍品、求购和响应，仍只提供队列、详情、approve/reject/escalate/retry。
+5. 孩子端补最小求购提交、响应提交和详情读取壳；搜索、排序、收藏、首页列表仍留到阶段 7。
+6. 第二轮仍不接真实第三方内容安全供应商、不实现阶段 8 抽检/投诉/治理大屏、不创建阶段 5 拍卖场次。
+
 ### 阶段 4：积分账本
 
 范围：

@@ -211,6 +211,146 @@ describe("Stage 3 content review flow", () => {
     );
   });
 
+  it("submits, reviews, and exposes a wanted post through approved content versions only", async () => {
+    const fixture = await createStage3Fixture(prisma);
+    const media = await createTempMediaSet(
+      prisma,
+      fixture.guardianUserId,
+      "wanted-post"
+    );
+    const review = createReviewService(fixture);
+    const submitted = await submitValidWantedPost(
+      review,
+      fixture,
+      media,
+      "wanted-post"
+    );
+
+    await review.processModerationTask({ taskId: submitted.moderationTaskId });
+    await expect(
+      review.reviewModerationTask({
+        actorUserId: fixture.activityAdminUserId,
+        taskId: submitted.moderationTaskId,
+        decision: "approve",
+        reason: "safe wanted post",
+        now: new Date("2026-06-02T12:30:00.000Z")
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        taskStatus: "approved",
+        contentVersionStatus: "approved"
+      })
+    );
+
+    const visibility = new ContentVisibilityService(
+      prisma,
+      fixture.participation,
+      "stage3-grant-key"
+    );
+    await expect(
+      visibility.getVisibleWantedPostDetail({
+        actorUserId: fixture.guardianUserId,
+        childId: fixture.childId,
+        communityId: fixture.communityId,
+        wantedPostId: submitted.wantedPostId
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        wantedPostId: submitted.wantedPostId,
+        title: "Wanted wanted-post",
+        versionNo: 1,
+        images: expect.arrayContaining([
+          expect.objectContaining({ mediaRole: "front" })
+        ])
+      })
+    );
+  });
+
+  it("submits, reviews, and exposes a wanted response only after the parent wanted post is active", async () => {
+    const fixture = await createStage3Fixture(prisma);
+    const review = createReviewService(fixture);
+    const postMedia = await createTempMediaSet(
+      prisma,
+      fixture.guardianUserId,
+      "wanted-response-parent"
+    );
+    const wantedPost = await submitValidWantedPost(
+      review,
+      fixture,
+      postMedia,
+      "wanted-response-parent"
+    );
+    await review.processModerationTask({ taskId: wantedPost.moderationTaskId });
+    await review.reviewModerationTask({
+      actorUserId: fixture.activityAdminUserId,
+      taskId: wantedPost.moderationTaskId,
+      decision: "approve",
+      reason: "safe wanted parent",
+      now: new Date("2026-06-02T12:40:00.000Z")
+    });
+
+    const responseMedia = await createTempMediaSet(
+      prisma,
+      fixture.guardianUserId,
+      "wanted-response-child"
+    );
+    const response = await review.submitWantedResponse({
+      actorUserId: fixture.guardianUserId,
+      responderChildId: fixture.childId,
+      communityId: fixture.communityId,
+      wantedPostId: wantedPost.wantedPostId,
+      title: "I have the book",
+      description: "Clean copy",
+      images: responseMedia.map((asset, index) => ({
+        mediaAssetId: asset.id,
+        mediaRole: itemImageRoles[index],
+        sortOrder: index + 1
+      })),
+      idempotencyKey: `wanted-response-${fixture.childId}`
+    });
+    expect(response).toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        wantedResponseStatus: "reviewing"
+      })
+    );
+    if (response.result !== "accepted") {
+      throw new Error("expected wanted response accepted");
+    }
+
+    await review.processModerationTask({ taskId: response.moderationTaskId });
+    await review.reviewModerationTask({
+      actorUserId: fixture.activityAdminUserId,
+      taskId: response.moderationTaskId,
+      decision: "approve",
+      reason: "safe wanted response",
+      now: new Date("2026-06-02T12:45:00.000Z")
+    });
+
+    const visibility = new ContentVisibilityService(
+      prisma,
+      fixture.participation,
+      "stage3-grant-key"
+    );
+    await expect(
+      visibility.getVisibleWantedResponseDetail({
+        actorUserId: fixture.guardianUserId,
+        childId: fixture.childId,
+        communityId: fixture.communityId,
+        wantedResponseId: response.wantedResponseId
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        wantedResponseId: response.wantedResponseId,
+        wantedPostId: wantedPost.wantedPostId,
+        title: "I have the book"
+      })
+    );
+  });
+
   it("does not allow activity admins to approve high or severe content", async () => {
     const fixture = await createStage3Fixture(prisma);
     const media = await createTempMediaSet(
@@ -239,6 +379,41 @@ describe("Stage 3 content review flow", () => {
         decision: "approve",
         reason: "single reviewer cannot approve high risk",
         now: new Date("2026-06-02T12:20:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "HIGH_RISK_REQUIRES_ESCALATION"
+    });
+  });
+
+  it("does not allow activity admins to approve high risk wanted content", async () => {
+    const fixture = await createStage3Fixture(prisma);
+    const media = await createTempMediaSet(
+      prisma,
+      fixture.guardianUserId,
+      "wanted-risk-high"
+    );
+    await prisma.mediaAsset.update({
+      where: { id: media[0].id },
+      data: { checksum: "risk:high:qr" }
+    });
+    const review = createReviewService(fixture);
+    const submitted = await submitValidWantedPost(
+      review,
+      fixture,
+      media,
+      "wanted-risk-high"
+    );
+
+    await review.processModerationTask({ taskId: submitted.moderationTaskId });
+
+    await expect(
+      review.reviewModerationTask({
+        actorUserId: fixture.activityAdminUserId,
+        taskId: submitted.moderationTaskId,
+        decision: "approve",
+        reason: "single reviewer cannot approve high risk wanted post",
+        now: new Date("2026-06-02T12:50:00.000Z")
       })
     ).resolves.toEqual({
       result: "rejected",
@@ -370,6 +545,64 @@ describe("Stage 3 content review flow", () => {
       })
     ).resolves.toEqual({ result: "rejected", errorCode: "CONTENT_NOT_VISIBLE" });
   });
+
+  it("rejects old wanted post image grants after delist", async () => {
+    const fixture = await createStage3Fixture(prisma);
+    const media = await createTempMediaSet(
+      prisma,
+      fixture.guardianUserId,
+      "wanted-delist"
+    );
+    const review = createReviewService(fixture);
+    const submitted = await submitValidWantedPost(
+      review,
+      fixture,
+      media,
+      "wanted-delist"
+    );
+    await review.processModerationTask({ taskId: submitted.moderationTaskId });
+    await review.reviewModerationTask({
+      actorUserId: fixture.activityAdminUserId,
+      taskId: submitted.moderationTaskId,
+      decision: "approve",
+      reason: "safe",
+      now: new Date("2026-06-02T13:20:00.000Z")
+    });
+
+    const visibility = new ContentVisibilityService(
+      prisma,
+      fixture.participation,
+      "stage3-grant-key"
+    );
+    const detail = await visibility.getVisibleWantedPostDetail({
+      actorUserId: fixture.guardianUserId,
+      childId: fixture.childId,
+      communityId: fixture.communityId,
+      wantedPostId: submitted.wantedPostId,
+      now: new Date("2026-06-02T13:20:30.000Z")
+    });
+    if (detail.result !== "accepted") {
+      throw new Error("expected visible wanted detail");
+    }
+
+    const grantToken = new URL(detail.images[0].url).searchParams.get("grant") ?? "";
+    const fileAccess = new ContentFileAccessService(prisma, "stage3-grant-key");
+    await review.delistWantedPost({
+      actorUserId: fixture.activityAdminUserId,
+      wantedPostId: submitted.wantedPostId,
+      reason: "unsafe after review",
+      now: new Date("2026-06-02T13:21:00.000Z")
+    });
+
+    await expect(
+      fileAccess.verifyItemImageGrant({
+        grantToken,
+        granteeUserId: fixture.guardianUserId,
+        purpose: "wanted_image_view",
+        now: new Date("2026-06-02T13:21:30.000Z")
+      })
+    ).resolves.toEqual({ result: "rejected", errorCode: "CONTENT_NOT_VISIBLE" });
+  });
 });
 
 function createReviewService(
@@ -407,6 +640,32 @@ async function submitValidStage3Item(
   });
   if (result.result !== "accepted") {
     throw new Error("expected submit accepted");
+  }
+  return result;
+}
+
+async function submitValidWantedPost(
+  service: ContentReviewService,
+  fixture: Stage3Fixture,
+  media: { id: string }[],
+  label: string
+) {
+  const result = await service.submitWantedPost({
+    actorUserId: fixture.guardianUserId,
+    childId: fixture.childId,
+    communityId: fixture.communityId,
+    title: `Wanted ${label}`,
+    description: `Wanted description ${label}`,
+    category: "book",
+    images: media.map((asset, index) => ({
+      mediaAssetId: asset.id,
+      mediaRole: itemImageRoles[index],
+      sortOrder: index + 1
+    })),
+    idempotencyKey: `wanted-${fixture.childId}-${label}`
+  });
+  if (result.result !== "accepted") {
+    throw new Error("expected wanted post accepted");
   }
   return result;
 }

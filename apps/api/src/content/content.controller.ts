@@ -137,6 +137,115 @@ export class ContentController {
     );
   }
 
+  async submitWantedPost(
+    body: {
+      childId: string;
+      communityId: string;
+      title: string;
+      description: string;
+      category?: string;
+      images: ItemImageInput[];
+      idempotencyKey: string;
+    },
+    authorization?: string
+  ) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    const result = await this.reviews.submitWantedPost({
+      actorUserId: actor.userId,
+      ...body,
+      now
+    });
+
+    return writeResponse(
+      {
+        now,
+        targetType: "wanted_request",
+        targetId:
+          result.result === "accepted" ? result.wantedPostId : body.childId,
+        latestStatus:
+          result.result === "accepted"
+            ? result.wantedPostStatus
+            : "rejected"
+      },
+      result
+    );
+  }
+
+  async editWantedPost(
+    wantedPostId: string,
+    body: {
+      childId: string;
+      communityId: string;
+      title: string;
+      description: string;
+      category?: string;
+      images: ItemImageInput[];
+      idempotencyKey: string;
+    },
+    authorization?: string
+  ) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    const result = await this.reviews.editWantedPost({
+      actorUserId: actor.userId,
+      wantedPostId,
+      ...body,
+      now
+    });
+
+    return writeResponse(
+      {
+        now,
+        targetType: "wanted_request",
+        targetId: wantedPostId,
+        latestStatus:
+          result.result === "accepted"
+            ? result.contentVersionStatus
+            : "rejected"
+      },
+      result
+    );
+  }
+
+  async submitWantedResponse(
+    wantedPostId: string,
+    body: {
+      responderChildId: string;
+      communityId: string;
+      title: string;
+      description: string;
+      images: ItemImageInput[];
+      idempotencyKey: string;
+    },
+    authorization?: string
+  ) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    const result = await this.reviews.submitWantedResponse({
+      actorUserId: actor.userId,
+      wantedPostId,
+      ...body,
+      now
+    });
+
+    return writeResponse(
+      {
+        now,
+        targetType: "wanted_response",
+        targetId:
+          result.result === "accepted"
+            ? result.wantedResponseId
+            : wantedPostId,
+        latestStatus:
+          result.result === "accepted"
+            ? result.wantedResponseStatus
+            : "rejected"
+      },
+      result
+    );
+  }
+
   async listModerationQueue(communityId: string, authorization?: string) {
     const now = new Date();
     const actor = await this.authenticate(authorization, now);
@@ -237,6 +346,40 @@ export class ContentController {
     });
   }
 
+  async getVisibleWantedPostDetail(
+    communityId: string,
+    wantedPostId: string,
+    childId: string,
+    authorization?: string
+  ) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    return this.visibility.getVisibleWantedPostDetail({
+      actorUserId: actor.userId,
+      childId,
+      communityId,
+      wantedPostId,
+      now
+    });
+  }
+
+  async getVisibleWantedResponseDetail(
+    communityId: string,
+    wantedResponseId: string,
+    childId: string,
+    authorization?: string
+  ) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    return this.visibility.getVisibleWantedResponseDetail({
+      actorUserId: actor.userId,
+      childId,
+      communityId,
+      wantedResponseId,
+      now
+    });
+  }
+
   async delistItem(
     itemId: string,
     body: {
@@ -259,6 +402,62 @@ export class ContentController {
         targetId: itemId,
         latestStatus:
           result.result === "accepted" ? result.itemStatus : "rejected"
+      },
+      result
+    );
+  }
+
+  async delistWantedPost(
+    wantedPostId: string,
+    body: {
+      reason: string;
+    },
+    authorization?: string
+  ) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    const result = await this.reviews.delistWantedPost({
+      actorUserId: actor.userId,
+      wantedPostId,
+      reason: body.reason,
+      now
+    });
+    return writeResponse(
+      {
+        now,
+        targetType: "wanted_request",
+        targetId: wantedPostId,
+        latestStatus:
+          result.result === "accepted" ? result.wantedPostStatus : "rejected"
+      },
+      result
+    );
+  }
+
+  async cancelWantedResponse(
+    wantedResponseId: string,
+    body: {
+      reason: string;
+    },
+    authorization?: string
+  ) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    const result = await this.reviews.cancelWantedResponse({
+      actorUserId: actor.userId,
+      wantedResponseId,
+      reason: body.reason,
+      now
+    });
+    return writeResponse(
+      {
+        now,
+        targetType: "wanted_response",
+        targetId: wantedResponseId,
+        latestStatus:
+          result.result === "accepted"
+            ? result.wantedResponseStatus
+            : "rejected"
       },
       result
     );
@@ -310,6 +509,17 @@ applyMethodDecorator(
   ContentController.prototype,
   "editItem"
 );
+applyMethodDecorator(Post("wanted-posts"), ContentController.prototype, "submitWantedPost");
+applyMethodDecorator(
+  Post("wanted-posts/:wantedPostId/versions"),
+  ContentController.prototype,
+  "editWantedPost"
+);
+applyMethodDecorator(
+  Post("wanted-posts/:wantedPostId/responses"),
+  ContentController.prototype,
+  "submitWantedResponse"
+);
 applyMethodDecorator(
   Get("communities/:communityId/moderation-tasks"),
   ContentController.prototype,
@@ -340,7 +550,27 @@ applyMethodDecorator(
   ContentController.prototype,
   "getVisibleItemDetail"
 );
+applyMethodDecorator(
+  Get("communities/:communityId/wanted-posts/:wantedPostId/visible-detail"),
+  ContentController.prototype,
+  "getVisibleWantedPostDetail"
+);
+applyMethodDecorator(
+  Get("communities/:communityId/wanted-responses/:wantedResponseId/visible-detail"),
+  ContentController.prototype,
+  "getVisibleWantedResponseDetail"
+);
 applyMethodDecorator(Post("items/:itemId/delist"), ContentController.prototype, "delistItem");
+applyMethodDecorator(
+  Post("wanted-posts/:wantedPostId/delist"),
+  ContentController.prototype,
+  "delistWantedPost"
+);
+applyMethodDecorator(
+  Post("wanted-responses/:wantedResponseId/cancel"),
+  ContentController.prototype,
+  "cancelWantedResponse"
+);
 applyMethodDecorator(Get("file-grants/verify"), ContentController.prototype, "verifyFileGrant");
 
 applyParameterDecorator(Body(), ContentController.prototype, "createTempMedia", 0);
@@ -350,6 +580,14 @@ applyParameterDecorator(Headers("authorization"), ContentController.prototype, "
 applyParameterDecorator(Param("itemId"), ContentController.prototype, "editItem", 0);
 applyParameterDecorator(Body(), ContentController.prototype, "editItem", 1);
 applyParameterDecorator(Headers("authorization"), ContentController.prototype, "editItem", 2);
+applyParameterDecorator(Body(), ContentController.prototype, "submitWantedPost", 0);
+applyParameterDecorator(Headers("authorization"), ContentController.prototype, "submitWantedPost", 1);
+applyParameterDecorator(Param("wantedPostId"), ContentController.prototype, "editWantedPost", 0);
+applyParameterDecorator(Body(), ContentController.prototype, "editWantedPost", 1);
+applyParameterDecorator(Headers("authorization"), ContentController.prototype, "editWantedPost", 2);
+applyParameterDecorator(Param("wantedPostId"), ContentController.prototype, "submitWantedResponse", 0);
+applyParameterDecorator(Body(), ContentController.prototype, "submitWantedResponse", 1);
+applyParameterDecorator(Headers("authorization"), ContentController.prototype, "submitWantedResponse", 2);
 applyParameterDecorator(Param("communityId"), ContentController.prototype, "listModerationQueue", 0);
 applyParameterDecorator(Headers("authorization"), ContentController.prototype, "listModerationQueue", 1);
 applyParameterDecorator(Param("taskId"), ContentController.prototype, "getModerationTask", 0);
@@ -365,9 +603,23 @@ applyParameterDecorator(Param("communityId"), ContentController.prototype, "getV
 applyParameterDecorator(Param("itemId"), ContentController.prototype, "getVisibleItemDetail", 1);
 applyParameterDecorator(Query("childId"), ContentController.prototype, "getVisibleItemDetail", 2);
 applyParameterDecorator(Headers("authorization"), ContentController.prototype, "getVisibleItemDetail", 3);
+applyParameterDecorator(Param("communityId"), ContentController.prototype, "getVisibleWantedPostDetail", 0);
+applyParameterDecorator(Param("wantedPostId"), ContentController.prototype, "getVisibleWantedPostDetail", 1);
+applyParameterDecorator(Query("childId"), ContentController.prototype, "getVisibleWantedPostDetail", 2);
+applyParameterDecorator(Headers("authorization"), ContentController.prototype, "getVisibleWantedPostDetail", 3);
+applyParameterDecorator(Param("communityId"), ContentController.prototype, "getVisibleWantedResponseDetail", 0);
+applyParameterDecorator(Param("wantedResponseId"), ContentController.prototype, "getVisibleWantedResponseDetail", 1);
+applyParameterDecorator(Query("childId"), ContentController.prototype, "getVisibleWantedResponseDetail", 2);
+applyParameterDecorator(Headers("authorization"), ContentController.prototype, "getVisibleWantedResponseDetail", 3);
 applyParameterDecorator(Param("itemId"), ContentController.prototype, "delistItem", 0);
 applyParameterDecorator(Body(), ContentController.prototype, "delistItem", 1);
 applyParameterDecorator(Headers("authorization"), ContentController.prototype, "delistItem", 2);
+applyParameterDecorator(Param("wantedPostId"), ContentController.prototype, "delistWantedPost", 0);
+applyParameterDecorator(Body(), ContentController.prototype, "delistWantedPost", 1);
+applyParameterDecorator(Headers("authorization"), ContentController.prototype, "delistWantedPost", 2);
+applyParameterDecorator(Param("wantedResponseId"), ContentController.prototype, "cancelWantedResponse", 0);
+applyParameterDecorator(Body(), ContentController.prototype, "cancelWantedResponse", 1);
+applyParameterDecorator(Headers("authorization"), ContentController.prototype, "cancelWantedResponse", 2);
 applyParameterDecorator(Query("grant"), ContentController.prototype, "verifyFileGrant", 0);
 applyParameterDecorator(Query("purpose"), ContentController.prototype, "verifyFileGrant", 1);
 applyParameterDecorator(Headers("authorization"), ContentController.prototype, "verifyFileGrant", 2);

@@ -99,12 +99,14 @@ export function ContentReviewView({ apiBaseUrl }: { apiBaseUrl: string }) {
     queue.data?.result === "accepted" ? queue.data.tasks : [];
   const columns: TableProps<ContentReviewTaskRow>["columns"] = [
     {
-      title: "Item",
+      title: "Content",
       dataIndex: "title",
       render: (_: unknown, row) => (
         <div>
-          <div>{row.title || row.itemId}</div>
-          <Typography.Text type="secondary">v{row.versionNo}</Typography.Text>
+          <div>{row.title || row.targetId}</div>
+          <Typography.Text type="secondary">
+            {targetLabel(row.targetType)} / v{row.versionNo}
+          </Typography.Text>
         </div>
       )
     },
@@ -140,7 +142,7 @@ export function ContentReviewView({ apiBaseUrl }: { apiBaseUrl: string }) {
         <div>
           <Typography.Title level={2}>Content Review</Typography.Title>
           <Typography.Text type="secondary">
-            Item content queue and manual decisions
+            Item, wanted post, and wanted response manual decisions
           </Typography.Text>
         </div>
       </div>
@@ -221,9 +223,10 @@ function ReviewDetail({
 
   return (
     <section className="stage2-detail-panel">
-      <Typography.Title level={3}>{detail.title || detail.itemId}</Typography.Title>
+      <Typography.Title level={3}>{detail.title || detail.targetId}</Typography.Title>
       <Typography.Paragraph>{detail.description}</Typography.Paragraph>
       <Space wrap>
+        <Tag>{targetLabel(detail.targetType)}</Tag>
         <Tag>v{detail.versionNo}</Tag>
         <Tag>{detail.taskStatus}</Tag>
         <Tag>{detail.riskLevel}</Tag>
@@ -247,4 +250,11 @@ function ReviewDetail({
       </Space>
     </section>
   );
+}
+
+function targetLabel(targetType: string): string {
+  if (targetType === "item") return "Item";
+  if (targetType === "wanted_request") return "Wanted";
+  if (targetType === "wanted_response") return "Response";
+  return targetType;
 }

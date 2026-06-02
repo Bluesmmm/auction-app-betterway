@@ -115,6 +115,8 @@ invite_code_validated
 
 阶段 3 第一轮只实现拍品 `item` 的内容版本闭环。`ContentTargetType` 可以保留求购、响应和头像扩展位，但第一轮不落求购/响应业务表、UI 或状态机。
 
+阶段 3 第二轮实现 `wanted_request` 和 `wanted_response` 的最小内容审核闭环。第二轮只扩展求购发布、求购响应、人工审核、可见详情和私有文件授权校验；不创建拍卖场次，不开放搜索/列表/排序/收藏，不接真实第三方内容安全供应商，也不提前实现阶段 8 完整治理工作台。
+
 模型关系：
 
 - `items`、求购和响应等表表示业务对象。
@@ -125,11 +127,13 @@ invite_code_validated
 - 业务对象的 `latest_version_id` 可以指向待审核、审核中或被拒绝的新内容版本。
 - 第一版拍品提交请求只创建 `items`、`content_versions`、`moderation_tasks` 和临时私有文件事实；AI、规则和人工审核由审核任务异步推进。
 - 第一版拍品内容版本必须绑定正好 4 张临时私有图片；每张临时私有图片只能被一个已提交内容版本消耗。
+- 第二轮求购和求购响应提交请求只创建 `wanted_posts` 或 `wanted_responses`、`content_versions`、`moderation_tasks` 和临时私有文件事实；AI、规则和人工审核由审核任务异步推进。
+- 第二轮求购和求购响应内容版本沿用拍品的 4 图约束，用于先验证同一套文件、版本和审核边界；后续若产品要求弱化图片数量，必须通过新的 migration、测试和文档更新显式调整。
 - AI 风险标签、OCR、二维码/条码识别、图片元数据检查和规则命中只作为审核信号，不能单独构成审核通过决定。
 
 约束：
 
-- 提交或编辑拍品前必须由服务端校验孩子参与能力：有效主监护关系、active 社区成员、无监护争议冻结、无 active `no_publish` 风险限制、`ChildGuardianSettings.canPublish = true`，且账号和社区状态允许发布。
+- 提交或编辑拍品、求购或求购响应前必须由服务端校验孩子参与能力：有效主监护关系、active 社区成员、无监护争议冻结、无 active `no_publish` 风险限制、`ChildGuardianSettings.canPublish = true`，且账号和社区状态允许发布。
 - 阶段 3 第一轮不新增逐条拍品家长预确认流程；家长控制项只作为服务端参与能力 guard。
 - 标题、描述、图片、瑕疵说明、分类、交付说明和其他孩子端可见文本修改后，必须创建新内容版本并重新审核。
 - 图片绑定必须通过 `content_version_media` 持久化，不能只依赖 `content_versions.payload_json` 中的图片 ID。

@@ -16,6 +16,14 @@ describe("Stage 3 content controller wiring", () => {
 
   it("declares the content controller route prefix and module", () => {
     expect(contentController).toContain('Controller("content")(ContentController)');
+    expect(contentController).toContain('Post("wanted-posts")');
+    expect(contentController).toContain('Post("wanted-posts/:wantedPostId/responses")');
+    expect(contentController).toContain(
+      'Get("communities/:communityId/wanted-posts/:wantedPostId/visible-detail")'
+    );
+    expect(contentController).toContain(
+      'Get("communities/:communityId/wanted-responses/:wantedResponseId/visible-detail")'
+    );
     expect(contentModule).toContain("controllers: [ContentController]");
     expect(contentModule).toContain("ContentReviewService");
     expect(contentModule).toContain("ContentVisibilityService");

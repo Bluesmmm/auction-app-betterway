@@ -123,6 +123,25 @@ enum ItemStatus {
   delisted
 }
 
+enum WantedPostStatus {
+  draft
+  ai_reviewing
+  manual_reviewing
+  active
+  closed
+  rejected
+  delisted
+}
+
+enum WantedResponseStatus {
+  submitted
+  reviewing
+  approved
+  converted_to_item
+  rejected
+  cancelled
+}
+
 enum AuctionSessionStatus {
   pending_start
   active
@@ -371,6 +390,8 @@ model ChildProfile {
   pointAccount           PointAccount?
   ledgerEntries          PointLedgerEntry[]
   items                  Item[]
+  wantedPosts            WantedPost[]
+  wantedResponses        WantedResponse[]
   bids                   Bid[]
 }
 
@@ -404,6 +425,7 @@ model AuctionCommunity {
   riskSignals                   RiskSignal[]
   riskRestrictions              RiskRestriction[]
   items                         Item[]
+  wantedPosts                   WantedPost[]
 }
 
 model AdminCommunityScope {
@@ -687,9 +709,51 @@ model Item {
   currentPublicVersion   ContentVersion?  @relation("ItemCurrentPublicVersion", fields: [currentPublicVersionId], references: [id])
   latestVersion          ContentVersion?  @relation("ItemLatestVersion", fields: [latestVersionId], references: [id])
   auctionSessions        AuctionSession[]
+  wantedResponses        WantedResponse[]
 
   @@index([communityId, status])
   @@index([sellerChildId])
+}
+
+model WantedPost {
+  id                     String           @id @default(cuid())
+  communityId            String
+  childId                String
+  status                 WantedPostStatus @default(draft)
+  category               String?
+  currentPublicVersionId String?
+  latestVersionId        String?
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
+  community              AuctionCommunity @relation(fields: [communityId], references: [id])
+  child                  ChildProfile     @relation(fields: [childId], references: [id])
+  currentPublicVersion   ContentVersion?  @relation("WantedPostCurrentPublicVersion", fields: [currentPublicVersionId], references: [id])
+  latestVersion          ContentVersion?  @relation("WantedPostLatestVersion", fields: [latestVersionId], references: [id])
+  responses              WantedResponse[]
+
+  @@index([communityId, status])
+  @@index([childId])
+}
+
+model WantedResponse {
+  id                     String               @id @default(cuid())
+  wantedPostId           String
+  responderChildId       String
+  itemId                 String?
+  status                 WantedResponseStatus @default(submitted)
+  currentPublicVersionId String?
+  latestVersionId        String?
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+  wantedPost             WantedPost           @relation(fields: [wantedPostId], references: [id])
+  responderChild         ChildProfile         @relation(fields: [responderChildId], references: [id])
+  item                   Item?                @relation(fields: [itemId], references: [id])
+  currentPublicVersion   ContentVersion?      @relation("WantedResponseCurrentPublicVersion", fields: [currentPublicVersionId], references: [id])
+  latestVersion          ContentVersion?      @relation("WantedResponseLatestVersion", fields: [latestVersionId], references: [id])
+
+  @@index([wantedPostId, status])
+  @@index([responderChildId])
+  @@index([itemId])
 }
 
 model ContentVersion {
@@ -708,6 +772,10 @@ model ContentVersion {
   media       ContentVersionMedia[]
   itemCurrentPublic Item[]          @relation("ItemCurrentPublicVersion")
   itemLatest        Item[]          @relation("ItemLatestVersion")
+  wantedPostCurrentPublic WantedPost[] @relation("WantedPostCurrentPublicVersion")
+  wantedPostLatest        WantedPost[] @relation("WantedPostLatestVersion")
+  wantedResponseCurrentPublic WantedResponse[] @relation("WantedResponseCurrentPublicVersion")
+  wantedResponseLatest        WantedResponse[] @relation("WantedResponseLatestVersion")
 
   @@unique([targetType, targetId, versionNo])
   @@index([targetType, targetId, status])

@@ -3,7 +3,9 @@ import type {
   Item,
   ModerationTask,
   Prisma,
-  PrismaClient
+  PrismaClient,
+  WantedPost,
+  WantedResponse
 } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import type { ChildParticipationService } from "../accounts/child-participation.service.js";
@@ -34,6 +36,34 @@ export type SubmitItemInput = {
   now?: Date;
 };
 
+export type SubmitWantedPostInput = {
+  actorUserId: string;
+  childId: string;
+  communityId: string;
+  title: string;
+  description: string;
+  category?: string;
+  images: ItemImageInput[];
+  idempotencyKey: string;
+  now?: Date;
+};
+
+export type EditWantedPostInput = SubmitWantedPostInput & {
+  wantedPostId: string;
+};
+
+export type SubmitWantedResponseInput = {
+  actorUserId: string;
+  responderChildId: string;
+  communityId: string;
+  wantedPostId: string;
+  title: string;
+  description: string;
+  images: ItemImageInput[];
+  idempotencyKey: string;
+  now?: Date;
+};
+
 export type SubmitItemResult =
   | {
       result: "accepted";
@@ -57,6 +87,57 @@ export type SubmitItemResult =
         | "MEDIA_ALREADY_CONSUMED"
         | "POINTS_INVALID"
         | "IDEMPOTENCY_KEY_REQUIRED";
+    };
+
+export type SubmitWantedPostResult =
+  | {
+      result: "accepted";
+      wantedPostId: string;
+      wantedPostStatus: "ai_reviewing";
+      contentVersionId: string;
+      contentVersionStatus: "pending_ai";
+      moderationTaskId: string;
+      moderationTaskStatus: "pending";
+    }
+  | {
+      result: "rejected";
+      errorCode:
+        | "COMMUNITY_MEMBER_REQUIRED"
+        | "GUARDIAN_CONTROL_DISABLED"
+        | "PUBLISH_NOT_ALLOWED"
+        | "IMAGE_COUNT_INVALID"
+        | "IMAGE_ROLES_INVALID"
+        | "MEDIA_NOT_TEMP_PRIVATE"
+        | "MEDIA_OWNER_INVALID"
+        | "MEDIA_ALREADY_CONSUMED"
+        | "IDEMPOTENCY_KEY_REQUIRED"
+        | "WANTED_POST_NOT_FOUND"
+        | "WANTED_POST_NOT_EDITABLE";
+    };
+
+export type SubmitWantedResponseResult =
+  | {
+      result: "accepted";
+      wantedResponseId: string;
+      wantedResponseStatus: "reviewing";
+      contentVersionId: string;
+      contentVersionStatus: "pending_ai";
+      moderationTaskId: string;
+      moderationTaskStatus: "pending";
+    }
+  | {
+      result: "rejected";
+      errorCode:
+        | "COMMUNITY_MEMBER_REQUIRED"
+        | "GUARDIAN_CONTROL_DISABLED"
+        | "PUBLISH_NOT_ALLOWED"
+        | "IMAGE_COUNT_INVALID"
+        | "IMAGE_ROLES_INVALID"
+        | "MEDIA_NOT_TEMP_PRIVATE"
+        | "MEDIA_OWNER_INVALID"
+        | "MEDIA_ALREADY_CONSUMED"
+        | "IDEMPOTENCY_KEY_REQUIRED"
+        | "WANTED_POST_NOT_VISIBLE";
     };
 
 export type EditItemInput = Omit<
@@ -113,6 +194,34 @@ export type DelistItemResult =
       errorCode: "ITEM_NOT_FOUND" | "COMMUNITY_ADMIN_REQUIRED" | "REASON_REQUIRED";
     };
 
+export type DelistWantedPostResult =
+  | {
+      result: "accepted";
+      wantedPostId: string;
+      wantedPostStatus: "delisted";
+    }
+  | {
+      result: "rejected";
+      errorCode:
+        | "WANTED_POST_NOT_FOUND"
+        | "COMMUNITY_ADMIN_REQUIRED"
+        | "REASON_REQUIRED";
+    };
+
+export type CancelWantedResponseResult =
+  | {
+      result: "accepted";
+      wantedResponseId: string;
+      wantedResponseStatus: "cancelled";
+    }
+  | {
+      result: "rejected";
+      errorCode:
+        | "WANTED_RESPONSE_NOT_FOUND"
+        | "COMMUNITY_ADMIN_REQUIRED"
+        | "REASON_REQUIRED";
+    };
+
 export type ContentReviewQueueResult =
   | {
       result: "accepted";
@@ -120,7 +229,11 @@ export type ContentReviewQueueResult =
         key: string;
         taskId: string;
         contentVersionId: string;
-        itemId: string;
+        targetType: string;
+        targetId: string;
+        itemId?: string;
+        wantedPostId?: string;
+        wantedResponseId?: string;
         versionNo: number;
         title: string;
         taskStatus: string;
@@ -138,7 +251,12 @@ export type ContentReviewTaskDetailResult =
       result: "accepted";
       taskId: string;
       contentVersionId: string;
-      itemId: string;
+      targetType: string;
+      targetId: string;
+      itemId?: string;
+      wantedPostId?: string;
+      wantedResponseId?: string;
+      parentWantedPostId?: string;
       versionNo: number;
       title: string;
       description: string;
@@ -163,6 +281,21 @@ type ModerationTaskWithVersion = ModerationTask & {
   contentVersion: ContentVersion;
 };
 
+type ReviewTarget =
+  | { targetType: "item"; target: Item; communityId: string; status: string }
+  | {
+      targetType: "wanted_request";
+      target: WantedPost;
+      communityId: string;
+      status: string;
+    }
+  | {
+      targetType: "wanted_response";
+      target: WantedResponse & { wantedPost: WantedPost };
+      communityId: string;
+      status: string;
+    };
+
 export class ContentReviewService {
   constructor(
     private readonly prisma: PrismaClient,
@@ -183,11 +316,6 @@ export class ContentReviewService {
       return { result: "rejected", errorCode: "COMMUNITY_ADMIN_REQUIRED" };
     }
 
-    const items = await this.prisma.item.findMany({
-      where: { communityId: input.communityId },
-      select: { id: true }
-    });
-    const itemIds = new Set(items.map((item) => item.id));
     const tasks = await this.prisma.moderationTask.findMany({
       where: {
         status: { in: ["needs_manual_review", "failed", "escalated"] }
@@ -196,15 +324,24 @@ export class ContentReviewService {
       orderBy: { id: "asc" }
     });
 
+    const scopedTasks = [];
+    for (const task of tasks) {
+      const target = await this.resolveReviewTarget(task.contentVersion);
+      if (target?.communityId === input.communityId) {
+        scopedTasks.push({ task, target });
+      }
+    }
+
     return {
       result: "accepted",
-      tasks: tasks
-        .filter((task) => itemIds.has(task.contentVersion.targetId))
-        .map((task) => ({
+      tasks: scopedTasks
+        .map(({ task, target }) => ({
           key: task.id,
           taskId: task.id,
           contentVersionId: task.contentVersionId,
-          itemId: task.contentVersion.targetId,
+          targetType: task.contentVersion.targetType,
+          targetId: task.contentVersion.targetId,
+          ...this.targetIdentityFields(target),
           versionNo: task.contentVersion.versionNo,
           title: task.contentVersion.title ?? "",
           taskStatus: task.status,
@@ -226,15 +363,13 @@ export class ContentReviewService {
     if (!task) {
       return { result: "rejected", errorCode: "MODERATION_TASK_NOT_FOUND" };
     }
-    const item = await this.prisma.item.findUnique({
-      where: { id: task.contentVersion.targetId }
-    });
-    if (!item) {
+    const target = await this.resolveReviewTarget(task.contentVersion);
+    if (!target) {
       return { result: "rejected", errorCode: "MODERATION_TASK_NOT_FOUND" };
     }
     const scoped = await this.adminAuthorizations.findActiveScopedActivityAdmin({
       actorUserId: input.actorUserId,
-      communityId: item.communityId
+      communityId: target.communityId
     });
     if (scoped.result === "rejected") {
       return { result: "rejected", errorCode: "COMMUNITY_ADMIN_REQUIRED" };
@@ -244,7 +379,9 @@ export class ContentReviewService {
       result: "accepted",
       taskId: task.id,
       contentVersionId: task.contentVersionId,
-      itemId: task.contentVersion.targetId,
+      targetType: task.contentVersion.targetType,
+      targetId: task.contentVersion.targetId,
+      ...this.targetIdentityFields(target),
       versionNo: task.contentVersion.versionNo,
       title: task.contentVersion.title ?? "",
       description: task.contentVersion.description ?? "",
@@ -409,6 +546,252 @@ export class ContentReviewService {
     });
   }
 
+  async submitWantedPost(
+    input: SubmitWantedPostInput
+  ): Promise<SubmitWantedPostResult> {
+    const now = input.now ?? new Date();
+    const participation = await this.ensureCanPublish(input, now);
+    if (participation.result === "rejected") {
+      return participation;
+    }
+
+    const imageValidation = await this.validateItemImages({
+      actorUserId: input.actorUserId,
+      images: input.images
+    });
+    if (imageValidation.result === "rejected") {
+      return imageValidation;
+    }
+    if (!input.idempotencyKey.trim()) {
+      return { result: "rejected", errorCode: "IDEMPOTENCY_KEY_REQUIRED" };
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const wantedPost = await tx.wantedPost.create({
+        data: {
+          communityId: input.communityId,
+          childId: input.childId,
+          category: input.category,
+          status: "ai_reviewing"
+        }
+      });
+      const contentVersion = await tx.contentVersion.create({
+        data: {
+          targetType: "wanted_request",
+          targetId: wantedPost.id,
+          versionNo: 1,
+          status: "pending_ai",
+          title: input.title,
+          description: input.description,
+          payloadJson: {
+            title: input.title,
+            description: input.description,
+            category: input.category ?? null
+          }
+        }
+      });
+      await insertContentVersionMedia(tx, contentVersion.id, input.images);
+      const task = await tx.moderationTask.create({
+        data: {
+          contentVersionId: contentVersion.id,
+          status: "pending"
+        }
+      });
+      await tx.wantedPost.update({
+        where: { id: wantedPost.id },
+        data: {
+          latestVersionId: contentVersion.id
+        }
+      });
+
+      return {
+        result: "accepted",
+        wantedPostId: wantedPost.id,
+        wantedPostStatus: "ai_reviewing",
+        contentVersionId: contentVersion.id,
+        contentVersionStatus: "pending_ai",
+        moderationTaskId: task.id,
+        moderationTaskStatus: "pending"
+      };
+    });
+  }
+
+  async editWantedPost(
+    input: EditWantedPostInput
+  ): Promise<SubmitWantedPostResult> {
+    const now = input.now ?? new Date();
+    const wantedPost = await this.prisma.wantedPost.findUnique({
+      where: { id: input.wantedPostId }
+    });
+    if (
+      !wantedPost ||
+      wantedPost.communityId !== input.communityId ||
+      wantedPost.childId !== input.childId
+    ) {
+      return { result: "rejected", errorCode: "WANTED_POST_NOT_FOUND" };
+    }
+    if (wantedPost.status === "delisted" || wantedPost.status === "closed") {
+      return { result: "rejected", errorCode: "WANTED_POST_NOT_EDITABLE" };
+    }
+
+    const participation = await this.ensureCanPublish(input, now);
+    if (participation.result === "rejected") {
+      return participation;
+    }
+    const imageValidation = await this.validateItemImages({
+      actorUserId: input.actorUserId,
+      images: input.images
+    });
+    if (imageValidation.result === "rejected") {
+      return imageValidation;
+    }
+    if (!input.idempotencyKey.trim()) {
+      return { result: "rejected", errorCode: "IDEMPOTENCY_KEY_REQUIRED" };
+    }
+
+    const version = await this.prisma.contentVersion.aggregate({
+      where: {
+        targetType: "wanted_request",
+        targetId: wantedPost.id
+      },
+      _max: {
+        versionNo: true
+      }
+    });
+    const versionNo = (version._max.versionNo ?? 0) + 1;
+
+    return this.prisma.$transaction(async (tx) => {
+      const contentVersion = await tx.contentVersion.create({
+        data: {
+          targetType: "wanted_request",
+          targetId: wantedPost.id,
+          versionNo,
+          status: "pending_ai",
+          title: input.title,
+          description: input.description,
+          payloadJson: {
+            title: input.title,
+            description: input.description,
+            category: input.category ?? null
+          }
+        }
+      });
+      await insertContentVersionMedia(tx, contentVersion.id, input.images);
+      const task = await tx.moderationTask.create({
+        data: {
+          contentVersionId: contentVersion.id,
+          status: "pending"
+        }
+      });
+      await tx.wantedPost.update({
+        where: { id: wantedPost.id },
+        data: {
+          latestVersionId: contentVersion.id,
+          status: wantedPost.currentPublicVersionId
+            ? wantedPost.status
+            : "ai_reviewing"
+        }
+      });
+
+      return {
+        result: "accepted",
+        wantedPostId: wantedPost.id,
+        wantedPostStatus: "ai_reviewing",
+        contentVersionId: contentVersion.id,
+        contentVersionStatus: "pending_ai",
+        moderationTaskId: task.id,
+        moderationTaskStatus: "pending"
+      };
+    });
+  }
+
+  async submitWantedResponse(
+    input: SubmitWantedResponseInput
+  ): Promise<SubmitWantedResponseResult> {
+    const now = input.now ?? new Date();
+    const wantedPost = await this.prisma.wantedPost.findUnique({
+      where: { id: input.wantedPostId }
+    });
+    if (
+      !wantedPost ||
+      wantedPost.communityId !== input.communityId ||
+      wantedPost.status !== "active" ||
+      !wantedPost.currentPublicVersionId
+    ) {
+      return { result: "rejected", errorCode: "WANTED_POST_NOT_VISIBLE" };
+    }
+
+    const participation = await this.ensureCanPublish(
+      {
+        actorUserId: input.actorUserId,
+        childId: input.responderChildId,
+        communityId: input.communityId
+      },
+      now
+    );
+    if (participation.result === "rejected") {
+      return participation;
+    }
+    const imageValidation = await this.validateItemImages({
+      actorUserId: input.actorUserId,
+      images: input.images
+    });
+    if (imageValidation.result === "rejected") {
+      return imageValidation;
+    }
+    if (!input.idempotencyKey.trim()) {
+      return { result: "rejected", errorCode: "IDEMPOTENCY_KEY_REQUIRED" };
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const wantedResponse = await tx.wantedResponse.create({
+        data: {
+          wantedPostId: wantedPost.id,
+          responderChildId: input.responderChildId,
+          status: "reviewing"
+        }
+      });
+      const contentVersion = await tx.contentVersion.create({
+        data: {
+          targetType: "wanted_response",
+          targetId: wantedResponse.id,
+          versionNo: 1,
+          status: "pending_ai",
+          title: input.title,
+          description: input.description,
+          payloadJson: {
+            title: input.title,
+            description: input.description,
+            wantedPostId: wantedPost.id
+          }
+        }
+      });
+      await insertContentVersionMedia(tx, contentVersion.id, input.images);
+      const task = await tx.moderationTask.create({
+        data: {
+          contentVersionId: contentVersion.id,
+          status: "pending"
+        }
+      });
+      await tx.wantedResponse.update({
+        where: { id: wantedResponse.id },
+        data: {
+          latestVersionId: contentVersion.id
+        }
+      });
+
+      return {
+        result: "accepted",
+        wantedResponseId: wantedResponse.id,
+        wantedResponseStatus: "reviewing",
+        contentVersionId: contentVersion.id,
+        contentVersionStatus: "pending_ai",
+        moderationTaskId: task.id,
+        moderationTaskStatus: "pending"
+      };
+    });
+  }
+
   async processModerationTask(input: {
     taskId: string;
     now?: Date;
@@ -424,6 +807,10 @@ export class ContentReviewService {
     }
     if (task.status !== "pending") {
       return { result: "rejected", errorCode: "MODERATION_TASK_STATE_INVALID" };
+    }
+    const target = await this.resolveReviewTarget(task.contentVersion);
+    if (!target) {
+      return { result: "rejected", errorCode: "MODERATION_TASK_NOT_FOUND" };
     }
 
     await this.prisma.moderationTask.update({
@@ -459,23 +846,24 @@ export class ContentReviewService {
       };
     }
 
-    await this.prisma.$transaction([
-      this.prisma.contentVersion.update({
+    await this.prisma.$transaction(async (tx) => {
+      await tx.contentVersion.update({
         where: { id: task.contentVersionId },
         data: {
           status: "pending_manual",
           riskLevel: review.riskLevel
         }
-      }),
-      this.prisma.moderationTask.update({
+      });
+      await tx.moderationTask.update({
         where: { id: task.id },
         data: {
           status: "needs_manual_review",
           providerRiskLevel: review.riskLevel,
           ruleTagsJson: review.labels
         }
-      })
-    ]);
+      });
+      await this.markTargetManualReview(tx, target);
+    });
 
     return {
       result: "accepted",
@@ -500,10 +888,13 @@ export class ContentReviewService {
       return { result: "rejected", errorCode: "MODERATION_TASK_STATE_INVALID" };
     }
 
-    const communityId = await this.findTaskCommunityId(task.contentVersion.targetId);
+    const target = await this.resolveReviewTarget(task.contentVersion);
+    if (!target) {
+      return { result: "rejected", errorCode: "MODERATION_TASK_NOT_FOUND" };
+    }
     const scoped = await this.adminAuthorizations.findActiveScopedActivityAdmin({
       actorUserId: input.actorUserId,
-      communityId
+      communityId: target.communityId
     });
     if (scoped.result === "rejected") {
       return { result: "rejected", errorCode: "COMMUNITY_ADMIN_REQUIRED" };
@@ -559,16 +950,14 @@ export class ContentReviewService {
       return { result: "rejected", errorCode: "MODERATION_TASK_STATE_INVALID" };
     }
 
-    const item = await this.prisma.item.findUnique({
-      where: { id: task.contentVersion.targetId }
-    });
-    if (!item) {
+    const target = await this.resolveReviewTarget(task.contentVersion);
+    if (!target) {
       return { result: "rejected", errorCode: "MODERATION_TASK_NOT_FOUND" };
     }
 
     const scoped = await this.adminAuthorizations.findActiveScopedActivityAdmin({
       actorUserId: input.actorUserId,
-      communityId: item.communityId
+      communityId: target.communityId
     });
     if (scoped.result === "rejected") {
       return { result: "rejected", errorCode: "COMMUNITY_ADMIN_REQUIRED" };
@@ -582,7 +971,7 @@ export class ContentReviewService {
     if (input.decision === "approve") {
       await this.approveContentVersion({
         task,
-        item,
+        target,
         actorUserId: input.actorUserId,
         reason: input.reason,
         now
@@ -596,8 +985,8 @@ export class ContentReviewService {
 
     const nextTaskStatus = input.decision === "reject" ? "rejected" : "escalated";
     const nextVersionStatus = input.decision === "reject" ? "rejected" : "escalated";
-    await this.prisma.$transaction([
-      this.prisma.moderationTask.update({
+    await this.prisma.$transaction(async (tx) => {
+      await tx.moderationTask.update({
         where: { id: task.id },
         data: {
           status: nextTaskStatus,
@@ -605,12 +994,13 @@ export class ContentReviewService {
           reviewedAt: now,
           failureReason: input.reason
         }
-      }),
-      this.prisma.contentVersion.update({
+      });
+      await tx.contentVersion.update({
         where: { id: task.contentVersionId },
         data: { status: nextVersionStatus }
-      }),
-      this.prisma.auditLog.create({
+      });
+      await this.markTargetReviewOutcome(tx, target, input.decision);
+      await tx.auditLog.create({
         data: {
           actorUserId: input.actorUserId,
           action: `moderation_task.${input.decision}`,
@@ -619,8 +1009,8 @@ export class ContentReviewService {
           reason: input.reason,
           createdAt: now
         }
-      })
-    ]);
+      });
+    });
 
     return {
       result: "accepted",
@@ -687,10 +1077,136 @@ export class ContentReviewService {
     };
   }
 
+  async delistWantedPost(input: {
+    actorUserId: string;
+    wantedPostId: string;
+    reason: string;
+    now?: Date;
+  }): Promise<DelistWantedPostResult> {
+    const now = input.now ?? new Date();
+    if (!input.reason.trim()) {
+      return { result: "rejected", errorCode: "REASON_REQUIRED" };
+    }
+
+    const wantedPost = await this.prisma.wantedPost.findUnique({
+      where: { id: input.wantedPostId }
+    });
+    if (!wantedPost) {
+      return { result: "rejected", errorCode: "WANTED_POST_NOT_FOUND" };
+    }
+
+    const scoped = await this.adminAuthorizations.findActiveScopedActivityAdmin({
+      actorUserId: input.actorUserId,
+      communityId: wantedPost.communityId
+    });
+    if (scoped.result === "rejected") {
+      return { result: "rejected", errorCode: "COMMUNITY_ADMIN_REQUIRED" };
+    }
+
+    const mediaIds = wantedPost.currentPublicVersionId
+      ? await this.findVersionMediaIds(wantedPost.currentPublicVersionId)
+      : [];
+
+    await this.prisma.$transaction([
+      this.prisma.wantedPost.update({
+        where: { id: wantedPost.id },
+        data: { status: "delisted" }
+      }),
+      this.prisma.mediaAsset.updateMany({
+        where: { id: { in: mediaIds } },
+        data: { accessPolicyVersion: { increment: 1 } }
+      }),
+      this.prisma.auditLog.create({
+        data: {
+          actorUserId: input.actorUserId,
+          action: "wanted_post.delist",
+          targetType: "wanted_request",
+          targetId: wantedPost.id,
+          reason: input.reason,
+          createdAt: now
+        }
+      })
+    ]);
+
+    return {
+      result: "accepted",
+      wantedPostId: wantedPost.id,
+      wantedPostStatus: "delisted"
+    };
+  }
+
+  async cancelWantedResponse(input: {
+    actorUserId: string;
+    wantedResponseId: string;
+    reason: string;
+    now?: Date;
+  }): Promise<CancelWantedResponseResult> {
+    const now = input.now ?? new Date();
+    if (!input.reason.trim()) {
+      return { result: "rejected", errorCode: "REASON_REQUIRED" };
+    }
+
+    const wantedResponse = await this.prisma.wantedResponse.findUnique({
+      where: { id: input.wantedResponseId },
+      include: { wantedPost: true }
+    });
+    if (!wantedResponse) {
+      return { result: "rejected", errorCode: "WANTED_RESPONSE_NOT_FOUND" };
+    }
+
+    const scoped = await this.adminAuthorizations.findActiveScopedActivityAdmin({
+      actorUserId: input.actorUserId,
+      communityId: wantedResponse.wantedPost.communityId
+    });
+    if (scoped.result === "rejected") {
+      return { result: "rejected", errorCode: "COMMUNITY_ADMIN_REQUIRED" };
+    }
+
+    const mediaIds = wantedResponse.currentPublicVersionId
+      ? await this.findVersionMediaIds(wantedResponse.currentPublicVersionId)
+      : [];
+
+    await this.prisma.$transaction([
+      this.prisma.wantedResponse.update({
+        where: { id: wantedResponse.id },
+        data: { status: "cancelled" }
+      }),
+      this.prisma.mediaAsset.updateMany({
+        where: { id: { in: mediaIds } },
+        data: { accessPolicyVersion: { increment: 1 } }
+      }),
+      this.prisma.auditLog.create({
+        data: {
+          actorUserId: input.actorUserId,
+          action: "wanted_response.cancel",
+          targetType: "wanted_response",
+          targetId: wantedResponse.id,
+          reason: input.reason,
+          createdAt: now
+        }
+      })
+    ]);
+
+    return {
+      result: "accepted",
+      wantedResponseId: wantedResponse.id,
+      wantedResponseStatus: "cancelled"
+    };
+  }
+
   private async ensureCanPublish(
     input: Pick<SubmitItemInput, "actorUserId" | "childId" | "communityId">,
     now: Date
-  ): Promise<{ result: "accepted" } | Extract<SubmitItemResult, { result: "rejected" }>> {
+  ): Promise<
+    | { result: "accepted" }
+    | {
+        result: "rejected";
+        errorCode:
+          | "GUARDIAN_CONTROL_DISABLED"
+          | "COMMUNITY_MEMBER_REQUIRED"
+          | "PUBLISH_NOT_ALLOWED";
+      }
+  > {
     const participation = await this.participation.evaluateChildParticipation({
       actorUserId: input.actorUserId,
       childId: input.childId,
@@ -716,7 +1232,18 @@ export class ContentReviewService {
   private async validateItemImages(input: {
     actorUserId: string;
     images: ItemImageInput[];
-  }): Promise<{ result: "accepted" } | Extract<SubmitItemResult, { result: "rejected" }>> {
+  }): Promise<
+    | { result: "accepted" }
+    | {
+        result: "rejected";
+        errorCode:
+          | "IMAGE_COUNT_INVALID"
+          | "IMAGE_ROLES_INVALID"
+          | "MEDIA_NOT_TEMP_PRIVATE"
+          | "MEDIA_OWNER_INVALID"
+          | "MEDIA_ALREADY_CONSUMED";
+      }
+  > {
     if (input.images.length !== 4) {
       return { result: "rejected", errorCode: "IMAGE_COUNT_INVALID" };
     }
@@ -748,52 +1275,41 @@ export class ContentReviewService {
     return { result: "accepted" };
   }
 
-  private async findTaskCommunityId(itemId: string): Promise<string> {
-    const item = await this.prisma.item.findUnique({
-      where: { id: itemId },
-      select: { communityId: true }
-    });
-    return item?.communityId ?? "";
-  }
-
   private async approveContentVersion(input: {
     task: ModerationTaskWithVersion;
-    item: Item;
+    target: ReviewTarget;
     actorUserId: string;
     reason: string;
     now: Date;
   }) {
     const mediaIds = await this.findVersionMediaIds(input.task.contentVersionId);
 
-    await this.prisma.$transaction([
-      this.prisma.contentVersion.update({
+    await this.prisma.$transaction(async (tx) => {
+      await tx.contentVersion.update({
         where: { id: input.task.contentVersionId },
         data: {
           status: "approved",
           approvedAt: input.now
         }
-      }),
-      this.prisma.moderationTask.update({
+      });
+      await tx.moderationTask.update({
         where: { id: input.task.id },
         data: {
           status: "approved",
           reviewerUserId: input.actorUserId,
           reviewedAt: input.now
         }
-      }),
-      this.prisma.item.update({
-        where: { id: input.item.id },
-        data: {
-          currentPublicVersionId: input.task.contentVersionId,
-          latestVersionId: input.task.contentVersionId,
-          status: "approved"
-        }
-      }),
-      this.prisma.mediaAsset.updateMany({
+      });
+      await this.markTargetApproved(
+        tx,
+        input.target,
+        input.task.contentVersionId
+      );
+      await tx.mediaAsset.updateMany({
         where: { id: { in: mediaIds } },
         data: { visibility: "formal_private" }
-      }),
-      this.prisma.auditLog.create({
+      });
+      await tx.auditLog.create({
         data: {
           actorUserId: input.actorUserId,
           action: "moderation_task.approve",
@@ -802,8 +1318,172 @@ export class ContentReviewService {
           reason: input.reason,
           createdAt: input.now
         }
-      })
-    ]);
+      });
+    });
+  }
+
+  private async resolveReviewTarget(
+    contentVersion: ContentVersion
+  ): Promise<ReviewTarget | null> {
+    if (contentVersion.targetType === "item") {
+      const item = await this.prisma.item.findUnique({
+        where: { id: contentVersion.targetId }
+      });
+      return item
+        ? {
+            targetType: "item",
+            target: item,
+            communityId: item.communityId,
+            status: item.status
+          }
+        : null;
+    }
+
+    if (contentVersion.targetType === "wanted_request") {
+      const wantedPost = await this.prisma.wantedPost.findUnique({
+        where: { id: contentVersion.targetId }
+      });
+      return wantedPost
+        ? {
+            targetType: "wanted_request",
+            target: wantedPost,
+            communityId: wantedPost.communityId,
+            status: wantedPost.status
+          }
+        : null;
+    }
+
+    if (contentVersion.targetType === "wanted_response") {
+      const wantedResponse = await this.prisma.wantedResponse.findUnique({
+        where: { id: contentVersion.targetId },
+        include: { wantedPost: true }
+      });
+      return wantedResponse
+        ? {
+            targetType: "wanted_response",
+            target: wantedResponse,
+            communityId: wantedResponse.wantedPost.communityId,
+            status: wantedResponse.status
+          }
+        : null;
+    }
+
+    return null;
+  }
+
+  private targetIdentityFields(target: ReviewTarget) {
+    if (target.targetType === "item") {
+      return { itemId: target.target.id };
+    }
+    if (target.targetType === "wanted_request") {
+      return { wantedPostId: target.target.id };
+    }
+    return {
+      wantedResponseId: target.target.id,
+      parentWantedPostId: target.target.wantedPostId
+    };
+  }
+
+  private async markTargetManualReview(
+    tx: Prisma.TransactionClient,
+    target: ReviewTarget
+  ) {
+    if (target.targetType === "item" && !target.target.currentPublicVersionId) {
+      await tx.item.update({
+        where: { id: target.target.id },
+        data: { status: "manual_reviewing" }
+      });
+      return;
+    }
+    if (
+      target.targetType === "wanted_request" &&
+      !target.target.currentPublicVersionId
+    ) {
+      await tx.wantedPost.update({
+        where: { id: target.target.id },
+        data: { status: "manual_reviewing" }
+      });
+      return;
+    }
+    if (target.targetType === "wanted_response") {
+      await tx.wantedResponse.update({
+        where: { id: target.target.id },
+        data: { status: "reviewing" }
+      });
+    }
+  }
+
+  private async markTargetApproved(
+    tx: Prisma.TransactionClient,
+    target: ReviewTarget,
+    contentVersionId: string
+  ) {
+    if (target.targetType === "item") {
+      await tx.item.update({
+        where: { id: target.target.id },
+        data: {
+          currentPublicVersionId: contentVersionId,
+          latestVersionId: contentVersionId,
+          status: "approved"
+        }
+      });
+      return;
+    }
+    if (target.targetType === "wanted_request") {
+      await tx.wantedPost.update({
+        where: { id: target.target.id },
+        data: {
+          currentPublicVersionId: contentVersionId,
+          latestVersionId: contentVersionId,
+          status: "active"
+        }
+      });
+      return;
+    }
+    await tx.wantedResponse.update({
+      where: { id: target.target.id },
+      data: {
+        currentPublicVersionId: contentVersionId,
+        latestVersionId: contentVersionId,
+        status: "approved"
+      }
+    });
+  }
+
+  private async markTargetReviewOutcome(
+    tx: Prisma.TransactionClient,
+    target: ReviewTarget,
+    decision: ReviewDecision
+  ) {
+    if (decision !== "reject") {
+      return;
+    }
+    if (target.targetType === "item" && !target.target.currentPublicVersionId) {
+      await tx.item.update({
+        where: { id: target.target.id },
+        data: { status: "rejected" }
+      });
+      return;
+    }
+    if (
+      target.targetType === "wanted_request" &&
+      !target.target.currentPublicVersionId
+    ) {
+      await tx.wantedPost.update({
+        where: { id: target.target.id },
+        data: { status: "rejected" }
+      });
+      return;
+    }
+    if (
+      target.targetType === "wanted_response" &&
+      !target.target.currentPublicVersionId
+    ) {
+      await tx.wantedResponse.update({
+        where: { id: target.target.id },
+        data: { status: "rejected" }
+      });
+    }
   }
 
   private async findVersionMediaIds(contentVersionId: string): Promise<string[]> {

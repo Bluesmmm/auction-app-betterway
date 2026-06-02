@@ -41,3 +41,26 @@ export const ContentMediaRole = [
 ] as const;
 
 export type ContentMediaRole = (typeof ContentMediaRole)[number];
+
+export const WantedPostStatus = [
+  "draft",
+  "ai_reviewing",
+  "manual_reviewing",
+  "active",
+  "closed",
+  "rejected",
+  "delisted"
+] as const;
+
+export type WantedPostStatus = (typeof WantedPostStatus)[number];
+
+export const WantedResponseStatus = [
+  "submitted",
+  "reviewing",
+  "approved",
+  "converted_to_item",
+  "rejected",
+  "cancelled"
+] as const;
+
+export type WantedResponseStatus = (typeof WantedResponseStatus)[number];

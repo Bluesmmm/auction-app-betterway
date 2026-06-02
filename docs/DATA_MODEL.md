@@ -375,7 +375,7 @@
 | `wanted_post_id` | 求购 |
 | `responder_child_id` | 响应孩子 |
 | `item_id` | 转成的拍品，可空直到创建 |
-| `status` | submitted / reviewing / converted_to_item / rejected / cancelled |
+| `status` | submitted / reviewing / approved / converted_to_item / rejected / cancelled |
 | `current_public_version_id` | 当前已审核内容版本，可空 |
 | `latest_version_id` | 最新提交的内容版本，可空 |
 

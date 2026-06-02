@@ -69,16 +69,14 @@ export class ContentFileAccessService {
       return { result: "rejected", errorCode: "CONTENT_NOT_VISIBLE" };
     }
 
-    const item = await this.prisma.item.findFirst({
-      where: {
-        currentPublicVersionId: contentVersion.id
-      },
-      select: {
-        status: true
-      }
-    });
-
-    if (!item || item.status !== "approved" || contentVersion.status !== "approved") {
+    if (
+      contentVersion.status !== "approved" ||
+      !(await this.isCurrentVisibleContentVersion({
+        contentVersionId: contentVersion.id,
+        targetType: contentVersion.targetType,
+        purpose: grant.purpose
+      }))
+    ) {
       return { result: "rejected", errorCode: "CONTENT_NOT_VISIBLE" };
     }
 
@@ -96,6 +94,56 @@ export class ContentFileAccessService {
       granteeUserId: grant.granteeUserId,
       purpose: grant.purpose
     };
+  }
+
+  private async isCurrentVisibleContentVersion(input: {
+    contentVersionId: string;
+    targetType: string;
+    purpose: string;
+  }): Promise<boolean> {
+    if (input.targetType === "item" && input.purpose === "item_image_view") {
+      const item = await this.prisma.item.findFirst({
+        where: {
+          currentPublicVersionId: input.contentVersionId,
+          status: "approved"
+        },
+        select: { id: true }
+      });
+      return Boolean(item);
+    }
+
+    if (
+      input.targetType === "wanted_request" &&
+      input.purpose === "wanted_image_view"
+    ) {
+      const wantedPost = await this.prisma.wantedPost.findFirst({
+        where: {
+          currentPublicVersionId: input.contentVersionId,
+          status: "active"
+        },
+        select: { id: true }
+      });
+      return Boolean(wantedPost);
+    }
+
+    if (
+      input.targetType === "wanted_response" &&
+      input.purpose === "wanted_response_image_view"
+    ) {
+      const wantedResponse = await this.prisma.wantedResponse.findFirst({
+        where: {
+          currentPublicVersionId: input.contentVersionId,
+          status: "approved",
+          wantedPost: {
+            status: "active"
+          }
+        },
+        select: { id: true }
+      });
+      return Boolean(wantedResponse);
+    }
+
+    return false;
   }
 
   private async findContentVersionForMedia(mediaAssetId: string): Promise<{
