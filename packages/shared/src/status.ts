@@ -31,3 +31,13 @@ export const ContentVersionStatus = [
 ] as const;
 
 export type ContentVersionStatus = (typeof ContentVersionStatus)[number];
+
+export const ContentMediaRole = [
+  "front",
+  "back",
+  "side",
+  "detail",
+  "avatar"
+] as const;
+
+export type ContentMediaRole = (typeof ContentMediaRole)[number];

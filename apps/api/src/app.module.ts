@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { AccountsModule } from "./accounts/accounts.module.js";
 import { AdminSecurityModule } from "./admin-security/admin-security.module.js";
 import { CommunitiesModule } from "./communities/communities.module.js";
+import { ContentModule } from "./content/content.module.js";
 import { AppConfigModule } from "./config/app-config.module.js";
 import { HealthController } from "./health.controller.js";
 import { PrismaModule } from "./prisma/prisma.module.js";
@@ -15,6 +16,7 @@ import { StorageModule } from "./storage/storage.module.js";
     RuntimeModule,
     AccountsModule,
     CommunitiesModule,
+    ContentModule,
     StorageModule,
     AdminSecurityModule
   ],

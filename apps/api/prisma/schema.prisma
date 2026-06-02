@@ -104,6 +104,14 @@ enum MediaVisibility {
   deleted
 }
 
+enum ContentMediaRole {
+  front
+  back
+  side
+  detail
+  avatar
+}
+
 enum ItemStatus {
   draft
   ai_reviewing
@@ -658,6 +666,7 @@ model MediaAsset {
   accessPolicyVersion Int             @default(1)
   revokedAt           DateTime?
   createdAt           DateTime        @default(now())
+  contentVersionMedia ContentVersionMedia?
 
   @@index([ownerUserId, visibility])
 }
@@ -675,6 +684,8 @@ model Item {
   createdAt              DateTime         @default(now())
   community              AuctionCommunity @relation(fields: [communityId], references: [id])
   sellerChild            ChildProfile     @relation(fields: [sellerChildId], references: [id])
+  currentPublicVersion   ContentVersion?  @relation("ItemCurrentPublicVersion", fields: [currentPublicVersionId], references: [id])
+  latestVersion          ContentVersion?  @relation("ItemLatestVersion", fields: [latestVersionId], references: [id])
   auctionSessions        AuctionSession[]
 
   @@index([communityId, status])
@@ -694,9 +705,27 @@ model ContentVersion {
   approvedAt  DateTime?
   createdAt   DateTime             @default(now())
   task        ModerationTask?
+  media       ContentVersionMedia[]
+  itemCurrentPublic Item[]          @relation("ItemCurrentPublicVersion")
+  itemLatest        Item[]          @relation("ItemLatestVersion")
 
   @@unique([targetType, targetId, versionNo])
   @@index([targetType, targetId, status])
+}
+
+model ContentVersionMedia {
+  id               String           @id @default(cuid())
+  contentVersionId String
+  mediaAssetId     String           @unique
+  mediaRole        ContentMediaRole
+  sortOrder        Int
+  createdAt        DateTime         @default(now())
+  contentVersion   ContentVersion   @relation(fields: [contentVersionId], references: [id])
+  mediaAsset       MediaAsset       @relation(fields: [mediaAssetId], references: [id])
+
+  @@unique([contentVersionId, mediaRole])
+  @@unique([contentVersionId, sortOrder])
+  @@index([contentVersionId])
 }
 
 model ModerationTask {

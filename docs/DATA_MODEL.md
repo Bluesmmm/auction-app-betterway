@@ -334,21 +334,23 @@
 - `min_increment_points > 0`。
 - `original_price_amount` 可空；填写时只能供家长和管理员可见。
 
-### 4.3 `item_images`
+### 4.3 `content_version_media`
 
 | 字段 | 说明 |
 | --- | --- |
 | `id` | 主键 |
-| `item_id` | 拍品 |
 | `content_version_id` | 对应内容版本 |
-| `media_asset_id` | 图片 |
-| `image_role` | front / back / side / detail |
+| `media_asset_id` | 图片或头像文件 |
+| `media_role` | front / back / side / detail / avatar |
 | `sort_order` | 排序 |
+| `created_at` | 创建时间 |
 
 约束：
 
-- 审核通过前需满足 front/back/side/detail 至少各 1 张。
-- 同一内容版本内 front/back/side/detail 至少各 1 张。
+- 第一版拍品内容版本必须正好绑定 4 张图片。
+- 拍品内容版本内 front/back/side/detail 必须各 1 张。
+- 同一 `media_asset_id` 只能被一个已提交内容版本消耗。
+- 同一内容版本内 `sort_order` 唯一。
 
 ### 4.4 `wanted_posts`
 
@@ -388,7 +390,7 @@
 | `target_id` | 目标 ID |
 | `version_no` | 版本号，从 1 递增 |
 | `public_payload` | 孩子端可见文本、分类和展示字段 JSON |
-| `media_payload` | 图片或头像资源引用 JSON |
+| `media_payload` | 图片或头像资源轻量摘要 JSON；权威绑定关系以 `content_version_media` 为准 |
 | `payload_hash` | 公开字段摘要 |
 | `ocr_text_ref` | OCR 结果引用 |
 | `qr_detected` | 是否识别到二维码/条码 |
@@ -449,6 +451,11 @@
 | `reason` | 原因 |
 | `content_version_id` | 审核的内容版本，可空；内容类审核必须填写 |
 | `created_at` | 审核时间 |
+
+约束：
+
+- `low` 和 `medium` 风险内容可由具备目标社区 scope 的活动管理员批准或拒绝。
+- `high` 和 `severe` 风险内容不能由活动管理员单人批准；第一版未实现完整复核链路时必须拒绝、升级或保持不可公开。
 
 ### 5.4 `moderation_quality_reviews`
 

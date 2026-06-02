@@ -3,7 +3,9 @@
     "pages/health/index",
     "pages/stage2/onboarding/index",
     "pages/stage2/child/index",
-    "pages/stage2/join/index"
+    "pages/stage2/join/index",
+    "pages/stage3/item-submit/index",
+    "pages/stage3/item-detail/index"
   ],
   "window": {
     "navigationBarTitleText": "积分拍卖",

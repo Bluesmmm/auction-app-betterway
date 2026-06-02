@@ -11,11 +11,29 @@ export interface WechatAuthProvider {
 export type RiskLevel = "low" | "medium" | "high" | "severe";
 
 export type ContentSafetyResult =
-  | { ok: true; riskLevel: RiskLevel; labels: string[] }
+  | {
+      ok: true;
+      riskLevel: RiskLevel;
+      labels: string[];
+      ocrText?: string;
+      qrOrBarcodeDetected?: boolean;
+      metadataFindings?: string[];
+    }
   | { ok: false; errorCode: string; failureClosesBusiness: true };
+
+export type ContentSafetyMediaInput = {
+  mediaAssetId: string;
+  checksum: string;
+};
+
+export type ReviewContentSafetyInput = {
+  text: string;
+  media: ContentSafetyMediaInput[];
+};
 
 export interface ContentSafetyProvider {
   reviewText(text: string): Promise<ContentSafetyResult>;
+  reviewContent(input: ReviewContentSafetyInput): Promise<ContentSafetyResult>;
 }
 
 export type CreateReadGrantInput = {

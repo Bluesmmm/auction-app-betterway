@@ -19,6 +19,7 @@ import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import { z } from "zod";
 import { createAdminStage1Skeleton } from "./stage1-shell.js";
 import { stage2AdminViewDefinitions } from "./stage2-nav.js";
+import { stage3AdminViewDefinitions } from "./stage3-nav.js";
 
 const { Content, Header } = Layout;
 
@@ -42,6 +43,11 @@ const MemberReviewView = lazy(() =>
 const RiskReviewView = lazy(() =>
   import("./stage2-views.js").then((module) => ({
     default: module.RiskReviewView
+  }))
+);
+const ContentReviewView = lazy(() =>
+  import("./stage3-views.js").then((module) => ({
+    default: module.ContentReviewView
   }))
 );
 
@@ -91,6 +97,11 @@ export const adminShellNavigationItems = [
     key: view.key,
     label: view.label,
     path: view.path
+  })),
+  ...stage3AdminViewDefinitions.map((view) => ({
+    key: view.key,
+    label: view.label,
+    path: view.path
   }))
 ];
 
@@ -129,6 +140,7 @@ function Shell() {
           <Typography.Title level={1}>Auction Admin</Typography.Title>
           <Tag color="blue">Stage 1</Tag>
           <Tag color="cyan">Stage 2</Tag>
+          <Tag color="green">Stage 3</Tag>
         </Space>
         <nav className="admin-nav" aria-label="Admin views">
           {adminShellNavigationItems.map((item) => (
@@ -177,6 +189,14 @@ function Shell() {
             element={
               <Stage2RouteFallback>
                 <RiskReviewView apiBaseUrl={apiBaseUrl} />
+              </Stage2RouteFallback>
+            }
+          />
+          <Route
+            path="/stage3/content-review"
+            element={
+              <Stage2RouteFallback>
+                <ContentReviewView apiBaseUrl={apiBaseUrl} />
               </Stage2RouteFallback>
             }
           />

@@ -90,6 +90,16 @@ escalated
 failed
 ```
 
+阶段 3 审核 guard：
+
+- `needs_manual_review -> approved` 必须由人工审核动作触发，且审核人具备目标社区 scope。
+- `high` 或 `severe` 风险内容不能由活动管理员单人转换为 `approved`。
+- 内容安全 API 故障、超时或结果不可解析时，不得进入 `approved`。
+- 已有公开版本的内容修改后，新内容版本通过审核前不得改变 `current_public_version_id`。
+- `rejected` 内容版本不得重新进入审核流；重提必须创建新的内容版本。
+- 下架已公开内容后，孩子端不得继续读取该内容，相关文件旧授权必须被访问校验拒绝。
+- `failed` 审核任务只能通过系统或管理员 retry 重新处理，不能由人工审核直接批准。
+
 ### 4.5 `point_hold.status`
 
 ```text

@@ -5,6 +5,8 @@ import type {
   FileReadGrantResult,
   ObjectStorageProvider,
   ProviderMode,
+  ReviewContentSafetyInput,
+  RiskLevel,
   SendSensitiveOperationVerificationInput,
   SendSubscriptionMessageInput,
   SensitiveOperationVerificationProvider,
@@ -64,6 +66,70 @@ export class FakeContentSafetyProvider implements ContentSafetyProvider {
     }
 
     return { ok: true, riskLevel: "low", labels: [] };
+  }
+
+  async reviewContent(
+    input: ReviewContentSafetyInput
+  ): Promise<ContentSafetyResult> {
+    if (this.options.mode === "failure") {
+      return {
+        ok: false,
+        errorCode: "CONTENT_SAFETY_UNAVAILABLE",
+        failureClosesBusiness: true
+      };
+    }
+
+    const textResult = await this.reviewText(input.text);
+    if (!textResult.ok) {
+      return textResult;
+    }
+
+    const labels = new Set(textResult.labels);
+    let riskLevel: RiskLevel = textResult.riskLevel;
+    let ocrText: string | undefined;
+    let qrOrBarcodeDetected = false;
+    const metadataFindings: string[] = [];
+
+    for (const media of input.media) {
+      if (media.checksum.includes("ocr-contact")) {
+        labels.add("ocr_contact");
+        ocrText = "detected phone or wechat contact";
+        riskLevel = maxRisk(riskLevel, "high");
+      }
+
+      if (media.checksum.includes("qr")) {
+        labels.add("qr_or_barcode");
+        qrOrBarcodeDetected = true;
+        riskLevel = maxRisk(riskLevel, "severe");
+      }
+
+      if (media.checksum.includes("exif-privacy")) {
+        labels.add("metadata_privacy");
+        metadataFindings.push("exif_privacy");
+        riskLevel = maxRisk(riskLevel, "high");
+      }
+
+      if (media.checksum.includes("risk:medium")) {
+        riskLevel = maxRisk(riskLevel, "medium");
+      }
+
+      if (media.checksum.includes("risk:high")) {
+        riskLevel = maxRisk(riskLevel, "high");
+      }
+
+      if (media.checksum.includes("risk:severe")) {
+        riskLevel = maxRisk(riskLevel, "severe");
+      }
+    }
+
+    return {
+      ok: true,
+      riskLevel,
+      labels: [...labels],
+      ...(ocrText ? { ocrText } : {}),
+      ...(qrOrBarcodeDetected ? { qrOrBarcodeDetected } : {}),
+      ...(metadataFindings.length > 0 ? { metadataFindings } : {})
+    };
   }
 }
 
@@ -140,4 +206,10 @@ export class FakeSensitiveOperationVerificationProvider
   getLastDelivery(): SendSensitiveOperationVerificationInput | null {
     return this.deliveries[this.deliveries.length - 1] ?? null;
   }
+}
+
+const riskOrder: RiskLevel[] = ["low", "medium", "high", "severe"];
+
+function maxRisk(left: RiskLevel, right: RiskLevel): RiskLevel {
+  return riskOrder.indexOf(left) >= riskOrder.indexOf(right) ? left : right;
 }
