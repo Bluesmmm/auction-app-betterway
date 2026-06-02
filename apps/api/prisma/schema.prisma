@@ -98,6 +98,19 @@ enum ModerationTaskStatus {
   failed
 }
 
+enum AiProviderStatus {
+  success
+  timeout
+  failed
+  invalid_response
+}
+
+enum ManualReviewDecision {
+  approve
+  reject
+  escalate
+}
+
 enum MediaVisibility {
   temp_private
   formal_private
@@ -330,6 +343,7 @@ model User {
   targetRiskRestrictions            RiskRestriction[]             @relation("RiskRestrictionTargetUser")
   auditLogs                         AuditLog[]
   createdLedgerEntries              PointLedgerEntry[]
+  manualReviewRecords               ManualReviewRecord[]          @relation("ManualReviewRecordReviewer")
 }
 
 model WechatIdentity {
@@ -770,6 +784,8 @@ model ContentVersion {
   createdAt   DateTime             @default(now())
   task        ModerationTask?
   media       ContentVersionMedia[]
+  aiReviewResults AiReviewResult[]
+  manualReviewRecords ManualReviewRecord[]
   itemCurrentPublic Item[]          @relation("ItemCurrentPublicVersion")
   itemLatest        Item[]          @relation("ItemLatestVersion")
   wantedPostCurrentPublic WantedPost[] @relation("WantedPostCurrentPublicVersion")
@@ -806,6 +822,46 @@ model ModerationTask {
   reviewedAt        DateTime?
   failureReason     String?
   contentVersion    ContentVersion       @relation(fields: [contentVersionId], references: [id])
+  aiReviewResults   AiReviewResult[]
+  manualReviewRecords ManualReviewRecord[]
+}
+
+model AiReviewResult {
+  id                   String           @id @default(cuid())
+  taskId               String
+  contentVersionId     String
+  provider             String
+  providerStatus       AiProviderStatus
+  riskLevel            String?
+  labelsJson           Json?
+  ocrText              String?
+  qrOrBarcodeDetected  Boolean          @default(false)
+  metadataFindingsJson Json?
+  failureReason        String?
+  rawResultRef         String?
+  createdAt            DateTime         @default(now())
+  task                 ModerationTask   @relation(fields: [taskId], references: [id])
+  contentVersion       ContentVersion   @relation(fields: [contentVersionId], references: [id])
+
+  @@index([taskId, createdAt])
+  @@index([contentVersionId, createdAt])
+}
+
+model ManualReviewRecord {
+  id               String               @id @default(cuid())
+  taskId           String
+  contentVersionId String
+  reviewerUserId   String
+  decision         ManualReviewDecision
+  reason           String
+  createdAt        DateTime             @default(now())
+  task             ModerationTask       @relation(fields: [taskId], references: [id])
+  contentVersion   ContentVersion       @relation(fields: [contentVersionId], references: [id])
+  reviewer         User                 @relation("ManualReviewRecordReviewer", fields: [reviewerUserId], references: [id])
+
+  @@index([taskId, createdAt])
+  @@index([contentVersionId, createdAt])
+  @@index([reviewerUserId, createdAt])
 }
 
 model AuctionSession {

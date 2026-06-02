@@ -51,6 +51,47 @@ const taskDetailSchema = z.object({
   taskStatus: z.string(),
   riskLevel: z.string(),
   ruleTags: z.unknown(),
+  aiEvidence: z.array(
+    z.object({
+      provider: z.string(),
+      providerStatus: z.string(),
+      riskLevel: z.string().nullable(),
+      labels: z.unknown(),
+      ocrText: z.string().nullable(),
+      qrOrBarcodeDetected: z.boolean(),
+      metadataFindings: z.unknown(),
+      failureReason: z.string().nullable(),
+      createdAt: z.string()
+    })
+  ),
+  originalImageGrants: z.array(
+    z.object({
+      mediaAssetId: trimmedStringSchema,
+      mediaRole: z.string(),
+      sortOrder: z.number().int().positive(),
+      url: z.string(),
+      expiresAt: z.string()
+    })
+  ),
+  versionDiff: z.object({
+    previousApprovedVersion: z
+      .object({
+        contentVersionId: trimmedStringSchema,
+        versionNo: z.number().int().positive(),
+        title: z.string(),
+        description: z.string(),
+        payload: z.unknown()
+      })
+      .nullable(),
+    currentSubmittedVersion: z.object({
+      contentVersionId: trimmedStringSchema,
+      versionNo: z.number().int().positive(),
+      title: z.string(),
+      description: z.string(),
+      payload: z.unknown()
+    }),
+    changedFields: z.array(z.string())
+  }),
   images: z.array(
     z.object({
       mediaAssetId: trimmedStringSchema,

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const schema = readFileSync("apps/api/prisma/schema.prisma", "utf8");
 const migration = readdirSync("apps/api/prisma/migrations")
-  .filter((entry) => entry.includes("stage3") && entry.includes("content_review"))
+  .filter((entry) => entry.includes("stage3"))
   .sort()
   .map((entry) =>
     readFileSync(`apps/api/prisma/migrations/${entry}/migration.sql`, "utf8")
@@ -79,6 +79,36 @@ describe("Stage 3 content schema", () => {
     );
     expect(migrationNormalized).toContain(
       'ALTER TABLE "WantedResponse" ADD CONSTRAINT "WantedResponse_currentPublicVersionId_fkey"'
+    );
+  });
+
+  it("adds persistent AI and manual review evidence", () => {
+    expect(schema).toContain("enum AiProviderStatus");
+    expect(schema).toContain("enum ManualReviewDecision");
+    expect(schema).toContain("model AiReviewResult");
+    expect(schema).toContain("model ManualReviewRecord");
+    expect(schemaNormalized).toContain("aiReviewResults AiReviewResult[]");
+    expect(schemaNormalized).toContain("manualReviewRecords ManualReviewRecord[]");
+    expect(schemaNormalized).toContain("providerStatus AiProviderStatus");
+    expect(schemaNormalized).toContain("decision ManualReviewDecision");
+  });
+
+  it("creates migration constraints for review evidence", () => {
+    expect(migrationNormalized).toContain('CREATE TYPE "AiProviderStatus"');
+    expect(migrationNormalized).toContain('CREATE TYPE "ManualReviewDecision"');
+    expect(migrationNormalized).toContain('CREATE TABLE "AiReviewResult"');
+    expect(migrationNormalized).toContain('CREATE TABLE "ManualReviewRecord"');
+    expect(migrationNormalized).toContain(
+      'CREATE INDEX "AiReviewResult_taskId_createdAt_idx"'
+    );
+    expect(migrationNormalized).toContain(
+      'CREATE INDEX "ManualReviewRecord_taskId_createdAt_idx"'
+    );
+    expect(migrationNormalized).toContain(
+      'ALTER TABLE "AiReviewResult" ADD CONSTRAINT "AiReviewResult_taskId_fkey"'
+    );
+    expect(migrationNormalized).toContain(
+      'ALTER TABLE "ManualReviewRecord" ADD CONSTRAINT "ManualReviewRecord_reviewerUserId_fkey"'
     );
   });
 });

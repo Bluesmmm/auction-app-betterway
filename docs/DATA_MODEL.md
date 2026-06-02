@@ -431,12 +431,15 @@
 | --- | --- |
 | `id` | 主键 |
 | `task_id` | 审核任务 |
+| `content_version_id` | 审核的内容版本 |
 | `provider` | 第三方审核服务 |
 | `risk_level` | 风险等级 |
 | `labels` | 风险标签 JSON |
 | `raw_result_ref` | 原始结果引用 |
-| `ocr_text_ref` | OCR 结果引用 |
-| `qr_labels` | 二维码/条码识别标签 JSON |
+| `ocr_text` | OCR 文本或可审查摘要 |
+| `qr_or_barcode_detected` | 是否识别到二维码/条码 |
+| `metadata_findings` | 图片元数据检查结果 JSON |
+| `failure_reason` | provider 失败、超时或不可解析原因 |
 | `provider_status` | success / timeout / failed / invalid_response |
 | `created_at` | 创建时间 |
 

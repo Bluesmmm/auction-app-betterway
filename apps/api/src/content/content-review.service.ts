@@ -14,6 +14,7 @@ import type {
   ContentSafetyProvider,
   RiskLevel
 } from "../providers/provider-contracts.js";
+import { PrivateObjectStorageService } from "../storage/private-object-storage.service.js";
 
 export type ItemImageInput = {
   mediaAssetId: string;
@@ -263,6 +264,41 @@ export type ContentReviewTaskDetailResult =
       taskStatus: string;
       riskLevel: string;
       ruleTags: unknown;
+      aiEvidence: Array<{
+        provider: string;
+        providerStatus: string;
+        riskLevel: string | null;
+        labels: unknown;
+        ocrText: string | null;
+        qrOrBarcodeDetected: boolean;
+        metadataFindings: unknown;
+        failureReason: string | null;
+        createdAt: string;
+      }>;
+      originalImageGrants: Array<{
+        mediaAssetId: string;
+        mediaRole: string;
+        sortOrder: number;
+        url: string;
+        expiresAt: string;
+      }>;
+      versionDiff: {
+        previousApprovedVersion: {
+          contentVersionId: string;
+          versionNo: number;
+          title: string;
+          description: string;
+          payload: unknown;
+        } | null;
+        currentSubmittedVersion: {
+          contentVersionId: string;
+          versionNo: number;
+          title: string;
+          description: string;
+          payload: unknown;
+        };
+        changedFields: string[];
+      };
       images: Array<{
         mediaAssetId: string;
         mediaRole: string;
@@ -297,12 +333,17 @@ type ReviewTarget =
     };
 
 export class ContentReviewService {
+  private readonly reviewStorage: PrivateObjectStorageService;
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly participation: ChildParticipationService,
     private readonly adminAuthorizations: CommunityAdminAuthorizationService,
-    private readonly contentSafety: ContentSafetyProvider
-  ) {}
+    private readonly contentSafety: ContentSafetyProvider,
+    reviewGrantSigningKey = "stage3-object-grant-key"
+  ) {
+    this.reviewStorage = new PrivateObjectStorageService(reviewGrantSigningKey);
+  }
 
   async listModerationQueue(input: {
     actorUserId: string;
@@ -375,6 +416,7 @@ export class ContentReviewService {
       return { result: "rejected", errorCode: "COMMUNITY_ADMIN_REQUIRED" };
     }
 
+    const images = await this.findVersionMediaForDetail(task.contentVersionId);
     return {
       result: "accepted",
       taskId: task.id,
@@ -389,7 +431,13 @@ export class ContentReviewService {
       riskLevel:
         task.providerRiskLevel ?? task.contentVersion.riskLevel ?? "unknown",
       ruleTags: task.ruleTagsJson,
-      images: await this.findVersionMediaForDetail(task.contentVersionId)
+      aiEvidence: await this.findAiEvidence(task.id),
+      originalImageGrants: await this.createReviewImageGrants({
+        media: await this.findVersionMediaForReview(task.contentVersionId),
+        granteeUserId: input.actorUserId
+      }),
+      versionDiff: await this.buildVersionDiff(task.contentVersion),
+      images
     };
   }
 
@@ -796,6 +844,7 @@ export class ContentReviewService {
     taskId: string;
     now?: Date;
   }): Promise<ModerationActionResult> {
+    const now = input.now ?? new Date();
     const task = await this.prisma.moderationTask.findUnique({
       where: { id: input.taskId },
       include: {
@@ -831,12 +880,25 @@ export class ContentReviewService {
     });
 
     if (!review.ok) {
-      await this.prisma.moderationTask.update({
-        where: { id: task.id },
-        data: {
-          status: "failed",
-          failureReason: review.errorCode
-        }
+      await this.prisma.$transaction(async (tx) => {
+        await tx.moderationTask.update({
+          where: { id: task.id },
+          data: {
+            status: "failed",
+            failureReason: review.errorCode
+          }
+        });
+        await tx.aiReviewResult.create({
+          data: {
+            taskId: task.id,
+            contentVersionId: task.contentVersionId,
+            provider: "fake_content_safety",
+            providerStatus: providerStatusFromError(review.errorCode),
+            failureReason: review.errorCode,
+            labelsJson: [],
+            createdAt: now
+          }
+        });
       });
       return {
         result: "accepted",
@@ -847,6 +909,21 @@ export class ContentReviewService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      await tx.aiReviewResult.create({
+        data: {
+          taskId: task.id,
+          contentVersionId: task.contentVersionId,
+          provider: "fake_content_safety",
+          providerStatus: "success",
+          riskLevel: review.riskLevel,
+          labelsJson: review.labels,
+          ocrText: review.ocrText ?? null,
+          qrOrBarcodeDetected: review.qrOrBarcodeDetected ?? false,
+          metadataFindingsJson: review.metadataFindings ?? [],
+          rawResultRef: `fake:${task.id}:${now.toISOString()}`,
+          createdAt: now
+        }
+      });
       await tx.contentVersion.update({
         where: { id: task.contentVersionId },
         data: {
@@ -1000,6 +1077,16 @@ export class ContentReviewService {
         data: { status: nextVersionStatus }
       });
       await this.markTargetReviewOutcome(tx, target, input.decision);
+      await tx.manualReviewRecord.create({
+        data: {
+          taskId: task.id,
+          contentVersionId: task.contentVersionId,
+          reviewerUserId: input.actorUserId,
+          decision: input.decision,
+          reason: input.reason,
+          createdAt: now
+        }
+      });
       await tx.auditLog.create({
         data: {
           actorUserId: input.actorUserId,
@@ -1309,6 +1396,16 @@ export class ContentReviewService {
         where: { id: { in: mediaIds } },
         data: { visibility: "formal_private" }
       });
+      await tx.manualReviewRecord.create({
+        data: {
+          taskId: input.task.id,
+          contentVersionId: input.task.contentVersionId,
+          reviewerUserId: input.actorUserId,
+          decision: "approve",
+          reason: input.reason,
+          createdAt: input.now
+        }
+      });
       await tx.auditLog.create({
         data: {
           actorUserId: input.actorUserId,
@@ -1529,6 +1626,149 @@ export class ContentReviewService {
     `;
   }
 
+  private async findAiEvidence(taskId: string): Promise<
+    Array<{
+      provider: string;
+      providerStatus: string;
+      riskLevel: string | null;
+      labels: unknown;
+      ocrText: string | null;
+      qrOrBarcodeDetected: boolean;
+      metadataFindings: unknown;
+      failureReason: string | null;
+      createdAt: string;
+    }>
+  > {
+    const rows = await this.prisma.aiReviewResult.findMany({
+      where: { taskId },
+      orderBy: { createdAt: "asc" }
+    });
+
+    return rows.map((row) => ({
+      provider: row.provider,
+      providerStatus: row.providerStatus,
+      riskLevel: row.riskLevel,
+      labels: row.labelsJson,
+      ocrText: row.ocrText,
+      qrOrBarcodeDetected: row.qrOrBarcodeDetected,
+      metadataFindings: row.metadataFindingsJson,
+      failureReason: row.failureReason,
+      createdAt: row.createdAt.toISOString()
+    }));
+  }
+
+  private async createReviewImageGrants(input: {
+    media: Array<{
+      mediaAssetId: string;
+      mediaRole: string;
+      sortOrder: number;
+      ownerUserId: string;
+      storageBucket: string;
+      storageKey: string;
+      accessPolicyVersion: number;
+    }>;
+    granteeUserId: string;
+    now?: Date;
+  }): Promise<
+    Array<{
+      mediaAssetId: string;
+      mediaRole: string;
+      sortOrder: number;
+      url: string;
+      expiresAt: string;
+    }>
+  > {
+    const grants = [];
+    for (const entry of input.media) {
+      const grant = this.reviewStorage.createReadGrant({
+        mediaAssetId: entry.mediaAssetId,
+        storageBucket: entry.storageBucket,
+        storageKey: entry.storageKey,
+        ownerUserId: entry.ownerUserId,
+        granteeUserId: input.granteeUserId,
+        purpose: "content_review_original",
+        ttlSeconds: 300,
+        accessPolicyVersion: entry.accessPolicyVersion,
+        now: input.now
+      });
+      if (grant.result === "accepted") {
+        grants.push({
+          mediaAssetId: entry.mediaAssetId,
+          mediaRole: entry.mediaRole,
+          sortOrder: entry.sortOrder,
+          url: grant.url,
+          expiresAt: grant.expiresAt
+        });
+      }
+    }
+    return grants;
+  }
+
+  private async findVersionMediaForReview(contentVersionId: string): Promise<
+    Array<{
+      mediaAssetId: string;
+      mediaRole: string;
+      sortOrder: number;
+      ownerUserId: string;
+      storageBucket: string;
+      storageKey: string;
+      accessPolicyVersion: number;
+    }>
+  > {
+    return this.prisma.$queryRaw`
+      SELECT
+        cvm."mediaAssetId",
+        cvm."mediaRole"::text AS "mediaRole",
+        cvm."sortOrder",
+        ma."ownerUserId",
+        ma."storageBucket",
+        ma."storageKey",
+        ma."accessPolicyVersion"
+      FROM "ContentVersionMedia" cvm
+      INNER JOIN "MediaAsset" ma ON ma."id" = cvm."mediaAssetId"
+      WHERE cvm."contentVersionId" = ${contentVersionId}
+      ORDER BY cvm."sortOrder" ASC
+    `;
+  }
+
+  private async buildVersionDiff(contentVersion: ContentVersion): Promise<{
+    previousApprovedVersion: {
+      contentVersionId: string;
+      versionNo: number;
+      title: string;
+      description: string;
+      payload: unknown;
+    } | null;
+    currentSubmittedVersion: {
+      contentVersionId: string;
+      versionNo: number;
+      title: string;
+      description: string;
+      payload: unknown;
+    };
+    changedFields: string[];
+  }> {
+    const previous = await this.prisma.contentVersion.findFirst({
+      where: {
+        targetType: contentVersion.targetType,
+        targetId: contentVersion.targetId,
+        status: "approved",
+        versionNo: { lt: contentVersion.versionNo }
+      },
+      orderBy: { versionNo: "desc" }
+    });
+    const currentSummary = summarizeContentVersion(contentVersion);
+    const previousSummary = previous ? summarizeContentVersion(previous) : null;
+
+    return {
+      previousApprovedVersion: previousSummary,
+      currentSubmittedVersion: currentSummary,
+      changedFields: previousSummary
+        ? changedFields(previousSummary, currentSummary)
+        : []
+    };
+  }
+
   private async isMediaConsumed(mediaAssetId: string): Promise<boolean> {
     const rows = await this.prisma.$queryRaw<Array<{ mediaAssetId: string }>>`
       SELECT "mediaAssetId"
@@ -1564,4 +1804,41 @@ async function insertContentVersionMedia(
       )
     `;
   }
+}
+
+function summarizeContentVersion(contentVersion: ContentVersion) {
+  return {
+    contentVersionId: contentVersion.id,
+    versionNo: contentVersion.versionNo,
+    title: contentVersion.title ?? "",
+    description: contentVersion.description ?? "",
+    payload: contentVersion.payloadJson
+  };
+}
+
+function changedFields(
+  previous: ReturnType<typeof summarizeContentVersion>,
+  current: ReturnType<typeof summarizeContentVersion>
+): string[] {
+  const fields = [];
+  if (previous.title !== current.title) fields.push("title");
+  if (previous.description !== current.description) fields.push("description");
+  if (stableStringify(previous.payload) !== stableStringify(current.payload)) {
+    fields.push("payload");
+  }
+  return fields;
+}
+
+function stableStringify(value: unknown): string {
+  return JSON.stringify(value, Object.keys((value ?? {}) as object).sort());
+}
+
+function providerStatusFromError(
+  errorCode: string
+): "timeout" | "failed" | "invalid_response" {
+  if (errorCode.includes("TIMEOUT")) return "timeout";
+  if (errorCode.includes("INVALID") || errorCode.includes("UNPARSABLE")) {
+    return "invalid_response";
+  }
+  return "failed";
 }

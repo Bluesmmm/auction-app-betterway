@@ -234,6 +234,55 @@ function ReviewDetail({
       <Typography.Text type="secondary">
         {detail.images.map((image) => `${image.mediaRole}:${image.mediaAssetId}`).join(" | ")}
       </Typography.Text>
+      <div className="stage3-review-block">
+        <Typography.Title level={4}>AI Evidence</Typography.Title>
+        {detail.aiEvidence.length === 0 ? (
+          <Typography.Text type="secondary">No provider evidence yet</Typography.Text>
+        ) : (
+          detail.aiEvidence.map((entry) => (
+            <div key={`${entry.provider}-${entry.createdAt}`}>
+              <Space wrap>
+                <Tag>{entry.provider}</Tag>
+                <Tag>{entry.providerStatus}</Tag>
+                <Tag>{entry.riskLevel ?? "unknown"}</Tag>
+                {entry.qrOrBarcodeDetected ? <Tag color="red">QR</Tag> : null}
+              </Space>
+              {entry.ocrText ? (
+                <Typography.Paragraph>{entry.ocrText}</Typography.Paragraph>
+              ) : null}
+              <Typography.Text type="secondary">
+                labels: {formatUnknown(entry.labels)} / metadata:{" "}
+                {formatUnknown(entry.metadataFindings)}
+              </Typography.Text>
+              {entry.failureReason ? (
+                <Typography.Paragraph type="danger">
+                  {entry.failureReason}
+                </Typography.Paragraph>
+              ) : null}
+            </div>
+          ))
+        )}
+      </div>
+      <div className="stage3-review-block">
+        <Typography.Title level={4}>Version Diff</Typography.Title>
+        <Space wrap>
+          {detail.versionDiff.changedFields.map((field) => (
+            <Tag key={field}>{field}</Tag>
+          ))}
+        </Space>
+        <Typography.Text type="secondary">
+          previous: {detail.versionDiff.previousApprovedVersion?.versionNo ?? "none"} / current:{" "}
+          {detail.versionDiff.currentSubmittedVersion.versionNo}
+        </Typography.Text>
+      </div>
+      <div className="stage3-review-block">
+        <Typography.Title level={4}>Original Grants</Typography.Title>
+        <Typography.Text type="secondary">
+          {detail.originalImageGrants
+            .map((grant) => `${grant.mediaRole}:${grant.expiresAt}`)
+            .join(" | ")}
+        </Typography.Text>
+      </div>
       <Input.TextArea
         rows={3}
         value={reason}
@@ -257,4 +306,8 @@ function targetLabel(targetType: string): string {
   if (targetType === "wanted_request") return "Wanted";
   if (targetType === "wanted_response") return "Response";
   return targetType;
+}
+
+function formatUnknown(value: unknown): string {
+  return JSON.stringify(value ?? null);
 }

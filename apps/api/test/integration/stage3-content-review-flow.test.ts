@@ -164,6 +164,30 @@ describe("Stage 3 content review flow", () => {
     });
 
     await expect(
+      prisma.aiReviewResult.findFirst({
+        where: { taskId: submitted.moderationTaskId }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        provider: "fake_content_safety",
+        providerStatus: "failed",
+        failureReason: "CONTENT_SAFETY_UNAVAILABLE"
+      })
+    );
+    await expect(
+      service.reviewModerationTask({
+        actorUserId: fixture.activityAdminUserId,
+        taskId: submitted.moderationTaskId,
+        decision: "approve",
+        reason: "failed tasks cannot be approved",
+        now: new Date("2026-06-02T12:00:30.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "FAILED_TASK_REQUIRES_RETRY"
+    });
+
+    await expect(
       service.retryModerationTask({
         actorUserId: fixture.activityAdminUserId,
         taskId: submitted.moderationTaskId,
@@ -191,6 +215,42 @@ describe("Stage 3 content review flow", () => {
 
     await service.processModerationTask({ taskId: submitted.moderationTaskId });
     await expect(
+      prisma.aiReviewResult.findFirst({
+        where: { taskId: submitted.moderationTaskId }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        providerStatus: "success",
+        riskLevel: "low",
+        labelsJson: []
+      })
+    );
+    const detail = await service.getModerationTask({
+      actorUserId: fixture.activityAdminUserId,
+      taskId: submitted.moderationTaskId
+    });
+    expect(detail).toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        aiEvidence: expect.arrayContaining([
+          expect.objectContaining({
+            provider: "fake_content_safety",
+            providerStatus: "success"
+          })
+        ]),
+        originalImageGrants: expect.arrayContaining([
+          expect.objectContaining({
+            mediaRole: "front",
+            url: expect.stringContaining("grant=")
+          })
+        ]),
+        versionDiff: expect.objectContaining({
+          previousApprovedVersion: null,
+          changedFields: []
+        })
+      })
+    );
+    await expect(
       prisma.item.findUnique({ where: { id: submitted.itemId } })
     ).resolves.toEqual(expect.objectContaining({ currentPublicVersionId: null }));
 
@@ -207,6 +267,17 @@ describe("Stage 3 content review flow", () => {
         result: "accepted",
         taskStatus: "approved",
         contentVersionStatus: "approved"
+      })
+    );
+    await expect(
+      prisma.manualReviewRecord.findFirst({
+        where: { taskId: submitted.moderationTaskId }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        reviewerUserId: fixture.activityAdminUserId,
+        decision: "approve",
+        reason: "safe low risk item"
       })
     );
   });
@@ -371,6 +442,18 @@ describe("Stage 3 content review flow", () => {
     );
 
     await service.processModerationTask({ taskId: submitted.moderationTaskId });
+    await expect(
+      prisma.aiReviewResult.findFirst({
+        where: { taskId: submitted.moderationTaskId }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        providerStatus: "success",
+        riskLevel: "high",
+        ocrText: "detected phone or wechat contact",
+        labelsJson: expect.arrayContaining(["ocr_contact"])
+      })
+    );
 
     await expect(
       service.reviewModerationTask({
@@ -384,6 +467,32 @@ describe("Stage 3 content review flow", () => {
       result: "rejected",
       errorCode: "HIGH_RISK_REQUIRES_ESCALATION"
     });
+
+    await expect(
+      service.reviewModerationTask({
+        actorUserId: fixture.activityAdminUserId,
+        taskId: submitted.moderationTaskId,
+        decision: "escalate",
+        reason: "platform review required",
+        now: new Date("2026-06-02T12:51:00.000Z")
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        taskStatus: "escalated",
+        contentVersionStatus: "escalated"
+      })
+    );
+    await expect(
+      prisma.manualReviewRecord.findFirst({
+        where: { taskId: submitted.moderationTaskId }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        decision: "escalate",
+        reason: "platform review required"
+      })
+    );
   });
 
   it("does not allow activity admins to approve high risk wanted content", async () => {
@@ -406,6 +515,18 @@ describe("Stage 3 content review flow", () => {
     );
 
     await review.processModerationTask({ taskId: submitted.moderationTaskId });
+    await expect(
+      prisma.aiReviewResult.findFirst({
+        where: { taskId: submitted.moderationTaskId }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        providerStatus: "success",
+        riskLevel: "severe",
+        qrOrBarcodeDetected: true,
+        labelsJson: expect.arrayContaining(["qr_or_barcode"])
+      })
+    );
 
     await expect(
       review.reviewModerationTask({
@@ -465,6 +586,34 @@ describe("Stage 3 content review flow", () => {
     });
     expect(edit).toEqual(
       expect.objectContaining({ result: "accepted", versionNo: 2 })
+    );
+    if (edit.result !== "accepted") {
+      throw new Error("expected edit accepted");
+    }
+
+    const editDetail = await review.getModerationTask({
+      actorUserId: fixture.activityAdminUserId,
+      taskId: edit.moderationTaskId
+    });
+    expect(editDetail).toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        versionDiff: expect.objectContaining({
+          previousApprovedVersion: expect.objectContaining({
+            versionNo: 1,
+            title: "Toy visible-v1"
+          }),
+          currentSubmittedVersion: expect.objectContaining({
+            versionNo: 2,
+            title: "Edited title"
+          }),
+          changedFields: expect.arrayContaining([
+            "title",
+            "description",
+            "payload"
+          ])
+        })
+      })
     );
 
     const visibility = new ContentVisibilityService(

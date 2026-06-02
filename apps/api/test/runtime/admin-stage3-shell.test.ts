@@ -14,7 +14,13 @@ describe("admin stage3 shell", () => {
     expect(api).toContain("targetType");
     expect(api).toContain("wantedPostId");
     expect(api).toContain("wantedResponseId");
+    expect(api).toContain("aiEvidence");
+    expect(api).toContain("originalImageGrants");
+    expect(api).toContain("versionDiff");
     expect(view).toContain("wanted response");
     expect(view).toContain("targetLabel");
+    expect(view).toContain("AI Evidence");
+    expect(view).toContain("Version Diff");
+    expect(view).toContain("Original Grants");
   });
 });
