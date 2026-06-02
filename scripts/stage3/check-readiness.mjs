@@ -25,6 +25,16 @@ const checks = [
     ]
   },
   {
+    name: "platform review detail access",
+    file: "apps/api/src/content/content-review.service.ts",
+    markers: [
+      "canReviewCommunity",
+      "listModerationQueue",
+      "getModerationTask",
+      "content_review_original"
+    ]
+  },
+  {
     name: "product safety fake labels",
     file: "apps/api/src/providers/fake-providers.ts",
     markers: [
@@ -48,13 +58,20 @@ const checks = [
   {
     name: "stage3 hardening docs",
     file: "docs/MVP_ROADMAP.md",
-    markers: ["第四轮实施顺序", "content_review_original", "blocked"]
+    markers: [
+      "第四轮实施顺序",
+      "第五轮收口与审查",
+      "content_review_original",
+      "blocked"
+    ]
   },
   {
     name: "stage3 hardening tests",
     file: "apps/api/test/integration/stage3-content-review-flow.test.ts",
     markers: [
       "content_review_original",
+      "listModerationQueue",
+      "platformAdminUserId",
       "platformReviewModerationTask",
       "safety_magnetic_beads",
       "historyContext"

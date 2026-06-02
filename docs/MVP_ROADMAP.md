@@ -171,6 +171,14 @@
 4. 审核详情补同一孩子/社区近期 rejected、escalated、blocked 内容摘要，作为历史违规上下文，不实现阶段 8 治理大屏。
 5. 增加 Stage 3 readiness 检查脚本，将审核证据、原图授权网关、高风险收口、商品安全标签和历史上下文纳入验证门槛。
 
+第五轮收口与审查：
+
+1. 以 `1aa4b24...feature/stage3-content-review` 作为阶段 3 review 范围，按 Standards 和 Spec 两轴审查已实现的四轮内容审核闭环。
+2. 第五轮修复平台复核访问缺口：平台管理员既然负责升级内容兜底收口，就必须能按目标社区打开审核队列、审核详情、获取 `content_review_original` 原图授权，并执行 retry、下架或取消等治理动作。
+3. 普通 `approve` / `reject` / `escalate` 人工审核入口仍只允许具备目标社区 scope 的活动管理员；平台管理员关闭高风险内容必须走 `platformReviewModerationTask`，且本阶段仍不开放平台批准高风险内容公开展示。
+4. 第五轮验证门槛包括 Stage 3 contract tests、integration flow、runtime shell、readiness 静态检查、typecheck 和完整 build；没有这些验证证据，不得声明阶段 3 可提交或可合并。
+5. 阶段 3 收口后仍保留明确边界：不接真实第三方内容安全供应商，不开放搜索/列表/排序/收藏，不创建拍卖场次，不实现阶段 8 完整抽检、投诉、双审质量看板。
+
 ### 阶段 4：积分账本
 
 范围：

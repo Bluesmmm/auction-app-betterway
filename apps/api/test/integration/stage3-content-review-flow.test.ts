@@ -527,6 +527,64 @@ describe("Stage 3 content review flow", () => {
     );
 
     await expect(
+      service.listModerationQueue({
+        actorUserId: fixture.platformAdminUserId,
+        communityId: fixture.communityId
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        tasks: expect.arrayContaining([
+          expect.objectContaining({
+            taskId: submitted.moderationTaskId,
+            taskStatus: "escalated"
+          })
+        ])
+      })
+    );
+
+    const platformDetail = await service.getModerationTask({
+      actorUserId: fixture.platformAdminUserId,
+      taskId: submitted.moderationTaskId
+    });
+    expect(platformDetail).toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        taskStatus: "escalated",
+        originalImageGrants: expect.arrayContaining([
+          expect.objectContaining({
+            mediaRole: "front",
+            url: expect.stringContaining("grant=")
+          })
+        ])
+      })
+    );
+    if (platformDetail.result !== "accepted") {
+      throw new Error("expected platform moderation detail accepted");
+    }
+    const platformReviewGrantToken =
+      new URL(platformDetail.originalImageGrants[0].url).searchParams.get(
+        "grant"
+      ) ?? "";
+    const platformFileAccess = new ContentFileAccessService(
+      prisma,
+      "stage3-object-grant-key"
+    );
+    await expect(
+      platformFileAccess.verifyItemImageGrant({
+        grantToken: platformReviewGrantToken,
+        granteeUserId: fixture.platformAdminUserId,
+        purpose: "content_review_original"
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        result: "accepted",
+        purpose: "content_review_original",
+        moderationTaskId: submitted.moderationTaskId
+      })
+    );
+
+    await expect(
       service.platformReviewModerationTask({
         actorUserId: fixture.activityAdminUserId,
         taskId: submitted.moderationTaskId,

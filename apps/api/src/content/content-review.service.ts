@@ -362,11 +362,12 @@ export class ContentReviewService {
     actorUserId: string;
     communityId: string;
   }): Promise<ContentReviewQueueResult> {
-    const scoped = await this.adminAuthorizations.findActiveScopedActivityAdmin({
-      actorUserId: input.actorUserId,
-      communityId: input.communityId
-    });
-    if (scoped.result === "rejected") {
+    if (
+      !(await this.canReviewCommunity({
+        actorUserId: input.actorUserId,
+        communityId: input.communityId
+      }))
+    ) {
       return { result: "rejected", errorCode: "COMMUNITY_ADMIN_REQUIRED" };
     }
 
@@ -421,11 +422,12 @@ export class ContentReviewService {
     if (!target) {
       return { result: "rejected", errorCode: "MODERATION_TASK_NOT_FOUND" };
     }
-    const scoped = await this.adminAuthorizations.findActiveScopedActivityAdmin({
-      actorUserId: input.actorUserId,
-      communityId: target.communityId
-    });
-    if (scoped.result === "rejected") {
+    if (
+      !(await this.canReviewCommunity({
+        actorUserId: input.actorUserId,
+        communityId: target.communityId
+      }))
+    ) {
       return { result: "rejected", errorCode: "COMMUNITY_ADMIN_REQUIRED" };
     }
 
@@ -986,11 +988,12 @@ export class ContentReviewService {
     if (!target) {
       return { result: "rejected", errorCode: "MODERATION_TASK_NOT_FOUND" };
     }
-    const scoped = await this.adminAuthorizations.findActiveScopedActivityAdmin({
-      actorUserId: input.actorUserId,
-      communityId: target.communityId
-    });
-    if (scoped.result === "rejected") {
+    if (
+      !(await this.canReviewCommunity({
+        actorUserId: input.actorUserId,
+        communityId: target.communityId
+      }))
+    ) {
       return { result: "rejected", errorCode: "COMMUNITY_ADMIN_REQUIRED" };
     }
 
@@ -1230,11 +1233,12 @@ export class ContentReviewService {
       return { result: "rejected", errorCode: "ITEM_NOT_FOUND" };
     }
 
-    const scoped = await this.adminAuthorizations.findActiveScopedActivityAdmin({
-      actorUserId: input.actorUserId,
-      communityId: item.communityId
-    });
-    if (scoped.result === "rejected") {
+    if (
+      !(await this.canReviewCommunity({
+        actorUserId: input.actorUserId,
+        communityId: item.communityId
+      }))
+    ) {
       return { result: "rejected", errorCode: "COMMUNITY_ADMIN_REQUIRED" };
     }
 
@@ -1288,11 +1292,12 @@ export class ContentReviewService {
       return { result: "rejected", errorCode: "WANTED_POST_NOT_FOUND" };
     }
 
-    const scoped = await this.adminAuthorizations.findActiveScopedActivityAdmin({
-      actorUserId: input.actorUserId,
-      communityId: wantedPost.communityId
-    });
-    if (scoped.result === "rejected") {
+    if (
+      !(await this.canReviewCommunity({
+        actorUserId: input.actorUserId,
+        communityId: wantedPost.communityId
+      }))
+    ) {
       return { result: "rejected", errorCode: "COMMUNITY_ADMIN_REQUIRED" };
     }
 
@@ -1347,11 +1352,12 @@ export class ContentReviewService {
       return { result: "rejected", errorCode: "WANTED_RESPONSE_NOT_FOUND" };
     }
 
-    const scoped = await this.adminAuthorizations.findActiveScopedActivityAdmin({
-      actorUserId: input.actorUserId,
-      communityId: wantedResponse.wantedPost.communityId
-    });
-    if (scoped.result === "rejected") {
+    if (
+      !(await this.canReviewCommunity({
+        actorUserId: input.actorUserId,
+        communityId: wantedResponse.wantedPost.communityId
+      }))
+    ) {
       return { result: "rejected", errorCode: "COMMUNITY_ADMIN_REQUIRED" };
     }
 
@@ -1739,6 +1745,18 @@ export class ContentReviewService {
       select: { id: true }
     });
     return Boolean(admin);
+  }
+
+  private async canReviewCommunity(input: {
+    actorUserId: string;
+    communityId: string;
+  }): Promise<boolean> {
+    const scoped =
+      await this.adminAuthorizations.findActiveScopedActivityAdmin(input);
+    if (scoped.result === "accepted") {
+      return true;
+    }
+    return this.isActivePlatformAdmin(input.actorUserId);
   }
 
   private async findHistoryContext(input: {
