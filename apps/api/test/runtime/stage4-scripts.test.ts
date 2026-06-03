@@ -24,6 +24,7 @@ describe("stage 4 verification scripts", () => {
     expect(ledgerCheckScript).toContain('"snapshot_mismatch"');
     expect(ledgerCheckScript).toContain('"active_hold_mismatch"');
     expect(ledgerCheckScript).toContain('"negative_replay"');
+    expect(ledgerCheckScript).toContain('"missing_account"');
     expect(ledgerCheckScript).toContain("process.exit(1)");
 
     expect(verifyScript).toContain('"runtime:up"');

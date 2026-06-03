@@ -29,6 +29,10 @@ type IdempotencyReservation<T> =
   | { result: "replay"; response: T }
   | { result: "conflict" };
 
+type PlatformAdminAuthorizationResult =
+  | { result: "accepted" }
+  | { result: "rejected"; errorCode: "PLATFORM_ADMIN_REQUIRED" };
+
 export type CreateGuardianAdjustmentRequestInput = {
   actorUserId: string;
   childId: string;
@@ -119,6 +123,31 @@ export type PointSummary = {
   totalPenaltyPoints: number;
 };
 
+export type PointReadRejected = {
+  result: "rejected";
+  errorCode: "POINT_ACCOUNT_ACCESS_DENIED" | "POINT_ACCOUNT_NOT_FOUND";
+};
+
+export type PointLedgerEntryRow = {
+  id: string;
+  type: string;
+  amountPoints: number;
+  availableAfter: number;
+  frozenAfter: number;
+  relatedType: string;
+  relatedId: string;
+  reason: string | null;
+  createdAt: string;
+};
+
+export type PointLedgerEntriesResult =
+  | {
+      result: "accepted";
+      childId: string;
+      entries: PointLedgerEntryRow[];
+    }
+  | PointReadRejected;
+
 export type PointAdjustmentRequestRow = {
   id: string;
   source: string;
@@ -130,6 +159,16 @@ export type PointAdjustmentRequestRow = {
   createdAt: string;
 };
 
+export type ListPointAdjustmentRequestsResult =
+  | {
+      result: "accepted";
+      requests: PointAdjustmentRequestRow[];
+    }
+  | {
+      result: "rejected";
+      errorCode: "PLATFORM_ADMIN_REQUIRED";
+    };
+
 export class PointLedgerService {
   constructor(
     private readonly prisma: PrismaClient,
@@ -137,18 +176,25 @@ export class PointLedgerService {
     private readonly config: AppConfigService = new AppConfigService()
   ) {}
 
-  async getChildPointSummary(childId: string): Promise<PointSummary | null> {
+  async getChildPointSummary(input: {
+    actorUserId: string;
+    childId: string;
+  }): Promise<PointSummary | PointReadRejected> {
+    if (!(await this.canReadChildPoints(input.actorUserId, input.childId))) {
+      return { result: "rejected", errorCode: "POINT_ACCOUNT_ACCESS_DENIED" };
+    }
+
     const account = await this.prisma.pointAccount.findUnique({
-      where: { childId }
+      where: { childId: input.childId }
     });
 
     if (!account) {
-      return null;
+      return { result: "rejected", errorCode: "POINT_ACCOUNT_NOT_FOUND" };
     }
 
     return {
       result: "accepted",
-      childId,
+      childId: input.childId,
       availablePoints: account.availablePoints,
       frozenPoints: account.frozenPoints,
       totalEarnedPoints: account.totalEarnedPoints,
@@ -158,10 +204,62 @@ export class PointLedgerService {
     };
   }
 
+  async listChildLedgerEntries(input: {
+    actorUserId: string;
+    childId: string;
+    limit?: number;
+  }): Promise<PointLedgerEntriesResult> {
+    if (!(await this.canReadChildPoints(input.actorUserId, input.childId))) {
+      return { result: "rejected", errorCode: "POINT_ACCOUNT_ACCESS_DENIED" };
+    }
+
+    const account = await this.prisma.pointAccount.findUnique({
+      where: { childId: input.childId },
+      select: { id: true }
+    });
+    if (!account) {
+      return { result: "rejected", errorCode: "POINT_ACCOUNT_NOT_FOUND" };
+    }
+
+    const entries = await this.prisma.pointLedgerEntry.findMany({
+      where: { childId: input.childId },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: Math.min(Math.max(input.limit ?? 50, 1), 100),
+      select: {
+        id: true,
+        type: true,
+        amountPoints: true,
+        availableAfter: true,
+        frozenAfter: true,
+        relatedType: true,
+        relatedId: true,
+        reason: true,
+        createdAt: true
+      }
+    });
+
+    return {
+      result: "accepted",
+      childId: input.childId,
+      entries: entries.map((entry) => ({
+        ...entry,
+        createdAt: entry.createdAt.toISOString()
+      }))
+    };
+  }
+
   async listAdjustmentRequests(input: {
+    platformAdminUserId: string;
     status?: PointAdjustmentStatus;
     limit?: number;
-  } = {}): Promise<PointAdjustmentRequestRow[]> {
+  }): Promise<ListPointAdjustmentRequestsResult> {
+    const authorization = await this.authorizePlatformAdmin({
+      platformAdminUserId: input.platformAdminUserId
+    });
+    if (authorization.result === "rejected") {
+      return authorization;
+    }
+
     const rows = await this.prisma.pointAdjustmentRequest.findMany({
       where: input.status ? { status: input.status } : undefined,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -178,10 +276,28 @@ export class PointLedgerService {
       }
     });
 
-    return rows.map((row) => ({
-      ...row,
-      createdAt: row.createdAt.toISOString()
-    }));
+    return {
+      result: "accepted",
+      requests: rows.map((row) => ({
+        ...row,
+        createdAt: row.createdAt.toISOString()
+      }))
+    };
+  }
+
+  async authorizePlatformAdmin(
+    input: { platformAdminUserId: string }
+  ): Promise<PlatformAdminAuthorizationResult> {
+    if (
+      !(await this.isActiveMfaPlatformAdmin(
+        this.prisma,
+        input.platformAdminUserId
+      ))
+    ) {
+      return { result: "rejected", errorCode: "PLATFORM_ADMIN_REQUIRED" };
+    }
+
+    return { result: "accepted" };
   }
 
   async createGuardianAdjustmentRequest(
@@ -589,21 +705,53 @@ export class PointLedgerService {
     tx: Prisma.TransactionClient,
     input: { platformAdminUserId: string }
   ): Promise<{ result: "rejected"; errorCode: "PLATFORM_ADMIN_REQUIRED" } | null> {
-    const admin = await tx.adminProfile.findUnique({
-      where: { userId: input.platformAdminUserId },
-      select: { role: true, status: true, mfaEnabled: true }
-    });
-
-    if (
-      !admin ||
-      admin.role !== "platform_admin" ||
-      admin.status !== "active" ||
-      !admin.mfaEnabled
-    ) {
+    if (!(await this.isActiveMfaPlatformAdmin(tx, input.platformAdminUserId))) {
       return { result: "rejected", errorCode: "PLATFORM_ADMIN_REQUIRED" };
     }
 
     return null;
+  }
+
+  private async canReadChildPoints(
+    actorUserId: string,
+    childId: string
+  ): Promise<boolean> {
+    const primaryGuardian = await this.prisma.guardianChildLink.findFirst({
+      where: {
+        childId,
+        role: "primary",
+        status: "active",
+        guardian: {
+          userId: actorUserId,
+          status: "active"
+        },
+        child: {
+          status: "active"
+        }
+      },
+      select: { id: true }
+    });
+    if (primaryGuardian) {
+      return true;
+    }
+
+    return this.isActiveMfaPlatformAdmin(this.prisma, actorUserId);
+  }
+
+  private async isActiveMfaPlatformAdmin(
+    client: PrismaClient | Prisma.TransactionClient,
+    userId: string
+  ): Promise<boolean> {
+    const admin = await client.adminProfile.findUnique({
+      where: { userId },
+      select: { role: true, status: true, mfaEnabled: true }
+    });
+
+    return (
+      admin?.role === "platform_admin" &&
+      admin.status === "active" &&
+      admin.mfaEnabled
+    );
   }
 
   private async authorizePointAdjustmentChallenge(

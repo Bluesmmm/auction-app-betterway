@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildLedgerCheckIdempotencyKey,
@@ -6,6 +7,15 @@ import {
 } from "../src/ledger-check-worker.js";
 
 describe("ledger check worker", () => {
+  it("keeps worker diff coverage aligned with the Stage 4 ledger check script", () => {
+    const source = readFileSync("apps/worker/src/ledger-check-worker.ts", "utf8");
+
+    expect(source).toContain('"snapshot_mismatch"');
+    expect(source).toContain('"active_hold_mismatch"');
+    expect(source).toContain('"negative_replay"');
+    expect(source).toContain('"missing_account"');
+  });
+
   it("builds one idempotency key per check window", () => {
     expect(
       buildLedgerCheckIdempotencyKey({

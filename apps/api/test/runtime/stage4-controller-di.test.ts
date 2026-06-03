@@ -25,6 +25,7 @@ describe("Stage 4 points controller wiring", () => {
   it("declares the Stage 4 points route prefix and operations", () => {
     expect(pointsController).toContain('Controller("points")(PointsController)');
     expect(pointsController).toContain('Get("children/:childId/summary")');
+    expect(pointsController).toContain('Get("children/:childId/ledger-entries")');
     expect(pointsController).toContain('Get("adjustment-requests")');
     expect(pointsController).toContain('Get("ledger-check-runs")');
     expect(pointsController).toContain(

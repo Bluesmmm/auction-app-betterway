@@ -34,10 +34,13 @@ export class PointsController {
 
   async getChildPointSummary(childId: string, authorization?: string) {
     const now = new Date();
-    await this.authenticate(authorization, now);
-    const summary = await this.points.getChildPointSummary(childId);
+    const actor = await this.authenticate(authorization, now);
+    const summary = await this.points.getChildPointSummary({
+      actorUserId: actor.userId,
+      childId
+    });
 
-    if (!summary) {
+    if (summary.result === "rejected") {
       return rejectedWriteResponse(
         {
           now,
@@ -45,7 +48,7 @@ export class PointsController {
           targetId: childId,
           latestStatus: "rejected"
         },
-        "POINT_ACCOUNT_NOT_FOUND"
+        summary.errorCode
       );
     }
 
@@ -57,6 +60,38 @@ export class PointsController {
         latestStatus: "active"
       },
       summary
+    );
+  }
+
+  async listChildLedgerEntries(childId: string, authorization?: string) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    const entries = await this.points.listChildLedgerEntries({
+      actorUserId: actor.userId,
+      childId
+    });
+
+    if (entries.result === "rejected") {
+      return rejectedWriteResponse(
+        {
+          now,
+          targetType: "point_ledger_entries",
+          targetId: childId,
+          latestStatus: "rejected"
+        },
+        entries.errorCode
+      );
+    }
+
+    const { result: _result, ...payload } = entries;
+    return acceptedWriteResponse(
+      {
+        now,
+        targetType: "point_ledger_entries",
+        targetId: childId,
+        latestStatus: "active"
+      },
+      payload
     );
   }
 
@@ -108,8 +143,22 @@ export class PointsController {
 
   async listAdjustmentRequests(authorization?: string) {
     const now = new Date();
-    await this.authenticate(authorization, now);
-    const requests = await this.points.listAdjustmentRequests();
+    const actor = await this.authenticate(authorization, now);
+    const result = await this.points.listAdjustmentRequests({
+      platformAdminUserId: actor.userId
+    });
+
+    if (result.result === "rejected") {
+      return rejectedWriteResponse(
+        {
+          now,
+          targetType: "point_adjustment_request_queue",
+          targetId: "latest",
+          latestStatus: "rejected"
+        },
+        result.errorCode
+      );
+    }
 
     return acceptedWriteResponse(
       {
@@ -119,14 +168,28 @@ export class PointsController {
         latestStatus: "active"
       },
       {
-        requests
+        requests: result.requests
       }
     );
   }
 
   async listLedgerCheckRuns(authorization?: string) {
     const now = new Date();
-    await this.authenticate(authorization, now);
+    const actor = await this.authenticate(authorization, now);
+    const authorizationResult = await this.points.authorizePlatformAdmin({
+      platformAdminUserId: actor.userId
+    });
+    if (authorizationResult.result === "rejected") {
+      return rejectedWriteResponse(
+        {
+          now,
+          targetType: "ledger_check_runs",
+          targetId: "latest",
+          latestStatus: "rejected"
+        },
+        authorizationResult.errorCode
+      );
+    }
     const runs = await this.ledgerChecks.listRecentRuns();
 
     return acceptedWriteResponse(
@@ -270,6 +333,11 @@ applyMethodDecorator(
   "getChildPointSummary"
 );
 applyMethodDecorator(
+  Get("children/:childId/ledger-entries"),
+  PointsController.prototype,
+  "listChildLedgerEntries"
+);
+applyMethodDecorator(
   Get("adjustment-requests"),
   PointsController.prototype,
   "listAdjustmentRequests"
@@ -309,6 +377,18 @@ applyParameterDecorator(
   Headers("authorization"),
   PointsController.prototype,
   "getChildPointSummary",
+  1
+);
+applyParameterDecorator(
+  Param("childId"),
+  PointsController.prototype,
+  "listChildLedgerEntries",
+  0
+);
+applyParameterDecorator(
+  Headers("authorization"),
+  PointsController.prototype,
+  "listChildLedgerEntries",
   1
 );
 applyParameterDecorator(

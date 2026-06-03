@@ -27,8 +27,8 @@ export type PeriodicLedgerCheckHandle = {
 };
 
 type LedgerCheckDiffDraft = {
-  accountId: string;
-  childId: string;
+  accountId?: string;
+  childId?: string;
   ledgerEntryId?: string;
   diffType: LedgerCheckDiffType;
   expectedAvailablePoints?: number;
@@ -194,6 +194,24 @@ export class PrismaLedgerCheckRunner implements LedgerCheckRunner {
 
         return accountDiffs;
       });
+      const activeChildrenWithoutAccounts = await this.prisma.childProfile.findMany({
+        where: {
+          status: "active",
+          pointAccount: null
+        },
+        select: {
+          id: true
+        }
+      });
+      for (const child of activeChildrenWithoutAccounts) {
+        diffs.push({
+          childId: child.id,
+          diffType: "missing_account",
+          evidenceJson: {
+            childStatus: "active"
+          }
+        });
+      }
 
       if (diffs.length > 0) {
         await this.prisma.ledgerCheckDiff.createMany({

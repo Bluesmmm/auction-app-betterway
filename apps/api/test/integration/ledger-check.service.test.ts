@@ -186,6 +186,49 @@ describe("LedgerCheckService", () => {
       });
     }
   });
+
+  it("records active children without point accounts as ledger diffs", async () => {
+    const child = await prisma.childProfile.create({
+      data: {
+        displayName: `Missing Account Child ${unique("missing_account")}`,
+        gradeBand: "grade_3_4",
+        status: "active"
+      }
+    });
+
+    try {
+      const result = await checks.runLedgerCheck({
+        idempotencyKey: unique("missing_account_run"),
+        workerName: "stage4-test-worker",
+        childIds: [child.id],
+        now: new Date("2026-06-02T16:30:00.000Z")
+      });
+
+      expect(result.status).toBe("failed");
+      await expect(
+        prisma.ledgerCheckDiff.findFirstOrThrow({
+          where: {
+            runId: result.runId,
+            childId: child.id,
+            diffType: "missing_account"
+          },
+          select: {
+            evidenceJson: true
+          }
+        })
+      ).resolves.toEqual({
+        evidenceJson: {
+          childStatus: "active"
+        }
+      });
+    } finally {
+      await prisma.childProfile.delete({
+        where: {
+          id: child.id
+        }
+      });
+    }
+  });
 });
 
 async function createChild(label: string) {

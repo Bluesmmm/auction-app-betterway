@@ -17,8 +17,10 @@ describe("miniprogram stage4 shell", () => {
 
     expect(api).toContain("/points/children/");
     expect(api).toContain("/summary");
+    expect(api).toContain("/ledger-entries");
     expect(api).toContain("/adjustment-requests");
     expect(api).toContain("buildPointSummaryRequest");
+    expect(api).toContain("buildPointLedgerEntriesRequest");
     expect(api).toContain("buildSubmitGuardianPointAdjustmentRequest");
     expect(page).toContain("stage4PointsPage");
     expect(page).toContain("loadPointSummary");

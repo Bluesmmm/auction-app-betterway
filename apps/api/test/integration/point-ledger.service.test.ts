@@ -50,6 +50,129 @@ describe("PointLedgerService", () => {
     await prisma.$disconnect();
   });
 
+  it("limits child point summary and ledger entry reads to the primary guardian or platform admin", async () => {
+    const fixture = await createChildFixture("read_permissions");
+    const secondary = await createGuardian("read_permissions_secondary");
+    const outsider = await createGuardian("read_permissions_outsider");
+    const admin = await createPlatformAdmin("read_permissions_admin");
+    await prisma.guardianChildLink.create({
+      data: {
+        guardianId: secondary.guardianId,
+        childId: fixture.childId,
+        role: "secondary",
+        status: "active",
+        confirmedAt: new Date("2026-06-02T14:05:00.000Z")
+      }
+    });
+
+    await expect(
+      points.getChildPointSummary({
+        actorUserId: fixture.guardianUserId,
+        childId: fixture.childId
+      })
+    ).resolves.toEqual({
+      result: "accepted",
+      childId: fixture.childId,
+      availablePoints: 100,
+      frozenPoints: 0,
+      totalEarnedPoints: 100,
+      totalSpentPoints: 0,
+      totalAwardedPoints: 100,
+      totalPenaltyPoints: 0
+    });
+    await expect(
+      points.listChildLedgerEntries({
+        actorUserId: fixture.guardianUserId,
+        childId: fixture.childId
+      })
+    ).resolves.toEqual({
+      result: "accepted",
+      childId: fixture.childId,
+      entries: [
+        expect.objectContaining({
+          type: "initial_grant",
+          amountPoints: 100,
+          availableAfter: 100,
+          frozenAfter: 0,
+          relatedType: "child_profile",
+          relatedId: fixture.childId,
+          reason: "initial_child_points"
+        })
+      ]
+    });
+    await expect(
+      points.getChildPointSummary({
+        actorUserId: secondary.userId,
+        childId: fixture.childId
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "POINT_ACCOUNT_ACCESS_DENIED"
+    });
+    await expect(
+      points.listChildLedgerEntries({
+        actorUserId: outsider.userId,
+        childId: fixture.childId
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "POINT_ACCOUNT_ACCESS_DENIED"
+    });
+    await expect(
+      points.getChildPointSummary({
+        actorUserId: admin.userId,
+        childId: fixture.childId
+      })
+    ).resolves.toMatchObject({
+      result: "accepted",
+      childId: fixture.childId,
+      availablePoints: 100
+    });
+  });
+
+  it("limits global point adjustment queues to active MFA platform admins", async () => {
+    const fixture = await createChildFixture("queue_permissions");
+    const outsider = await createGuardian("queue_permissions_outsider");
+    const admin = await createPlatformAdmin("queue_permissions_admin");
+    const created = await points.createGuardianAdjustmentRequest({
+      actorUserId: fixture.guardianUserId,
+      childId: fixture.childId,
+      requestType: "activity_reward",
+      requestedPoints: 20,
+      reason: "queue visibility fixture",
+      idempotencyKey: unique("queue_permissions_request"),
+      now: new Date("2026-06-02T14:08:00.000Z")
+    });
+
+    if (created.result !== "accepted") {
+      throw new Error(`expected guardian request: ${created.errorCode}`);
+    }
+
+    await expect(
+      points.listAdjustmentRequests({
+        platformAdminUserId: outsider.userId
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "PLATFORM_ADMIN_REQUIRED"
+    });
+    await expect(
+      points.listAdjustmentRequests({
+        platformAdminUserId: admin.userId,
+        limit: 100
+      })
+    ).resolves.toMatchObject({
+      result: "accepted",
+      requests: expect.arrayContaining([
+        expect.objectContaining({
+          id: created.requestId,
+          childId: fixture.childId,
+          status: "pending_review"
+        })
+      ])
+    });
+  });
+
   it("lets only the active primary guardian create a point adjustment request", async () => {
     const fixture = await createChildFixture("guardian_request");
     const secondary = await createGuardian("guardian_request_secondary");

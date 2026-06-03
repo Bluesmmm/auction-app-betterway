@@ -38,15 +38,34 @@ const ledgerCheckRunRowSchema = z.object({
   failureReason: z.string().nullable()
 });
 
-export const listPointAdjustmentRequestsResultSchema = stage4BaseResponseSchema.extend({
+const stage4RejectedResponseSchema = stage4BaseResponseSchema.extend({
+  result: z.literal("rejected"),
+  errorCode: z.string()
+});
+const platformAdminRejectedResponseSchema = stage4BaseResponseSchema.extend({
+  result: z.literal("rejected"),
+  errorCode: z.literal("PLATFORM_ADMIN_REQUIRED")
+});
+
+const listPointAdjustmentRequestsAcceptedSchema = stage4BaseResponseSchema.extend({
   result: z.literal("accepted"),
   requests: z.array(adjustmentRequestRowSchema)
 });
 
-export const listLedgerCheckRunsResultSchema = stage4BaseResponseSchema.extend({
+const listLedgerCheckRunsAcceptedSchema = stage4BaseResponseSchema.extend({
   result: z.literal("accepted"),
   runs: z.array(ledgerCheckRunRowSchema)
 });
+
+export const listPointAdjustmentRequestsResultSchema = z.union([
+  listPointAdjustmentRequestsAcceptedSchema,
+  platformAdminRejectedResponseSchema
+]);
+
+export const listLedgerCheckRunsResultSchema = z.union([
+  listLedgerCheckRunsAcceptedSchema,
+  platformAdminRejectedResponseSchema
+]);
 
 const adjustmentCommandAcceptedSchema = stage4BaseResponseSchema.extend({
   result: z.literal("accepted"),
@@ -58,14 +77,9 @@ const adjustmentCommandAcceptedSchema = stage4BaseResponseSchema.extend({
   idempotencyKey: z.string().optional()
 });
 
-const adjustmentCommandRejectedSchema = stage4BaseResponseSchema.extend({
-  result: z.literal("rejected"),
-  errorCode: z.string()
-});
-
 export const pointAdjustmentCommandResultSchema = z.union([
   adjustmentCommandAcceptedSchema,
-  adjustmentCommandRejectedSchema
+  stage4RejectedResponseSchema
 ]);
 
 export type ListPointAdjustmentRequestsResult = z.infer<

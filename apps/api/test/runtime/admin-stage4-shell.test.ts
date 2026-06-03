@@ -14,6 +14,7 @@ describe("admin stage4 shell", () => {
     expect(app).toContain("/stage4/points-ledger");
     expect(api).toContain("/points/adjustment-requests");
     expect(api).toContain("/points/admin-adjustment-requests");
+    expect(api).toContain("PLATFORM_ADMIN_REQUIRED");
     expect(api).toContain("/points/adjustment-requests/:requestId/review");
     expect(api).toContain("/points/adjustment-requests/:requestId/second-review");
     expect(api).toContain("/points/ledger-check-runs");

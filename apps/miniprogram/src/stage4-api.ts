@@ -8,6 +8,11 @@ export type GetPointSummaryPayload = {
   childId: string;
 };
 
+export type GetPointLedgerEntriesPayload = {
+  accessToken: string;
+  childId: string;
+};
+
 export type SubmitGuardianPointAdjustmentPayload = {
   accessToken: string;
   childId: string;
@@ -25,6 +30,24 @@ export function buildPointSummaryRequest(
     url: buildStage2ApiUrl(
       apiBaseUrl,
       `/points/children/${encodeURIComponent(payload.childId)}/summary`
+    ),
+    method: "GET",
+    data: {},
+    header: {
+      "content-type": "application/json",
+      authorization: `Bearer ${payload.accessToken}`
+    }
+  };
+}
+
+export function buildPointLedgerEntriesRequest(
+  apiBaseUrl: string,
+  payload: GetPointLedgerEntriesPayload
+): MiniprogramJsonRequestOptions<Record<string, never>> {
+  return {
+    url: buildStage2ApiUrl(
+      apiBaseUrl,
+      `/points/children/${encodeURIComponent(payload.childId)}/ledger-entries`
     ),
     method: "GET",
     data: {},

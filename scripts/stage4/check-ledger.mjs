@@ -76,6 +76,25 @@ try {
       });
     }
   }
+  const activeChildrenWithoutAccounts = await prisma.childProfile.findMany({
+    where: {
+      status: "active",
+      pointAccount: null
+    },
+    select: {
+      id: true
+    }
+  });
+  for (const child of activeChildrenWithoutAccounts) {
+    diffs.push({
+      runId: run.id,
+      childId: child.id,
+      diffType: "missing_account",
+      evidenceJson: {
+        childStatus: "active"
+      }
+    });
+  }
 
   if (diffs.length > 0) {
     await prisma.ledgerCheckDiff.createMany({
