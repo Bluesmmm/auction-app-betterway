@@ -4,6 +4,11 @@ import {
   PrismaLedgerCheckRunner,
   startPeriodicLedgerCheckWorker
 } from "./ledger-check-worker.js";
+import {
+  createAuctionSettlementTriggerWorker,
+  PrismaAuctionSettlementRunner,
+  startPeriodicAuctionSettlementScanner
+} from "./auction-settlement-worker.js";
 import { RedactingWorkerLogger } from "./redacting-worker-logger.js";
 import { startWorkerHeartbeat } from "./worker-heartbeat.js";
 import { loadWorkerRuntimeConfig } from "./worker-config.js";
@@ -26,8 +31,16 @@ const ledgerChecks = startPeriodicLedgerCheckWorker({
   intervalMs: config.ledgerCheckIntervalMs,
   runner: new PrismaLedgerCheckRunner(prisma)
 });
+const auctionSettlementRunner = new PrismaAuctionSettlementRunner(prisma);
+const auctionSettlementScanner = startPeriodicAuctionSettlementScanner({
+  prisma,
+  runner: auctionSettlementRunner,
+  workerName: config.workerName,
+  intervalMs: config.auctionSettlementScanIntervalMs,
+  limit: config.auctionSettlementScanLimit
+});
 
-const worker = createOutboxNotificationWorker({
+const outboxWorker = createOutboxNotificationWorker({
   connection: config.redis,
   concurrency: config.concurrency,
   sender: {
@@ -40,15 +53,28 @@ const worker = createOutboxNotificationWorker({
     }
   }
 });
+const auctionSettlementWorker = createAuctionSettlementTriggerWorker({
+  connection: config.redis,
+  concurrency: config.concurrency,
+  workerName: config.workerName,
+  runner: auctionSettlementRunner
+});
 
-worker.on("ready", () => {
+outboxWorker.on("ready", () => {
   logger.info("worker.ready", {
     workerName: config.workerName
   });
 });
 
-worker.on("failed", (job, error) => {
+outboxWorker.on("failed", (job, error) => {
   logger.error("worker.job_failed", {
+    jobId: job?.id,
+    message: error.message
+  });
+});
+
+auctionSettlementWorker.on("failed", (job, error) => {
+  logger.error("auction_settlement.job_failed", {
     jobId: job?.id,
     message: error.message
   });
@@ -63,9 +89,11 @@ process.on("SIGTERM", () => {
 });
 
 async function shutdown() {
+  await auctionSettlementScanner.stop();
   await ledgerChecks.stop();
   await heartbeat.stop();
-  await worker.close();
+  await auctionSettlementWorker.close();
+  await outboxWorker.close();
   await prisma.$disconnect();
   process.exit(0);
 }

@@ -26,7 +26,9 @@ describe("worker runtime config", () => {
       DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",
       REDIS_URL: "redis://redis:6379/0",
       WORKER_NAME: "auction-worker-runtime",
-      LEDGER_CHECK_INTERVAL_SECONDS: "120"
+      LEDGER_CHECK_INTERVAL_SECONDS: "120",
+      AUCTION_SETTLEMENT_SCAN_INTERVAL_SECONDS: "30",
+      AUCTION_SETTLEMENT_SCAN_LIMIT: "25"
     });
 
     expect(config.databaseUrl).toContain("@postgres:5432/auction_app");
@@ -41,6 +43,8 @@ describe("worker runtime config", () => {
     });
     expect(config.concurrency).toBe(5);
     expect(config.ledgerCheckIntervalMs).toBe(120_000);
+    expect(config.auctionSettlementScanIntervalMs).toBe(30_000);
+    expect(config.auctionSettlementScanLimit).toBe(25);
   });
 
   it("parses Redis URLs for BullMQ", () => {
@@ -67,13 +71,14 @@ describe("worker runtime config", () => {
   });
 
   it("defaults ledger checks to five minutes and rejects unsafe intervals", () => {
-    expect(
-      loadWorkerRuntimeConfig({
-        DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",
-        REDIS_URL: "redis://redis:6379/0",
-        WORKER_NAME: "auction-worker-runtime"
-      }).ledgerCheckIntervalMs
-    ).toBe(300_000);
+    const config = loadWorkerRuntimeConfig({
+      DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",
+      REDIS_URL: "redis://redis:6379/0",
+      WORKER_NAME: "auction-worker-runtime"
+    });
+    expect(config.ledgerCheckIntervalMs).toBe(300_000);
+    expect(config.auctionSettlementScanIntervalMs).toBe(60_000);
+    expect(config.auctionSettlementScanLimit).toBe(50);
     expect(() =>
       loadWorkerRuntimeConfig({
         DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",
@@ -82,5 +87,23 @@ describe("worker runtime config", () => {
         LEDGER_CHECK_INTERVAL_SECONDS: "0"
       })
     ).toThrow("LEDGER_CHECK_INTERVAL_SECONDS must be a positive integer");
+    expect(() =>
+      loadWorkerRuntimeConfig({
+        DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",
+        REDIS_URL: "redis://redis:6379/0",
+        WORKER_NAME: "auction-worker-runtime",
+        AUCTION_SETTLEMENT_SCAN_INTERVAL_SECONDS: "0"
+      })
+    ).toThrow(
+      "AUCTION_SETTLEMENT_SCAN_INTERVAL_SECONDS must be a positive integer"
+    );
+    expect(() =>
+      loadWorkerRuntimeConfig({
+        DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",
+        REDIS_URL: "redis://redis:6379/0",
+        WORKER_NAME: "auction-worker-runtime",
+        AUCTION_SETTLEMENT_SCAN_LIMIT: "0"
+      })
+    ).toThrow("AUCTION_SETTLEMENT_SCAN_LIMIT must be a positive integer");
   });
 });

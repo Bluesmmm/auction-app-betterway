@@ -12,6 +12,8 @@ export type WorkerRuntimeConfig = {
   workerName: string;
   concurrency: number;
   ledgerCheckIntervalMs: number;
+  auctionSettlementScanIntervalMs: number;
+  auctionSettlementScanLimit: number;
   redis: RedisConnectionConfig;
 };
 
@@ -32,6 +34,17 @@ export function loadWorkerRuntimeConfig(
         300,
         "LEDGER_CHECK_INTERVAL_SECONDS"
       ) * 1000,
+    auctionSettlementScanIntervalMs:
+      parsePositiveInteger(
+        env.AUCTION_SETTLEMENT_SCAN_INTERVAL_SECONDS,
+        60,
+        "AUCTION_SETTLEMENT_SCAN_INTERVAL_SECONDS"
+      ) * 1000,
+    auctionSettlementScanLimit: parsePositiveInteger(
+      env.AUCTION_SETTLEMENT_SCAN_LIMIT,
+      50,
+      "AUCTION_SETTLEMENT_SCAN_LIMIT"
+    ),
     redis: parseRedisUrl(redisUrl)
   };
 }
