@@ -5,6 +5,7 @@ import { CommunitiesModule } from "./communities/communities.module.js";
 import { ContentModule } from "./content/content.module.js";
 import { AppConfigModule } from "./config/app-config.module.js";
 import { HealthController } from "./health.controller.js";
+import { PointsModule } from "./points/points.module.js";
 import { PrismaModule } from "./prisma/prisma.module.js";
 import { RuntimeModule } from "./runtime/runtime.module.js";
 import { StorageModule } from "./storage/storage.module.js";
@@ -17,6 +18,7 @@ import { StorageModule } from "./storage/storage.module.js";
     AccountsModule,
     CommunitiesModule,
     ContentModule,
+    PointsModule,
     StorageModule,
     AdminSecurityModule
   ],

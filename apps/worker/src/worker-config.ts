@@ -7,21 +7,31 @@ export type RedisConnectionConfig = {
 };
 
 export type WorkerRuntimeConfig = {
+  databaseUrl: string;
   redisUrl: string;
   workerName: string;
   concurrency: number;
+  ledgerCheckIntervalMs: number;
   redis: RedisConnectionConfig;
 };
 
 export function loadWorkerRuntimeConfig(
   env: NodeJS.ProcessEnv = process.env
 ): WorkerRuntimeConfig {
+  const databaseUrl = requireEnv(env, "DATABASE_URL");
   const redisUrl = requireEnv(env, "REDIS_URL");
 
   return {
+    databaseUrl,
     redisUrl,
     workerName: requireEnv(env, "WORKER_NAME"),
     concurrency: parseConcurrency(env.WORKER_CONCURRENCY),
+    ledgerCheckIntervalMs:
+      parsePositiveInteger(
+        env.LEDGER_CHECK_INTERVAL_SECONDS,
+        300,
+        "LEDGER_CHECK_INTERVAL_SECONDS"
+      ) * 1000,
     redis: parseRedisUrl(redisUrl)
   };
 }
@@ -64,4 +74,21 @@ function parseConcurrency(rawValue: string | undefined): number {
   }
 
   return concurrency;
+}
+
+function parsePositiveInteger(
+  rawValue: string | undefined,
+  defaultValue: number,
+  label: string
+): number {
+  if (rawValue === undefined || rawValue === "") {
+    return defaultValue;
+  }
+
+  const value = Number(rawValue);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+
+  return value;
 }

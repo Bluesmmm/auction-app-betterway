@@ -1,0 +1,411 @@
+import { PrismaClient } from "@prisma/client";
+import { afterAll, describe, expect, it } from "vitest";
+import { OnboardingService } from "../../src/accounts/onboarding.service.js";
+import {
+  SensitiveOperationService,
+  SensitiveOperationType
+} from "../../src/accounts/sensitive-operation.service.js";
+import { SessionService } from "../../src/accounts/session.service.js";
+import { SessionTokenService } from "../../src/accounts/session-token.service.js";
+import { AppConfigService } from "../../src/config/app-config.service.js";
+import {
+  FakeSensitiveOperationVerificationProvider,
+  FakeWechatAuthProvider
+} from "../../src/providers/fake-providers.js";
+import { PointLedgerService } from "../../src/points/point-ledger.service.js";
+
+process.env.DATABASE_URL ??=
+  "postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public";
+
+const prisma = new PrismaClient();
+const sessions = new SessionService(
+  prisma,
+  new SessionTokenService("stage4-point-ledger-test-signing-key")
+);
+const onboarding = new OnboardingService(
+  prisma,
+  new FakeWechatAuthProvider(),
+  sessions
+);
+const sensitiveOperations = new SensitiveOperationService(
+  prisma,
+  sessions,
+  new FakeSensitiveOperationVerificationProvider(),
+  () => "246810"
+);
+const points = new PointLedgerService(
+  prisma,
+  sensitiveOperations,
+  new AppConfigService({
+    POINT_ADJUSTMENT_SINGLE_REVIEW_LIMIT: "50"
+  })
+);
+
+function unique(label: string) {
+  return `${label}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+describe("PointLedgerService", () => {
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  it("lets only the active primary guardian create a point adjustment request", async () => {
+    const fixture = await createChildFixture("guardian_request");
+    const secondary = await createGuardian("guardian_request_secondary");
+    await prisma.guardianChildLink.create({
+      data: {
+        guardianId: secondary.guardianId,
+        childId: fixture.childId,
+        role: "secondary",
+        status: "active",
+        confirmedAt: new Date("2026-06-02T14:10:00.000Z")
+      }
+    });
+
+    await expect(
+      points.createGuardianAdjustmentRequest({
+        actorUserId: secondary.userId,
+        childId: fixture.childId,
+        requestType: "activity_reward",
+        requestedPoints: 20,
+        reason: "helped with the class activity",
+        idempotencyKey: unique("secondary_request"),
+        now: new Date("2026-06-02T14:11:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "PRIMARY_GUARDIAN_REQUIRED"
+    });
+
+    const accepted = await points.createGuardianAdjustmentRequest({
+      actorUserId: fixture.guardianUserId,
+      childId: fixture.childId,
+      requestType: "activity_reward",
+      requestedPoints: 20,
+      reason: "helped with the class activity",
+      idempotencyKey: unique("primary_request"),
+      now: new Date("2026-06-02T14:12:00.000Z")
+    });
+
+    expect(accepted).toEqual({
+      result: "accepted",
+      requestId: expect.any(String),
+      status: "pending_review",
+      requiresSecondReview: false
+    });
+  });
+
+  it("approves a small admin award with one platform admin and one immutable ledger entry", async () => {
+    const fixture = await createChildFixture("small_award");
+    const admin = await createPlatformAdmin("small_award_admin");
+    const created = await points.createAdminAdjustmentRequest({
+      platformAdminUserId: admin.userId,
+      childId: fixture.childId,
+      requestType: "admin_award",
+      requestedPoints: 25,
+      reason: "pilot activity award",
+      idempotencyKey: unique("small_award_create"),
+      now: new Date("2026-06-02T15:00:00.000Z")
+    });
+
+    if (created.result !== "accepted") {
+      throw new Error(`expected admin request: ${created.errorCode}`);
+    }
+
+    const challengeId = await createPassedAdjustPointsChallenge(
+      admin,
+      created.requestId,
+      new Date("2026-06-02T15:00:30.000Z")
+    );
+    const approved = await points.reviewAdjustmentRequest({
+      platformAdminUserId: admin.userId,
+      sessionId: admin.sessionId,
+      requestId: created.requestId,
+      decision: "approve",
+      reviewReason: "evidence checked",
+      challengeId,
+      idempotencyKey: unique("small_award_approve"),
+      now: new Date("2026-06-02T15:01:00.000Z")
+    });
+    const replay = await points.reviewAdjustmentRequest({
+      platformAdminUserId: admin.userId,
+      sessionId: admin.sessionId,
+      requestId: created.requestId,
+      decision: "approve",
+      reviewReason: "evidence checked",
+      challengeId,
+      idempotencyKey: approved.result === "accepted" ? approved.idempotencyKey : "",
+      now: new Date("2026-06-02T15:01:30.000Z")
+    });
+
+    expect(approved).toEqual({
+      result: "accepted",
+      requestId: created.requestId,
+      status: "approved",
+      ledgerEntryId: expect.any(String),
+      availablePoints: 125,
+      idempotencyKey: expect.any(String)
+    });
+    expect(replay).toEqual(approved);
+    await expect(
+      prisma.pointLedgerEntry.count({
+        where: {
+          relatedType: "point_adjustment_request",
+          relatedId: created.requestId
+        }
+      })
+    ).resolves.toBe(1);
+  });
+
+  it("requires a second platform admin for large adjustments", async () => {
+    const fixture = await createChildFixture("large_award");
+    const firstAdmin = await createPlatformAdmin("large_award_first");
+    const secondAdmin = await createPlatformAdmin("large_award_second");
+    const created = await points.createAdminAdjustmentRequest({
+      platformAdminUserId: firstAdmin.userId,
+      childId: fixture.childId,
+      requestType: "admin_award",
+      requestedPoints: 75,
+      reason: "large pilot award",
+      idempotencyKey: unique("large_award_create"),
+      now: new Date("2026-06-02T15:10:00.000Z")
+    });
+
+    if (created.result !== "accepted") {
+      throw new Error(`expected large request: ${created.errorCode}`);
+    }
+
+    const firstChallengeId = await createPassedAdjustPointsChallenge(
+      firstAdmin,
+      created.requestId,
+      new Date("2026-06-02T15:10:30.000Z")
+    );
+    await expect(
+      points.reviewAdjustmentRequest({
+        platformAdminUserId: firstAdmin.userId,
+        sessionId: firstAdmin.sessionId,
+        requestId: created.requestId,
+        decision: "approve",
+        reviewReason: "needs second review",
+        challengeId: firstChallengeId,
+        idempotencyKey: unique("large_award_first_review"),
+        now: new Date("2026-06-02T15:11:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "accepted",
+      requestId: created.requestId,
+      status: "pending_second_review",
+      ledgerEntryId: null,
+      idempotencyKey: expect.any(String)
+    });
+
+    await expect(
+      points.secondReviewAdjustmentRequest({
+        platformAdminUserId: firstAdmin.userId,
+        sessionId: firstAdmin.sessionId,
+        requestId: created.requestId,
+        decision: "approve",
+        reviewReason: "same admin should not pass",
+        challengeId: firstChallengeId,
+        idempotencyKey: unique("large_award_same_admin_second"),
+        now: new Date("2026-06-02T15:12:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SECOND_REVIEWER_REQUIRED"
+    });
+
+    const secondChallengeId = await createPassedAdjustPointsChallenge(
+      secondAdmin,
+      created.requestId,
+      new Date("2026-06-02T15:12:30.000Z")
+    );
+    await expect(
+      points.secondReviewAdjustmentRequest({
+        platformAdminUserId: secondAdmin.userId,
+        sessionId: secondAdmin.sessionId,
+        requestId: created.requestId,
+        decision: "approve",
+        reviewReason: "second review complete",
+        challengeId: secondChallengeId,
+        idempotencyKey: unique("large_award_second_review"),
+        now: new Date("2026-06-02T15:13:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "accepted",
+      requestId: created.requestId,
+      status: "approved",
+      ledgerEntryId: expect.any(String),
+      availablePoints: 175,
+      idempotencyKey: expect.any(String)
+    });
+  });
+
+  it("rejects admin penalties that would make available points negative", async () => {
+    const fixture = await createChildFixture("negative_penalty");
+    const admin = await createPlatformAdmin("negative_penalty_admin");
+    await prisma.pointAccount.update({
+      where: {
+        childId: fixture.childId
+      },
+      data: {
+        availablePoints: 10
+      }
+    });
+    const created = await points.createAdminAdjustmentRequest({
+      platformAdminUserId: admin.userId,
+      childId: fixture.childId,
+      requestType: "admin_penalty",
+      requestedPoints: -25,
+      reason: "invalid penalty",
+      idempotencyKey: unique("negative_penalty_create"),
+      now: new Date("2026-06-02T15:20:00.000Z")
+    });
+
+    if (created.result !== "accepted") {
+      throw new Error(`expected penalty request: ${created.errorCode}`);
+    }
+
+    const challengeId = await createPassedAdjustPointsChallenge(
+      admin,
+      created.requestId,
+      new Date("2026-06-02T15:20:30.000Z")
+    );
+    await expect(
+      points.reviewAdjustmentRequest({
+        platformAdminUserId: admin.userId,
+        sessionId: admin.sessionId,
+        requestId: created.requestId,
+        decision: "approve",
+        reviewReason: "should fail balance check",
+        challengeId,
+        idempotencyKey: unique("negative_penalty_approve"),
+        now: new Date("2026-06-02T15:21:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "INSUFFICIENT_AVAILABLE_POINTS"
+    });
+    await prisma.pointAccount.update({
+      where: {
+        childId: fixture.childId
+      },
+      data: {
+        availablePoints: 100
+      }
+    });
+  });
+});
+
+async function createChildFixture(label: string) {
+  const guardian = await createGuardian(`${label}_primary`);
+  const child = await onboarding.createChildWithPrimaryGuardian({
+    actorUserId: guardian.userId,
+    guardianId: guardian.guardianId,
+    displayName: `Stage4 Child ${unique(label)}`,
+    gradeBand: "grade_3_4",
+    idempotencyKey: unique(`${label}_child`),
+    now: new Date("2026-06-02T14:00:00.000Z")
+  });
+
+  if (child.result !== "accepted") {
+    throw new Error(`expected child creation: ${child.errorCode}`);
+  }
+
+  return {
+    guardianUserId: guardian.userId,
+    guardianId: guardian.guardianId,
+    childId: child.childId
+  };
+}
+
+async function createGuardian(label: string) {
+  const token = unique(label);
+  const login = await onboarding.loginWithWechatCode({
+    code: `mock_openid_${token}`,
+    now: new Date("2026-06-02T13:50:00.000Z")
+  });
+
+  if (login.result !== "accepted") {
+    throw new Error("expected login to succeed");
+  }
+
+  const guardian = await onboarding.ensureGuardianProfile({
+    userId: login.userId,
+    phoneHash: `phone_hash_${token}`,
+    phoneLast4: "1357",
+    consentVersion: "guardian-consent-v1",
+    consentedAt: new Date("2026-06-02T13:51:00.000Z")
+  });
+
+  return {
+    userId: login.userId,
+    guardianId: guardian.guardianId
+  };
+}
+
+async function createPlatformAdmin(label: string) {
+  const token = unique(label);
+  const user = await prisma.user.create({
+    data: {
+      status: "active",
+      adminProfile: {
+        create: {
+          role: "platform_admin",
+          mfaEnabled: true,
+          status: "active"
+        }
+      }
+    }
+  });
+  const session = await sessions.createSession({
+    userId: user.id,
+    deviceFingerprintHash: `device_${token}`,
+    ipHash: `ip_${token}`,
+    userAgentHash: `ua_${token}`,
+    now: new Date("2026-06-02T13:52:00.000Z")
+  });
+
+  if (session.result !== "accepted") {
+    throw new Error("expected platform admin session");
+  }
+
+  return {
+    userId: user.id,
+    sessionId: session.sessionId
+  };
+}
+
+async function createPassedAdjustPointsChallenge(
+  admin: { userId: string; sessionId: string },
+  requestId: string,
+  now: Date
+) {
+  const challenge = await sensitiveOperations.createChallenge({
+    actorUserId: admin.userId,
+    sessionId: admin.sessionId,
+    operationType: SensitiveOperationType.adjustPoints,
+    targetType: "point_adjustment_request",
+    targetId: requestId,
+    now
+  });
+
+  if (challenge.result !== "accepted") {
+    throw new Error(`expected challenge creation: ${challenge.errorCode}`);
+  }
+
+  const passed = await sensitiveOperations.markPassed({
+    challengeId: challenge.challengeId,
+    actorUserId: admin.userId,
+    sessionId: admin.sessionId,
+    verificationCode: "246810",
+    now: new Date(now.getTime() + 30_000)
+  });
+
+  if (passed.result !== "accepted") {
+    throw new Error(`expected challenge pass: ${passed.errorCode}`);
+  }
+
+  return challenge.challengeId;
+}

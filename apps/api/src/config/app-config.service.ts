@@ -43,6 +43,22 @@ export class AppConfigService {
   get authTokenSigningKey(): string {
     return requireEnv(this.env, "AUTH_TOKEN_SIGNING_KEY");
   }
+
+  get initialChildPoints(): number {
+    return parsePositiveIntegerWithLabel(
+      this.env.INITIAL_CHILD_POINTS,
+      100,
+      "INITIAL_CHILD_POINTS"
+    );
+  }
+
+  get pointAdjustmentSingleReviewLimit(): number {
+    return parsePositiveIntegerWithLabel(
+      this.env.POINT_ADJUSTMENT_SINGLE_REVIEW_LIMIT,
+      50,
+      "POINT_ADJUSTMENT_SINGLE_REVIEW_LIMIT"
+    );
+  }
 }
 
 function requireEnv(env: NodeJS.ProcessEnv, key: string): string {
@@ -71,13 +87,21 @@ function parsePositiveInteger(
   rawValue: string | undefined,
   defaultValue: number
 ): number {
+  return parsePositiveIntegerWithLabel(rawValue, defaultValue, "value");
+}
+
+function parsePositiveIntegerWithLabel(
+  rawValue: string | undefined,
+  defaultValue: number,
+  label: string
+): number {
   if (rawValue === undefined || rawValue === "") {
     return defaultValue;
   }
 
   const value = Number(rawValue);
   if (!Number.isInteger(value) || value < 1) {
-    throw new Error("value must be a positive integer");
+    throw new Error(`${label} must be a positive integer`);
   }
 
   return value;

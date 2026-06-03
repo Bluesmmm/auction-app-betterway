@@ -15,7 +15,8 @@ export const SensitiveOperationType = {
   revokeActivityAdmin: "revoke_activity_admin",
   applyRiskRestriction: "apply_risk_restriction",
   resolveRiskRestriction: "resolve_risk_restriction",
-  reviewRiskSignal: "review_risk_signal"
+  reviewRiskSignal: "review_risk_signal",
+  adjustPoints: "adjust_points"
 } as const;
 
 export type SensitiveOperationType =
@@ -753,6 +754,14 @@ export class SensitiveOperationService {
             (await this.isActiveMfaPlatformAdmin(input.actorUserId)) &&
             (await this.activeRiskSignalExists(input.targetId))
         );
+      case SensitiveOperationType.adjustPoints:
+        return this.acceptIf(
+          (await this.isActiveMfaPlatformAdmin(input.actorUserId)) &&
+            ((input.targetType === "child_profile" &&
+              (await this.sensitiveTargetExists(input.targetType, input.targetId))) ||
+              (input.targetType === "point_adjustment_request" &&
+                (await this.sensitiveTargetExists(input.targetType, input.targetId))))
+        );
       default:
         return {
           result: "rejected",
@@ -825,6 +834,8 @@ export class SensitiveOperationService {
       case "risk_restriction":
         return this.isActiveMfaPlatformAdmin(input.actorUserId);
       case "risk_signal":
+        return this.isActiveMfaPlatformAdmin(input.actorUserId);
+      case "point_adjustment_request":
         return this.isActiveMfaPlatformAdmin(input.actorUserId);
       case ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE:
         return this.canRequestAdminCommunityScopeChallenge(input);
@@ -1132,6 +1143,13 @@ export class SensitiveOperationService {
         return this.activeRiskRestrictionExists(targetId);
       case "risk_signal":
         return this.activeRiskSignalExists(targetId);
+      case "point_adjustment_request":
+        return Boolean(
+          await this.prisma.pointAdjustmentRequest.findUnique({
+            where: { id: targetId },
+            select: { id: true }
+          })
+        );
       case ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE:
         return Boolean(parseAdminCommunityScopeChallengeTargetId(targetId));
       default:

@@ -195,6 +195,42 @@ enum PointLedgerEntryType {
   reversal
 }
 
+enum PointAdjustmentSource {
+  guardian_request
+  admin_initiated
+}
+
+enum PointAdjustmentRequestType {
+  correction
+  activity_reward
+  admin_award
+  admin_penalty
+  batch_award
+}
+
+enum PointAdjustmentStatus {
+  pending_review
+  pending_second_review
+  approved
+  rejected
+  cancelled
+}
+
+enum LedgerCheckRunStatus {
+  running
+  passed
+  failed
+  skipped
+}
+
+enum LedgerCheckDiffType {
+  snapshot_mismatch
+  negative_replay
+  orphan_ledger_entry
+  missing_account
+  active_hold_mismatch
+}
+
 enum TransactionStatus {
   pending_guardian_confirm
   pending_delivery_confirm
@@ -345,6 +381,9 @@ model User {
   targetRiskRestrictions            RiskRestriction[]             @relation("RiskRestrictionTargetUser")
   auditLogs                         AuditLog[]
   createdLedgerEntries              PointLedgerEntry[]
+  requestedPointAdjustments         PointAdjustmentRequest[]      @relation("PointAdjustmentRequestedBy")
+  reviewedPointAdjustments          PointAdjustmentRequest[]      @relation("PointAdjustmentReviewedBy")
+  secondReviewedPointAdjustments    PointAdjustmentRequest[]      @relation("PointAdjustmentSecondReviewedBy")
   manualReviewRecords               ManualReviewRecord[]          @relation("ManualReviewRecordReviewer")
 }
 
@@ -371,6 +410,7 @@ model GuardianProfile {
   childLinks                GuardianChildLink[]
   communityCreationRequests CommunityCreationRequest[]
   submittedDisputes         GuardianDispute[]
+  pointAdjustmentRequests   PointAdjustmentRequest[]
   riskSignals               RiskSignal[]
   riskRestrictions          RiskRestriction[]
 }
@@ -405,6 +445,7 @@ model ChildProfile {
   riskRestrictions       RiskRestriction[]
   pointAccount           PointAccount?
   ledgerEntries          PointLedgerEntry[]
+  pointAdjustmentRequests PointAdjustmentRequest[]
   items                  Item[]
   wantedPosts            WantedPost[]
   wantedResponses        WantedResponse[]
@@ -909,11 +950,14 @@ model PointAccount {
   frozenPoints      Int                @default(0)
   totalEarnedPoints Int                @default(0)
   totalSpentPoints  Int                @default(0)
+  totalAwardedPoints Int               @default(0)
+  totalPenaltyPoints Int               @default(0)
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
   child             ChildProfile       @relation(fields: [childId], references: [id])
   holds             PointHold[]
   ledgerEntries     PointLedgerEntry[]
+  ledgerCheckDiffs   LedgerCheckDiff[]
 }
 
 model PointHold {
@@ -950,7 +994,82 @@ model PointLedgerEntry {
   account         PointAccount         @relation(fields: [accountId], references: [id])
   child           ChildProfile         @relation(fields: [childId], references: [id])
   createdBy       User?                @relation(fields: [createdByUserId], references: [id])
+  adjustmentRequest PointAdjustmentRequest? @relation("PointAdjustmentLedgerEntry")
 
+  @@index([accountId, createdAt])
+  @@index([childId, createdAt])
+}
+
+model PointAdjustmentRequest {
+  id                     String                     @id @default(cuid())
+  source                 PointAdjustmentSource
+  requestType            PointAdjustmentRequestType
+  status                 PointAdjustmentStatus      @default(pending_review)
+  childId                String
+  guardianId             String?
+  requestedByUserId      String
+  reviewedByUserId       String?
+  secondReviewedByUserId String?
+  ledgerEntryId          String?                    @unique
+  requestedPoints        Int
+  reason                 String
+  reviewReason           String?
+  secondReviewReason     String?
+  requiresSecondReview   Boolean                    @default(false)
+  batchKey               String?
+  idempotencyKey         String                     @unique
+  createdAt              DateTime                   @default(now())
+  reviewedAt             DateTime?
+  secondReviewedAt       DateTime?
+  decidedAt              DateTime?
+  updatedAt              DateTime                   @updatedAt
+  child                  ChildProfile               @relation(fields: [childId], references: [id])
+  guardian               GuardianProfile?           @relation(fields: [guardianId], references: [id])
+  requestedBy            User                       @relation("PointAdjustmentRequestedBy", fields: [requestedByUserId], references: [id])
+  reviewedBy             User?                      @relation("PointAdjustmentReviewedBy", fields: [reviewedByUserId], references: [id])
+  secondReviewedBy       User?                      @relation("PointAdjustmentSecondReviewedBy", fields: [secondReviewedByUserId], references: [id])
+  ledgerEntry            PointLedgerEntry?          @relation("PointAdjustmentLedgerEntry", fields: [ledgerEntryId], references: [id])
+
+  @@index([status, requiresSecondReview])
+  @@index([childId, createdAt])
+  @@index([guardianId, status])
+  @@index([batchKey])
+}
+
+model LedgerCheckRun {
+  id                  String               @id @default(cuid())
+  status              LedgerCheckRunStatus @default(running)
+  checkedAccountCount Int                  @default(0)
+  ledgerDiffCount     Int                  @default(0)
+  negativeReplayCount Int                  @default(0)
+  orphanLedgerCount   Int                  @default(0)
+  startedAt           DateTime             @default(now())
+  finishedAt          DateTime?
+  workerName          String?
+  failureReason       String?
+  idempotencyKey      String               @unique
+  diffs               LedgerCheckDiff[]
+
+  @@index([status, startedAt])
+}
+
+model LedgerCheckDiff {
+  id                       String              @id @default(cuid())
+  runId                    String
+  accountId                String?
+  childId                  String?
+  ledgerEntryId            String?
+  diffType                 LedgerCheckDiffType
+  expectedAvailablePoints  Int?
+  actualAvailablePoints    Int?
+  expectedFrozenPoints     Int?
+  actualFrozenPoints       Int?
+  evidenceJson             Json
+  createdAt                DateTime            @default(now())
+  run                      LedgerCheckRun      @relation(fields: [runId], references: [id])
+  account                  PointAccount?       @relation(fields: [accountId], references: [id])
+
+  @@index([runId, diffType])
   @@index([accountId, createdAt])
   @@index([childId, createdAt])
 }

@@ -7,7 +7,8 @@
     "pages/stage3/item-submit/index",
     "pages/stage3/item-detail/index",
     "pages/stage3/wanted-submit/index",
-    "pages/stage3/wanted-response/index"
+    "pages/stage3/wanted-response/index",
+    "pages/stage4/points/index"
   ],
   "window": {
     "navigationBarTitleText": "积分拍卖",

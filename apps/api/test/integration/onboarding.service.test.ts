@@ -4,6 +4,7 @@ import { FakeWechatAuthProvider } from "../../src/providers/fake-providers.js";
 import { OnboardingService } from "../../src/accounts/onboarding.service.js";
 import { SessionService } from "../../src/accounts/session.service.js";
 import { SessionTokenService } from "../../src/accounts/session-token.service.js";
+import { AppConfigService } from "../../src/config/app-config.service.js";
 
 process.env.DATABASE_URL ??=
   "postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public";
@@ -177,9 +178,73 @@ describe("OnboardingService", () => {
         frozenAfter: 0,
         idempotencyKey: `initial_child_points_${suffix}`,
         reason: "initial_child_points",
+        createdAt: new Date("2026-05-27T13:02:00.000Z"),
         createdByUserId: login.userId
       })
     ]);
+  });
+
+  it("uses configured initial child points for new child activations", async () => {
+    const service = new OnboardingService(
+      prisma,
+      new FakeWechatAuthProvider(),
+      undefined,
+      new AppConfigService({ INITIAL_CHILD_POINTS: "150" })
+    );
+    const suffix = Date.now();
+    const login = await service.loginWithWechatCode({
+      code: `mock_openid_configured_points_guardian_${suffix}`,
+      now: new Date("2026-06-02T13:00:00.000Z")
+    });
+
+    if (login.result !== "accepted") {
+      throw new Error("expected login to succeed");
+    }
+
+    const guardian = await service.ensureGuardianProfile({
+      userId: login.userId,
+      phoneHash: `configured_points_phone_hash_${suffix}`,
+      phoneLast4: "4321",
+      consentVersion: "guardian-consent-v1",
+      consentedAt: new Date("2026-06-02T13:01:00.000Z")
+    });
+    const child = await service.createChildWithPrimaryGuardian({
+      actorUserId: login.userId,
+      guardianId: guardian.guardianId,
+      displayName: `Configured Points Child ${suffix}`,
+      gradeBand: "grade_3_4",
+      idempotencyKey: `configured_initial_child_points_${suffix}`,
+      now: new Date("2026-06-02T13:02:00.000Z")
+    });
+
+    expect(child).toEqual({
+      result: "accepted",
+      childId: expect.any(String),
+      childStatus: "active",
+      availablePoints: 150
+    });
+
+    if (child.result !== "accepted") {
+      throw new Error("expected configured child creation to succeed");
+    }
+
+    await expect(
+      prisma.pointLedgerEntry.findFirstOrThrow({
+        where: {
+          childId: child.childId,
+          type: "initial_grant"
+        },
+        select: {
+          amountPoints: true,
+          availableAfter: true,
+          frozenAfter: true
+        }
+      })
+    ).resolves.toEqual({
+      amountPoints: 150,
+      availableAfter: 150,
+      frozenAfter: 0
+    });
   });
 
   it("does not reactivate restricted guardian profiles during profile refresh", async () => {

@@ -5,6 +5,7 @@ import type {
   PrismaClient
 } from "@prisma/client";
 import { createHash } from "node:crypto";
+import { AppConfigService } from "../config/app-config.service.js";
 import type { WechatAuthProvider } from "../providers/provider-contracts.js";
 import type { SessionService } from "./session.service.js";
 
@@ -115,7 +116,8 @@ export class OnboardingService {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly wechatAuth: WechatAuthProvider,
-    private readonly sessionService?: SessionService
+    private readonly sessionService?: SessionService,
+    private readonly config: AppConfigService = new AppConfigService()
   ) {}
 
   async loginWithWechatCode(
@@ -362,13 +364,16 @@ export class OnboardingService {
         }
       });
 
+      const initialChildPoints = this.config.initialChildPoints;
       const pointAccount = await tx.pointAccount.create({
         data: {
           childId: child.id,
-          availablePoints: STAGE2_CHILD_INITIAL_POINTS,
+          availablePoints: initialChildPoints,
           frozenPoints: 0,
-          totalEarnedPoints: STAGE2_CHILD_INITIAL_POINTS,
+          totalEarnedPoints: initialChildPoints,
           totalSpentPoints: 0,
+          totalAwardedPoints: initialChildPoints,
+          totalPenaltyPoints: 0,
           ledgerEntries: {
             create: {
               child: {
@@ -377,13 +382,14 @@ export class OnboardingService {
                 }
               },
               type: "initial_grant",
-              amountPoints: STAGE2_CHILD_INITIAL_POINTS,
-              availableAfter: STAGE2_CHILD_INITIAL_POINTS,
+              amountPoints: initialChildPoints,
+              availableAfter: initialChildPoints,
               frozenAfter: 0,
               relatedType: "child_profile",
               relatedId: child.id,
               idempotencyKey: input.idempotencyKey,
               reason: "initial_child_points",
+              createdAt: now,
               createdBy: {
                 connect: {
                   id: input.actorUserId
@@ -402,7 +408,7 @@ export class OnboardingService {
           targetId: child.id,
           afterJson: {
             guardianId: input.guardianId,
-            initialPoints: STAGE2_CHILD_INITIAL_POINTS
+            initialPoints: initialChildPoints
           }
         }
       });

@@ -20,6 +20,7 @@ import { z } from "zod";
 import { createAdminStage1Skeleton } from "./stage1-shell.js";
 import { stage2AdminViewDefinitions } from "./stage2-nav.js";
 import { stage3AdminViewDefinitions } from "./stage3-nav.js";
+import { stage4AdminViewDefinitions } from "./stage4-nav.js";
 
 const { Content, Header } = Layout;
 
@@ -48,6 +49,11 @@ const RiskReviewView = lazy(() =>
 const ContentReviewView = lazy(() =>
   import("./stage3-views.js").then((module) => ({
     default: module.ContentReviewView
+  }))
+);
+const PointsLedgerView = lazy(() =>
+  import("./stage4-views.js").then((module) => ({
+    default: module.PointsLedgerView
   }))
 );
 
@@ -102,6 +108,11 @@ export const adminShellNavigationItems = [
     key: view.key,
     label: view.label,
     path: view.path
+  })),
+  ...stage4AdminViewDefinitions.map((view) => ({
+    key: view.key,
+    label: view.label,
+    path: view.path
   }))
 ];
 
@@ -141,6 +152,7 @@ function Shell() {
           <Tag color="blue">Stage 1</Tag>
           <Tag color="cyan">Stage 2</Tag>
           <Tag color="green">Stage 3</Tag>
+          <Tag color="gold">Stage 4</Tag>
         </Space>
         <nav className="admin-nav" aria-label="Admin views">
           {adminShellNavigationItems.map((item) => (
@@ -197,6 +209,14 @@ function Shell() {
             element={
               <Stage2RouteFallback>
                 <ContentReviewView apiBaseUrl={apiBaseUrl} />
+              </Stage2RouteFallback>
+            }
+          />
+          <Route
+            path="/stage4/points-ledger"
+            element={
+              <Stage2RouteFallback>
+                <PointsLedgerView apiBaseUrl={apiBaseUrl} />
               </Stage2RouteFallback>
             }
           />

@@ -1,13 +1,30 @@
+import { PrismaClient } from "@prisma/client";
 import { createOutboxNotificationWorker } from "./outbox-worker.js";
+import {
+  PrismaLedgerCheckRunner,
+  startPeriodicLedgerCheckWorker
+} from "./ledger-check-worker.js";
 import { RedactingWorkerLogger } from "./redacting-worker-logger.js";
 import { startWorkerHeartbeat } from "./worker-heartbeat.js";
 import { loadWorkerRuntimeConfig } from "./worker-config.js";
 
 const config = loadWorkerRuntimeConfig();
 const logger = new RedactingWorkerLogger();
+const prisma = new PrismaClient({
+  datasources: {
+    db: {
+      url: config.databaseUrl
+    }
+  }
+});
 const heartbeat = await startWorkerHeartbeat({
   connection: config.redis,
   workerName: config.workerName
+});
+const ledgerChecks = startPeriodicLedgerCheckWorker({
+  workerName: config.workerName,
+  intervalMs: config.ledgerCheckIntervalMs,
+  runner: new PrismaLedgerCheckRunner(prisma)
 });
 
 const worker = createOutboxNotificationWorker({
@@ -46,7 +63,9 @@ process.on("SIGTERM", () => {
 });
 
 async function shutdown() {
+  await ledgerChecks.stop();
   await heartbeat.stop();
   await worker.close();
+  await prisma.$disconnect();
   process.exit(0);
 }

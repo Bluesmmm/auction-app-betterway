@@ -29,12 +29,13 @@ import { AccountsController } from "./accounts.controller.js";
     },
     {
       provide: OnboardingService,
-      inject: [PrismaService, FakeWechatAuthProvider, SessionService],
+      inject: [PrismaService, FakeWechatAuthProvider, SessionService, AppConfigService],
       useFactory: (
         prisma: PrismaService,
         wechatAuth: FakeWechatAuthProvider,
-        sessions: SessionService
-      ) => new OnboardingService(prisma, wechatAuth, sessions)
+        sessions: SessionService,
+        config: AppConfigService
+      ) => new OnboardingService(prisma, wechatAuth, sessions, config)
     },
     {
       provide: SessionTokenService,
