@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { PrismaModule } from "../prisma/prisma.module.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { AuctionPermissionsService } from "./auction-permissions.service.js";
+import { BiddingService } from "./bidding.service.js";
 import { AuctionSessionService } from "./auction-session.service.js";
 
 @Module({
@@ -19,8 +20,13 @@ import { AuctionSessionService } from "./auction-session.service.js";
         prisma: PrismaService,
         permissions: AuctionPermissionsService
       ) => new AuctionSessionService(prisma, permissions)
+    },
+    {
+      provide: BiddingService,
+      inject: [PrismaService],
+      useFactory: (prisma: PrismaService) => new BiddingService(prisma)
     }
   ],
-  exports: [AuctionPermissionsService, AuctionSessionService]
+  exports: [AuctionPermissionsService, AuctionSessionService, BiddingService]
 })
 export class AuctionsModule {}
