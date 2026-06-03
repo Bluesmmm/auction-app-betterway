@@ -55,6 +55,45 @@ export type PlaceBidResult =
       retryable: true;
     };
 
+type WithdrawCurrentHighestBidRejectedErrorCode =
+  | "IDEMPOTENCY_KEY_REQUIRED"
+  | "IDEMPOTENCY_CONFLICT"
+  | "AUCTION_NOT_FOUND"
+  | "AUCTION_NOT_ACTIVE"
+  | "AUCTION_ENDED"
+  | "BIDDER_CHILD_REQUIRED"
+  | "CHILD_NOT_ACTIVE"
+  | "POINT_ACCOUNT_NOT_FOUND"
+  | "NO_ACTIVE_HIGHEST_BID"
+  | "BID_NOT_CURRENT_HIGHEST"
+  | "WITHDRAW_WINDOW_EXPIRED";
+
+type WithdrawCurrentHighestBidUnknownErrorCode = "TRANSACTION_RESULT_UNKNOWN";
+
+export type WithdrawCurrentHighestBidResult =
+  | {
+      result: "accepted";
+      bidId: string;
+      auctionSessionId: string;
+      bidderChildId: string;
+      releasedAmountPoints: number;
+      status: BidStatus;
+      idempotencyKey: string;
+    }
+  | {
+      result: "rejected";
+      errorCode: WithdrawCurrentHighestBidRejectedErrorCode;
+    }
+  | {
+      result: "unknown";
+      errorCode: WithdrawCurrentHighestBidUnknownErrorCode;
+      auctionSessionId: string;
+      bidderChildId: string;
+      idempotencyKey: string;
+      refreshRequired: true;
+      retryable: true;
+    };
+
 type LockedAuctionSessionRow = {
   id: string;
   itemId: string;
@@ -104,6 +143,7 @@ type CurrentHighestBidContext = {
   bidderChildId: string;
   amountPoints: number;
   status: string;
+  createdAt: Date;
   pointHold: {
     id: string;
     accountId: string;
@@ -112,6 +152,8 @@ type CurrentHighestBidContext = {
     status: string;
   } | null;
 };
+
+const WITHDRAW_CURRENT_HIGHEST_BID_WINDOW_MS = 60_000;
 
 export class BiddingService {
   constructor(private readonly prisma: PrismaClient) {}
@@ -623,6 +665,335 @@ export class BiddingService {
       throw error;
     });
   }
+
+  async withdrawCurrentHighestBid(input: {
+    actorUserId: string;
+    auctionSessionId: string;
+    bidderChildId: string;
+    idempotencyKey: string;
+    now?: Date;
+  }): Promise<WithdrawCurrentHighestBidResult> {
+    const idempotencyKey = input.idempotencyKey.trim();
+    if (!idempotencyKey) {
+      return {
+        result: "rejected",
+        errorCode: "IDEMPOTENCY_KEY_REQUIRED"
+      };
+    }
+
+    const now = input.now ?? new Date();
+    const unknownResult: WithdrawCurrentHighestBidResult = {
+      result: "unknown",
+      errorCode: "TRANSACTION_RESULT_UNKNOWN",
+      auctionSessionId: input.auctionSessionId,
+      bidderChildId: input.bidderChildId,
+      idempotencyKey,
+      refreshRequired: true,
+      retryable: true
+    };
+    const requestHash = createStableHash({
+      actorUserId: input.actorUserId,
+      auctionSessionId: input.auctionSessionId,
+      bidderChildId: input.bidderChildId
+    });
+    const idempotencyTargetId = buildIdempotencyTargetId(
+      input.auctionSessionId,
+      input.bidderChildId
+    );
+
+    return runCriticalTransaction<WithdrawCurrentHighestBidResult>(
+      this.prisma,
+      async (tx) => {
+        const idempotency =
+          await reserveIdempotencyRecord<WithdrawCurrentHighestBidResult>(tx, {
+            key: idempotencyKey,
+            actorUserId: input.actorUserId,
+            action: "bid.withdraw",
+            targetType: "bid",
+            targetId: idempotencyTargetId,
+            requestHash
+          });
+
+        if (idempotency.result === "conflict") {
+          return {
+            result: "rejected",
+            errorCode: "IDEMPOTENCY_CONFLICT"
+          };
+        }
+
+        if (idempotency.result === "replay") {
+          return idempotency.response;
+        }
+
+        const auction = await lockAuctionSession(tx, input.auctionSessionId);
+        if (!auction) {
+          return completeIdempotency(tx, idempotency.id, {
+            result: "rejected",
+            errorCode: "AUCTION_NOT_FOUND"
+          });
+        }
+
+        if (auction.status !== "active") {
+          return completeIdempotency(tx, idempotency.id, {
+            result: "rejected",
+            errorCode: "AUCTION_NOT_ACTIVE"
+          });
+        }
+
+        if (now >= auction.endAt) {
+          return completeIdempotency(tx, idempotency.id, {
+            result: "rejected",
+            errorCode: "AUCTION_ENDED"
+          });
+        }
+
+        const currentHighest =
+          auction.highestBidId === null
+            ? null
+            : await loadCurrentHighestBid(tx, auction.highestBidId);
+        assertCurrentHighestBidIsConsistent(auction, currentHighest);
+
+        if (!currentHighest) {
+          return completeIdempotency(tx, idempotency.id, {
+            result: "rejected",
+            errorCode: "NO_ACTIVE_HIGHEST_BID"
+          });
+        }
+
+        if (currentHighest.bidderChildId !== input.bidderChildId) {
+          return completeIdempotency(tx, idempotency.id, {
+            result: "rejected",
+            errorCode: "BID_NOT_CURRENT_HIGHEST"
+          });
+        }
+
+        const currentHighestPointHold = currentHighest.pointHold;
+        if (!currentHighestPointHold) {
+          throw new Error(
+            `Auction ${auction.id} highest bid state is inconsistent`
+          );
+        }
+
+        if (
+          now.getTime() - currentHighest.createdAt.getTime() >
+          WITHDRAW_CURRENT_HIGHEST_BID_WINDOW_MS
+        ) {
+          return completeIdempotency(tx, idempotency.id, {
+            result: "rejected",
+            errorCode: "WITHDRAW_WINDOW_EXPIRED"
+          });
+        }
+
+        const item = await tx.item.findUnique({
+          where: {
+            id: auction.itemId
+          },
+          select: {
+            id: true,
+            communityId: true
+          }
+        });
+        if (!item) {
+          return completeIdempotency(tx, idempotency.id, {
+            result: "rejected",
+            errorCode: "AUCTION_NOT_FOUND"
+          });
+        }
+
+        const bidder = await loadBidderContext(
+          tx,
+          input.bidderChildId,
+          item.communityId
+        );
+        if (!bidder || bidder.primaryGuardians.length === 0) {
+          return completeIdempotency(tx, idempotency.id, {
+            result: "rejected",
+            errorCode: "BIDDER_CHILD_REQUIRED"
+          });
+        }
+
+        if (bidder.status !== "active") {
+          return completeIdempotency(tx, idempotency.id, {
+            result: "rejected",
+            errorCode: "CHILD_NOT_ACTIVE"
+          });
+        }
+
+        if (
+          input.actorUserId !== bidder.userId &&
+          !bidder.primaryGuardians.some(
+            (guardian) => guardian.userId === input.actorUserId
+          )
+        ) {
+          return completeIdempotency(tx, idempotency.id, {
+            result: "rejected",
+            errorCode: "BIDDER_CHILD_REQUIRED"
+          });
+        }
+
+        if (!bidder.pointAccountId) {
+          return completeIdempotency(tx, idempotency.id, {
+            result: "rejected",
+            errorCode: "POINT_ACCOUNT_NOT_FOUND"
+          });
+        }
+
+        const lockedAccounts = await lockPointAccounts(tx, [
+          currentHighestPointHold.accountId
+        ]);
+        const bidderAccount = lockedAccounts[0] ?? null;
+        if (!bidderAccount) {
+          return completeIdempotency(tx, idempotency.id, {
+            result: "rejected",
+            errorCode: "POINT_ACCOUNT_NOT_FOUND"
+          });
+        }
+
+        if (
+          bidderAccount.id !== bidder.pointAccountId ||
+          bidderAccount.childId !== currentHighest.bidderChildId ||
+          bidderAccount.frozenPoints < currentHighestPointHold.amountPoints
+        ) {
+          throw new Error(
+            `Auction ${auction.id} current highest point account is inconsistent`
+          );
+        }
+
+        await tx.bid.update({
+          where: {
+            id: currentHighest.id
+          },
+          data: {
+            status: "withdrawn",
+            withdrawnAt: now
+          }
+        });
+
+        await tx.pointHold.update({
+          where: {
+            id: currentHighestPointHold.id
+          },
+          data: {
+            status: "released",
+            releasedAt: now
+          }
+        });
+
+        const availableAfter =
+          bidderAccount.availablePoints + currentHighestPointHold.amountPoints;
+        const frozenAfter =
+          bidderAccount.frozenPoints - currentHighestPointHold.amountPoints;
+        await tx.pointAccount.update({
+          where: {
+            id: bidderAccount.id
+          },
+          data: {
+            availablePoints: availableAfter,
+            frozenPoints: frozenAfter
+          }
+        });
+
+        await tx.pointLedgerEntry.create({
+          data: {
+            accountId: bidderAccount.id,
+            childId: currentHighest.bidderChildId,
+            type: "release",
+            amountPoints: currentHighestPointHold.amountPoints,
+            availableAfter,
+            frozenAfter,
+            relatedType: "bid",
+            relatedId: currentHighest.id,
+            idempotencyKey: buildWithdrawReleaseLedgerIdempotencyKey(
+              currentHighest.id
+            ),
+            reason: "auction_bid_withdraw_release",
+            createdByUserId: input.actorUserId,
+            createdAt: now
+          }
+        });
+
+        await tx.auctionSession.update({
+          where: {
+            id: auction.id
+          },
+          data: {
+            currentPricePoints: 0,
+            highestBidId: null,
+            highestBidderChildId: null,
+            version: {
+              increment: 1
+            }
+          }
+        });
+
+        const response: WithdrawCurrentHighestBidResult = {
+          result: "accepted",
+          bidId: currentHighest.id,
+          auctionSessionId: auction.id,
+          bidderChildId: currentHighest.bidderChildId,
+          releasedAmountPoints: currentHighestPointHold.amountPoints,
+          status: "withdrawn",
+          idempotencyKey
+        };
+
+        await tx.auditLog.create({
+          data: {
+            actorUserId: input.actorUserId,
+            action: "bid.withdraw",
+            targetType: "bid",
+            targetId: currentHighest.id,
+            beforeJson: {
+              auctionSessionId: auction.id,
+              bidderChildId: currentHighest.bidderChildId,
+              amountPoints: currentHighest.amountPoints,
+              status: currentHighest.status,
+              holdId: currentHighestPointHold.id
+            },
+            afterJson: {
+              auctionSessionId: auction.id,
+              itemId: item.id,
+              bidderChildId: currentHighest.bidderChildId,
+              releasedAmountPoints: currentHighestPointHold.amountPoints,
+              currentPricePoints: 0,
+              highestBidId: null,
+              highestBidderChildId: null,
+              clientIdempotencyKeyHash: createStableHash({ idempotencyKey })
+            },
+            createdAt: now
+          }
+        });
+
+        await tx.outboxEvent.create({
+          data: {
+            eventType: "auction.bid_withdrawn",
+            targetType: "bid",
+            targetId: currentHighest.id,
+            idempotencyKey: buildWithdrawnOutboxIdempotencyKey(
+              currentHighest.id
+            ),
+            payloadJson: {
+              auctionSessionId: auction.id,
+              bidId: currentHighest.id,
+              bidderChildId: currentHighest.bidderChildId,
+              releasedAmountPoints: currentHighestPointHold.amountPoints,
+              currentPricePoints: 0,
+              highestBidId: null,
+              highestBidderChildId: null
+            },
+            availableAt: now
+          }
+        });
+
+        return completeIdempotency(tx, idempotency.id, response);
+      }
+    ).catch((error: unknown) => {
+      if (isTransientTransactionError(error)) {
+        return unknownResult;
+      }
+
+      throw error;
+    });
+  }
 }
 
 async function reserveIdempotencyRecord<T>(
@@ -887,6 +1258,7 @@ async function loadCurrentHighestBid(
       bidderChildId: true,
       amountPoints: true,
       status: true,
+      createdAt: true,
       pointHold: {
         select: {
           id: true,
@@ -1125,6 +1497,14 @@ function buildAcceptedOutboxIdempotencyKey(bidId: string) {
 
 function buildOutbidOutboxIdempotencyKey(oldBidId: string, newBidId: string) {
   return `auction.bid_outbid:${createStableHash({ oldBidId, newBidId })}`;
+}
+
+function buildWithdrawReleaseLedgerIdempotencyKey(bidId: string) {
+  return `bid:${bidId}:withdraw_release`;
+}
+
+function buildWithdrawnOutboxIdempotencyKey(bidId: string) {
+  return `auction.bid_withdrawn:${createStableHash({ bidId })}`;
 }
 
 function createStableHash(value: Record<string, string | number>) {

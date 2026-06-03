@@ -8,7 +8,8 @@ import { PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   BiddingService,
-  type PlaceBidResult
+  type PlaceBidResult,
+  type WithdrawCurrentHighestBidResult
 } from "../../src/auctions/bidding.service.js";
 
 const databaseUrl = requireIsolatedDatabaseUrl();
@@ -487,6 +488,1086 @@ describe("BiddingService", () => {
         }
       })
     ).resolves.toBe(1);
+  });
+
+  it("withdraws the current highest bid inside the window, releases points, and clears the auction highest state", async () => {
+    const community = await createCommunity("withdraw_current");
+    const seller = await createParticipant("withdraw_current_seller", {
+      communityId: community.id,
+      availablePoints: 80
+    });
+    const bidder = await createParticipant("withdraw_current_bidder", {
+      communityId: community.id,
+      availablePoints: 120
+    });
+    const { auction } = await createAuction("withdraw_current", {
+      communityId: community.id,
+      sellerChildId: seller.childId,
+      startPoints: 40,
+      minIncrementPoints: 5
+    });
+    const actorUserId = bidder.guardianUserId;
+    const bid = expectAccepted(
+      await bidding.placeBid({
+        actorUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: bidder.childId,
+        amountPoints: 40,
+        idempotencyKey: unique("withdraw_current_bid"),
+        now: new Date("2026-06-03T10:13:00.000Z")
+      })
+    );
+    const withdrawAt = new Date("2026-06-03T10:13:45.000Z");
+    const idempotencyKey = unique("withdraw_current_key");
+
+    const result = await bidding.withdrawCurrentHighestBid({
+      actorUserId,
+      auctionSessionId: auction.id,
+      bidderChildId: bidder.childId,
+      idempotencyKey,
+      now: withdrawAt
+    });
+
+    expect(result).toEqual({
+      result: "accepted",
+      bidId: bid.bidId,
+      auctionSessionId: auction.id,
+      bidderChildId: bidder.childId,
+      releasedAmountPoints: 40,
+      status: "withdrawn",
+      idempotencyKey
+    });
+    const withdrawn = expectWithdrawn(result);
+
+    await expect(
+      prisma.bid.findUnique({
+        where: {
+          id: withdrawn.bidId
+        },
+        select: {
+          status: true,
+          withdrawnAt: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "withdrawn",
+      withdrawnAt: withdrawAt
+    });
+    await expect(
+      prisma.pointHold.findUnique({
+        where: {
+          bidId: withdrawn.bidId
+        },
+        select: {
+          status: true,
+          releasedAt: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "released",
+      releasedAt: withdrawAt
+    });
+    await expect(
+      prisma.pointAccount.findUnique({
+        where: {
+          id: bidder.pointAccountId ?? ""
+        },
+        select: {
+          availablePoints: true,
+          frozenPoints: true
+        }
+      })
+    ).resolves.toEqual({
+      availablePoints: 120,
+      frozenPoints: 0
+    });
+    await expect(
+      prisma.pointLedgerEntry.findUnique({
+        where: {
+          idempotencyKey: `bid:${withdrawn.bidId}:withdraw_release`
+        }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        accountId: bidder.pointAccountId,
+        childId: bidder.childId,
+        type: "release",
+        amountPoints: 40,
+        availableAfter: 120,
+        frozenAfter: 0,
+        relatedType: "bid",
+        relatedId: withdrawn.bidId,
+        reason: "auction_bid_withdraw_release",
+        createdByUserId: actorUserId,
+        createdAt: withdrawAt
+      })
+    );
+    await expect(
+      prisma.auctionSession.findUnique({
+        where: {
+          id: auction.id
+        },
+        select: {
+          currentPricePoints: true,
+          highestBidId: true,
+          highestBidderChildId: true,
+          version: true
+        }
+      })
+    ).resolves.toEqual({
+      currentPricePoints: 0,
+      highestBidId: null,
+      highestBidderChildId: null,
+      version: 3
+    });
+
+    const withdrawnOutbox = await prisma.outboxEvent.findFirst({
+      where: {
+        eventType: "auction.bid_withdrawn",
+        targetId: withdrawn.bidId
+      }
+    });
+    expect(withdrawnOutbox).toEqual(
+      expect.objectContaining({
+        eventType: "auction.bid_withdrawn",
+        targetType: "bid",
+        targetId: withdrawn.bidId,
+        payloadJson: expect.objectContaining({
+          auctionSessionId: auction.id,
+          bidId: withdrawn.bidId,
+          bidderChildId: bidder.childId,
+          releasedAmountPoints: 40,
+          currentPricePoints: 0,
+          highestBidId: null,
+          highestBidderChildId: null
+        })
+      })
+    );
+    expect(JSON.stringify(withdrawnOutbox?.payloadJson)).not.toContain(
+      idempotencyKey
+    );
+    await expect(
+      prisma.outboxEvent.count({
+        where: {
+          eventType: "auction.bid_withdrawn",
+          targetId: withdrawn.bidId
+        }
+      })
+    ).resolves.toBe(1);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: {
+        action: "bid.withdraw",
+        targetType: "bid",
+        targetId: withdrawn.bidId
+      }
+    });
+    expect(audit).toEqual(
+      expect.objectContaining({
+        actorUserId,
+        afterJson: expect.objectContaining({
+          clientIdempotencyKeyHash: expect.any(String),
+          releasedAmountPoints: 40,
+          highestBidId: null,
+          highestBidderChildId: null
+        })
+      })
+    );
+    expect(JSON.stringify(audit?.afterJson)).not.toContain(idempotencyKey);
+    await expect(
+      prisma.idempotencyRecord.findUnique({
+        where: {
+          key_actorUserId_action_targetType_targetId: {
+            key: idempotencyKey,
+            actorUserId,
+            action: "bid.withdraw",
+            targetType: "bid",
+            targetId: `${auction.id}:${bidder.childId}`
+          }
+        },
+        select: {
+          status: true,
+          responseJson: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "completed",
+      responseJson: result
+    });
+  });
+
+  it("does not reactivate an outbid bid after the current highest withdraws", async () => {
+    const community = await createCommunity("withdraw_no_reactivate");
+    const seller = await createParticipant("withdraw_no_reactivate_seller", {
+      communityId: community.id
+    });
+    const firstBidder = await createParticipant(
+      "withdraw_no_reactivate_first_bidder",
+      {
+        communityId: community.id,
+        availablePoints: 120
+      }
+    );
+    const secondBidder = await createParticipant(
+      "withdraw_no_reactivate_second_bidder",
+      {
+        communityId: community.id,
+        availablePoints: 140
+      }
+    );
+    const thirdBidder = await createParticipant(
+      "withdraw_no_reactivate_third_bidder",
+      {
+        communityId: community.id,
+        availablePoints: 160
+      }
+    );
+    const { auction } = await createAuction("withdraw_no_reactivate", {
+      communityId: community.id,
+      sellerChildId: seller.childId,
+      startPoints: 40,
+      minIncrementPoints: 5
+    });
+    const first = expectAccepted(
+      await bidding.placeBid({
+        actorUserId: firstBidder.childUserId ?? firstBidder.guardianUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: firstBidder.childId,
+        amountPoints: 40,
+        idempotencyKey: unique("withdraw_no_reactivate_first"),
+        now: new Date("2026-06-03T10:24:00.000Z")
+      })
+    );
+    const second = expectAccepted(
+      await bidding.placeBid({
+        actorUserId: secondBidder.childUserId ?? secondBidder.guardianUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: secondBidder.childId,
+        amountPoints: 45,
+        idempotencyKey: unique("withdraw_no_reactivate_second"),
+        now: new Date("2026-06-03T10:24:20.000Z")
+      })
+    );
+
+    expectWithdrawn(
+      await bidding.withdrawCurrentHighestBid({
+        actorUserId: secondBidder.childUserId ?? secondBidder.guardianUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: secondBidder.childId,
+        idempotencyKey: unique("withdraw_no_reactivate_second_withdraw"),
+        now: new Date("2026-06-03T10:25:00.000Z")
+      })
+    );
+
+    await expect(
+      prisma.bid.findUnique({
+        where: {
+          id: first.bidId
+        },
+        include: {
+          pointHold: true
+        }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: "outbid",
+        pointHold: expect.objectContaining({
+          status: "released",
+          releasedAt: new Date("2026-06-03T10:24:20.000Z")
+        })
+      })
+    );
+    await expect(
+      prisma.auctionSession.findUnique({
+        where: {
+          id: auction.id
+        },
+        select: {
+          currentPricePoints: true,
+          highestBidId: true,
+          highestBidderChildId: true
+        }
+      })
+    ).resolves.toEqual({
+      currentPricePoints: 0,
+      highestBidId: null,
+      highestBidderChildId: null
+    });
+    await expect(
+      bidding.withdrawCurrentHighestBid({
+        actorUserId: firstBidder.childUserId ?? firstBidder.guardianUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: firstBidder.childId,
+        idempotencyKey: unique("withdraw_no_reactivate_first_withdraw"),
+        now: new Date("2026-06-03T10:25:10.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "NO_ACTIVE_HIGHEST_BID"
+    });
+
+    const third = expectAccepted(
+      await bidding.placeBid({
+        actorUserId: thirdBidder.childUserId ?? thirdBidder.guardianUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: thirdBidder.childId,
+        amountPoints: 40,
+        idempotencyKey: unique("withdraw_no_reactivate_third"),
+        now: new Date("2026-06-03T10:25:20.000Z")
+      })
+    );
+    await expect(
+      prisma.auctionSession.findUnique({
+        where: {
+          id: auction.id
+        },
+        select: {
+          currentPricePoints: true,
+          highestBidId: true,
+          highestBidderChildId: true
+        }
+      })
+    ).resolves.toEqual({
+      currentPricePoints: 40,
+      highestBidId: third.bidId,
+      highestBidderChildId: thirdBidder.childId
+    });
+    await expect(
+      prisma.bid.findUnique({
+        where: {
+          id: second.bidId
+        },
+        select: {
+          status: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "withdrawn"
+    });
+  });
+
+  it("rejects withdrawal from a historical outbid bidder while another bid is highest", async () => {
+    const community = await createCommunity("withdraw_historical_outbid");
+    const seller = await createParticipant("withdraw_historical_outbid_seller", {
+      communityId: community.id
+    });
+    const firstBidder = await createParticipant(
+      "withdraw_historical_outbid_first_bidder",
+      {
+        communityId: community.id,
+        availablePoints: 120
+      }
+    );
+    const secondBidder = await createParticipant(
+      "withdraw_historical_outbid_second_bidder",
+      {
+        communityId: community.id,
+        availablePoints: 140
+      }
+    );
+    const { auction } = await createAuction("withdraw_historical_outbid", {
+      communityId: community.id,
+      sellerChildId: seller.childId,
+      startPoints: 40,
+      minIncrementPoints: 5
+    });
+    const first = expectAccepted(
+      await bidding.placeBid({
+        actorUserId: firstBidder.childUserId ?? firstBidder.guardianUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: firstBidder.childId,
+        amountPoints: 40,
+        idempotencyKey: unique("withdraw_historical_outbid_first"),
+        now: new Date("2026-06-03T10:26:00.000Z")
+      })
+    );
+    const second = expectAccepted(
+      await bidding.placeBid({
+        actorUserId: secondBidder.childUserId ?? secondBidder.guardianUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: secondBidder.childId,
+        amountPoints: 45,
+        idempotencyKey: unique("withdraw_historical_outbid_second"),
+        now: new Date("2026-06-03T10:26:20.000Z")
+      })
+    );
+    const beforeCounts = await countGlobalSideEffects();
+
+    await expect(
+      bidding.withdrawCurrentHighestBid({
+        actorUserId: firstBidder.childUserId ?? firstBidder.guardianUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: firstBidder.childId,
+        idempotencyKey: unique("withdraw_historical_outbid_first_withdraw"),
+        now: new Date("2026-06-03T10:26:40.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "BID_NOT_CURRENT_HIGHEST"
+    });
+
+    await expect(
+      prisma.auctionSession.findUnique({
+        where: {
+          id: auction.id
+        },
+        select: {
+          currentPricePoints: true,
+          highestBidId: true,
+          highestBidderChildId: true
+        }
+      })
+    ).resolves.toEqual({
+      currentPricePoints: 45,
+      highestBidId: second.bidId,
+      highestBidderChildId: secondBidder.childId
+    });
+    await expect(
+      prisma.bid.findUnique({
+        where: {
+          id: first.bidId
+        },
+        select: {
+          status: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "outbid"
+    });
+    await expect(
+      prisma.bid.findUnique({
+        where: {
+          id: second.bidId
+        },
+        include: {
+          pointHold: true
+        }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: "active",
+        pointHold: expect.objectContaining({
+          status: "active"
+        })
+      })
+    );
+    await expect(countGlobalSideEffects()).resolves.toEqual(beforeCounts);
+  });
+
+  it("accepts current highest withdrawal exactly at the 60-second boundary", async () => {
+    const community = await createCommunity("withdraw_boundary");
+    const seller = await createParticipant("withdraw_boundary_seller", {
+      communityId: community.id
+    });
+    const bidder = await createParticipant("withdraw_boundary_bidder", {
+      communityId: community.id,
+      availablePoints: 120
+    });
+    const { auction } = await createAuction("withdraw_boundary", {
+      communityId: community.id,
+      sellerChildId: seller.childId,
+      startPoints: 40
+    });
+    const actorUserId = bidder.childUserId ?? bidder.guardianUserId;
+    const bidAt = new Date("2026-06-03T10:26:50.000Z");
+    const bid = expectAccepted(
+      await bidding.placeBid({
+        actorUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: bidder.childId,
+        amountPoints: 40,
+        idempotencyKey: unique("withdraw_boundary_bid"),
+        now: bidAt
+      })
+    );
+    const withdrawAt = new Date("2026-06-03T10:27:50.000Z");
+    const idempotencyKey = unique("withdraw_boundary_key");
+
+    await expect(
+      bidding.withdrawCurrentHighestBid({
+        actorUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: bidder.childId,
+        idempotencyKey,
+        now: withdrawAt
+      })
+    ).resolves.toEqual({
+      result: "accepted",
+      bidId: bid.bidId,
+      auctionSessionId: auction.id,
+      bidderChildId: bidder.childId,
+      releasedAmountPoints: 40,
+      status: "withdrawn",
+      idempotencyKey
+    });
+    await expect(
+      prisma.bid.findUnique({
+        where: {
+          id: bid.bidId
+        },
+        select: {
+          status: true,
+          withdrawnAt: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "withdrawn",
+      withdrawnAt: withdrawAt
+    });
+  });
+
+  it("rejects withdrawal when the actor cannot represent the current highest bidder child", async () => {
+    const community = await createCommunity("withdraw_wrong_actor");
+    const seller = await createParticipant("withdraw_wrong_actor_seller", {
+      communityId: community.id
+    });
+    const bidder = await createParticipant("withdraw_wrong_actor_bidder", {
+      communityId: community.id,
+      availablePoints: 120
+    });
+    const outsiderUserId = await createUser("withdraw_wrong_actor_outsider");
+    const { auction } = await createAuction("withdraw_wrong_actor", {
+      communityId: community.id,
+      sellerChildId: seller.childId,
+      startPoints: 40
+    });
+    const bid = expectAccepted(
+      await bidding.placeBid({
+        actorUserId: bidder.childUserId ?? bidder.guardianUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: bidder.childId,
+        amountPoints: 40,
+        idempotencyKey: unique("withdraw_wrong_actor_bid"),
+        now: new Date("2026-06-03T10:26:55.000Z")
+      })
+    );
+    const beforeCounts = await countGlobalSideEffects();
+
+    await expect(
+      bidding.withdrawCurrentHighestBid({
+        actorUserId: outsiderUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: bidder.childId,
+        idempotencyKey: unique("withdraw_wrong_actor_key"),
+        now: new Date("2026-06-03T10:27:25.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "BIDDER_CHILD_REQUIRED"
+    });
+    await expect(
+      prisma.bid.findUnique({
+        where: {
+          id: bid.bidId
+        },
+        include: {
+          pointHold: true
+        }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: "active",
+        pointHold: expect.objectContaining({
+          status: "active"
+        })
+      })
+    );
+    await expect(countGlobalSideEffects()).resolves.toEqual(beforeCounts);
+  });
+
+  it("rejects withdrawal if the current highest bidder child is no longer active", async () => {
+    const community = await createCommunity("withdraw_inactive_child");
+    const seller = await createParticipant("withdraw_inactive_child_seller", {
+      communityId: community.id
+    });
+    const bidder = await createParticipant("withdraw_inactive_child_bidder", {
+      communityId: community.id,
+      availablePoints: 120
+    });
+    const { auction } = await createAuction("withdraw_inactive_child", {
+      communityId: community.id,
+      sellerChildId: seller.childId,
+      startPoints: 40
+    });
+    const actorUserId = bidder.childUserId ?? bidder.guardianUserId;
+    const bid = expectAccepted(
+      await bidding.placeBid({
+        actorUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: bidder.childId,
+        amountPoints: 40,
+        idempotencyKey: unique("withdraw_inactive_child_bid"),
+        now: new Date("2026-06-03T10:27:00.000Z")
+      })
+    );
+    await prisma.childProfile.update({
+      where: {
+        id: bidder.childId
+      },
+      data: {
+        status: "restricted"
+      }
+    });
+    const beforeCounts = await countGlobalSideEffects();
+
+    await expect(
+      bidding.withdrawCurrentHighestBid({
+        actorUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: bidder.childId,
+        idempotencyKey: unique("withdraw_inactive_child_key"),
+        now: new Date("2026-06-03T10:27:30.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "CHILD_NOT_ACTIVE"
+    });
+    await expect(
+      prisma.bid.findUnique({
+        where: {
+          id: bid.bidId
+        },
+        include: {
+          pointHold: true
+        }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: "active",
+        pointHold: expect.objectContaining({
+          status: "active",
+          releasedAt: null
+        })
+      })
+    );
+    await expect(
+      prisma.pointAccount.findUnique({
+        where: {
+          id: bidder.pointAccountId ?? ""
+        },
+        select: {
+          availablePoints: true,
+          frozenPoints: true
+        }
+      })
+    ).resolves.toEqual({
+      availablePoints: 80,
+      frozenPoints: 40
+    });
+    await expect(countGlobalSideEffects()).resolves.toEqual(beforeCounts);
+  });
+
+  it("rejects withdraw idempotency conflicts when the existing request hash differs", async () => {
+    const community = await createCommunity("withdraw_conflict");
+    const seller = await createParticipant("withdraw_conflict_seller", {
+      communityId: community.id
+    });
+    const bidder = await createParticipant("withdraw_conflict_bidder", {
+      communityId: community.id,
+      availablePoints: 120
+    });
+    const { auction } = await createAuction("withdraw_conflict", {
+      communityId: community.id,
+      sellerChildId: seller.childId,
+      startPoints: 40
+    });
+    const actorUserId = bidder.childUserId ?? bidder.guardianUserId;
+    const bid = expectAccepted(
+      await bidding.placeBid({
+        actorUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: bidder.childId,
+        amountPoints: 40,
+        idempotencyKey: unique("withdraw_conflict_bid"),
+        now: new Date("2026-06-03T10:27:10.000Z")
+      })
+    );
+    const idempotencyKey = unique("withdraw_conflict_key");
+    await prisma.idempotencyRecord.create({
+      data: {
+        key: idempotencyKey,
+        actorUserId,
+        action: "bid.withdraw",
+        targetType: "bid",
+        targetId: `${auction.id}:${bidder.childId}`,
+        requestHash: `different_${unique("withdraw_conflict_hash")}`,
+        status: "completed",
+        responseJson: {
+          result: "rejected",
+          errorCode: "NO_ACTIVE_HIGHEST_BID"
+        }
+      }
+    });
+    const beforeCounts = await countGlobalSideEffects();
+
+    await expect(
+      bidding.withdrawCurrentHighestBid({
+        actorUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: bidder.childId,
+        idempotencyKey,
+        now: new Date("2026-06-03T10:27:40.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "IDEMPOTENCY_CONFLICT"
+    });
+    await expect(
+      prisma.bid.findUnique({
+        where: {
+          id: bid.bidId
+        },
+        select: {
+          status: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "active"
+    });
+    await expect(countGlobalSideEffects()).resolves.toEqual(beforeCounts);
+  });
+
+  it("rejects current highest withdrawal after the short window without releasing points", async () => {
+    const community = await createCommunity("withdraw_window_expired");
+    const seller = await createParticipant("withdraw_window_expired_seller", {
+      communityId: community.id
+    });
+    const bidder = await createParticipant("withdraw_window_expired_bidder", {
+      communityId: community.id,
+      availablePoints: 120
+    });
+    const { auction } = await createAuction("withdraw_window_expired", {
+      communityId: community.id,
+      sellerChildId: seller.childId,
+      startPoints: 40
+    });
+    const actorUserId = bidder.childUserId ?? bidder.guardianUserId;
+    const bid = expectAccepted(
+      await bidding.placeBid({
+        actorUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: bidder.childId,
+        amountPoints: 40,
+        idempotencyKey: unique("withdraw_window_expired_bid"),
+        now: new Date("2026-06-03T10:27:00.000Z")
+      })
+    );
+    const idempotencyKey = unique("withdraw_window_expired_key");
+    const beforeCounts = await countGlobalSideEffects();
+
+    const first = await bidding.withdrawCurrentHighestBid({
+      actorUserId,
+      auctionSessionId: auction.id,
+      bidderChildId: bidder.childId,
+      idempotencyKey,
+      now: new Date("2026-06-03T10:28:01.000Z")
+    });
+    const replay = await bidding.withdrawCurrentHighestBid({
+      actorUserId,
+      auctionSessionId: auction.id,
+      bidderChildId: bidder.childId,
+      idempotencyKey,
+      now: new Date("2026-06-03T10:28:10.000Z")
+    });
+
+    expect(first).toEqual({
+      result: "rejected",
+      errorCode: "WITHDRAW_WINDOW_EXPIRED"
+    });
+    expect(replay).toEqual(first);
+    await expect(
+      prisma.bid.findUnique({
+        where: {
+          id: bid.bidId
+        },
+        include: {
+          pointHold: true
+        }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: "active",
+        withdrawnAt: null,
+        pointHold: expect.objectContaining({
+          status: "active",
+          releasedAt: null
+        })
+      })
+    );
+    await expect(
+      prisma.pointAccount.findUnique({
+        where: {
+          id: bidder.pointAccountId ?? ""
+        },
+        select: {
+          availablePoints: true,
+          frozenPoints: true
+        }
+      })
+    ).resolves.toEqual({
+      availablePoints: 80,
+      frozenPoints: 40
+    });
+    await expect(
+      prisma.idempotencyRecord.findUnique({
+        where: {
+          key_actorUserId_action_targetType_targetId: {
+            key: idempotencyKey,
+            actorUserId,
+            action: "bid.withdraw",
+            targetType: "bid",
+            targetId: `${auction.id}:${bidder.childId}`
+          }
+        },
+        select: {
+          status: true,
+          responseJson: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "completed",
+      responseJson: first
+    });
+    await expect(
+      prisma.outboxEvent.count({
+        where: {
+          eventType: "auction.bid_withdrawn",
+          targetId: bid.bidId
+        }
+      })
+    ).resolves.toBe(0);
+    await expect(
+      prisma.auditLog.count({
+        where: {
+          action: "bid.withdraw",
+          targetId: bid.bidId
+        }
+      })
+    ).resolves.toBe(0);
+    await expect(countGlobalSideEffects()).resolves.toEqual(beforeCounts);
+  });
+
+  it("replays accepted current highest withdrawals without duplicate side effects", async () => {
+    const community = await createCommunity("withdraw_replay");
+    const seller = await createParticipant("withdraw_replay_seller", {
+      communityId: community.id
+    });
+    const bidder = await createParticipant("withdraw_replay_bidder", {
+      communityId: community.id,
+      availablePoints: 120
+    });
+    const { auction } = await createAuction("withdraw_replay", {
+      communityId: community.id,
+      sellerChildId: seller.childId,
+      startPoints: 40
+    });
+    const actorUserId = bidder.childUserId ?? bidder.guardianUserId;
+    const bid = expectAccepted(
+      await bidding.placeBid({
+        actorUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: bidder.childId,
+        amountPoints: 40,
+        idempotencyKey: unique("withdraw_replay_bid"),
+        now: new Date("2026-06-03T10:29:00.000Z")
+      })
+    );
+    const idempotencyKey = unique("withdraw_replay_key");
+    const first = await bidding.withdrawCurrentHighestBid({
+      actorUserId,
+      auctionSessionId: auction.id,
+      bidderChildId: bidder.childId,
+      idempotencyKey,
+      now: new Date("2026-06-03T10:29:30.000Z")
+    });
+    const replay = await bidding.withdrawCurrentHighestBid({
+      actorUserId,
+      auctionSessionId: auction.id,
+      bidderChildId: bidder.childId,
+      idempotencyKey,
+      now: new Date("2026-06-03T10:29:50.000Z")
+    });
+
+    expect(replay).toEqual(first);
+    expectWithdrawn(first);
+    await expect(
+      prisma.pointLedgerEntry.count({
+        where: {
+          idempotencyKey: `bid:${bid.bidId}:withdraw_release`
+        }
+      })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.outboxEvent.count({
+        where: {
+          eventType: "auction.bid_withdrawn",
+          targetId: bid.bidId
+        }
+      })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.auditLog.count({
+        where: {
+          action: "bid.withdraw",
+          targetType: "bid",
+          targetId: bid.bidId
+        }
+      })
+    ).resolves.toBe(1);
+  });
+
+  it("returns an unknown refresh-required result when withdrawal waits too long for the auction row lock", async () => {
+    const community = await createCommunity("withdraw_lock_timeout");
+    const seller = await createParticipant("withdraw_lock_timeout_seller", {
+      communityId: community.id
+    });
+    const bidder = await createParticipant("withdraw_lock_timeout_bidder", {
+      communityId: community.id,
+      availablePoints: 120
+    });
+    const { auction } = await createAuction("withdraw_lock_timeout", {
+      communityId: community.id,
+      sellerChildId: seller.childId,
+      startPoints: 40
+    });
+    const actorUserId = bidder.childUserId ?? bidder.guardianUserId;
+    const bid = expectAccepted(
+      await bidding.placeBid({
+        actorUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: bidder.childId,
+        amountPoints: 40,
+        idempotencyKey: unique("withdraw_lock_timeout_bid"),
+        now: new Date("2026-06-03T10:30:00.000Z")
+      })
+    );
+    const idempotencyKey = unique("withdraw_lock_timeout_key");
+    const locker = new PrismaClient({
+      datasources: {
+        db: {
+          url: databaseUrl
+        }
+      }
+    });
+    let releaseLock!: () => void;
+    let signalLockReady!: () => void;
+    const releaseLockPromise = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const lockReadyPromise = new Promise<void>((resolve) => {
+      signalLockReady = resolve;
+    });
+    const holdingTransaction = locker.$transaction(
+      async (tx) => {
+        await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id"
+          FROM "AuctionSession"
+          WHERE "id" = ${auction.id}
+          FOR UPDATE
+        `;
+        signalLockReady();
+        await releaseLockPromise;
+      },
+      {
+        timeout: 10_000
+      }
+    );
+
+    await lockReadyPromise;
+    const beforeTimeoutSideEffects = await countGlobalSideEffects();
+    let result: WithdrawCurrentHighestBidResult;
+    try {
+      result = await bidding.withdrawCurrentHighestBid({
+        actorUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: bidder.childId,
+        idempotencyKey,
+        now: new Date("2026-06-03T10:30:30.000Z")
+      });
+    } finally {
+      releaseLock();
+      await holdingTransaction;
+      await locker.$disconnect();
+    }
+
+    expect(result).toEqual({
+      result: "unknown",
+      errorCode: "TRANSACTION_RESULT_UNKNOWN",
+      auctionSessionId: auction.id,
+      bidderChildId: bidder.childId,
+      idempotencyKey,
+      refreshRequired: true,
+      retryable: true
+    });
+    await expect(
+      prisma.idempotencyRecord.count({
+        where: {
+          key: idempotencyKey,
+          actorUserId,
+          action: "bid.withdraw",
+          targetType: "bid",
+          targetId: `${auction.id}:${bidder.childId}`
+        }
+      })
+    ).resolves.toBe(0);
+    await expect(
+      prisma.bid.findUnique({
+        where: {
+          id: bid.bidId
+        },
+        include: {
+          pointHold: true
+        }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: "active",
+        pointHold: expect.objectContaining({
+          status: "active"
+        })
+      })
+    );
+    await expect(countGlobalSideEffects()).resolves.toEqual(
+      beforeTimeoutSideEffects
+    );
+
+    const retry = expectWithdrawn(
+      await bidding.withdrawCurrentHighestBid({
+        actorUserId,
+        auctionSessionId: auction.id,
+        bidderChildId: bidder.childId,
+        idempotencyKey,
+        now: new Date("2026-06-03T10:30:45.000Z")
+      })
+    );
+    await expect(
+      prisma.idempotencyRecord.findUnique({
+        where: {
+          key_actorUserId_action_targetType_targetId: {
+            key: idempotencyKey,
+            actorUserId,
+            action: "bid.withdraw",
+            targetType: "bid",
+            targetId: `${auction.id}:${bidder.childId}`
+          }
+        },
+        select: {
+          status: true,
+          responseJson: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "completed",
+      responseJson: {
+        result: "accepted",
+        bidId: retry.bidId,
+        auctionSessionId: auction.id,
+        bidderChildId: bidder.childId,
+        releasedAmountPoints: 40,
+        status: "withdrawn",
+        idempotencyKey
+      }
+    });
   });
 
   it("fails fast when the current highest bid and hold amounts drift", async () => {
@@ -1685,6 +2766,16 @@ function expectAccepted(
 ): Extract<PlaceBidResult, { result: "accepted" }> {
   if (result.result !== "accepted") {
     throw new Error(`expected accepted bid, received ${result.errorCode}`);
+  }
+
+  return result;
+}
+
+function expectWithdrawn(
+  result: WithdrawCurrentHighestBidResult
+): Extract<WithdrawCurrentHighestBidResult, { result: "accepted" }> {
+  if (result.result !== "accepted") {
+    throw new Error(`expected withdrawn bid, received ${result.errorCode}`);
   }
 
   return result;
