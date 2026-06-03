@@ -381,6 +381,7 @@ model User {
   targetRiskRestrictions            RiskRestriction[]             @relation("RiskRestrictionTargetUser")
   auditLogs                         AuditLog[]
   createdLedgerEntries              PointLedgerEntry[]
+  createdAuctionSessions            AuctionSession[]             @relation("AuctionSessionCreatedBy")
   requestedPointAdjustments         PointAdjustmentRequest[]      @relation("PointAdjustmentRequestedBy")
   reviewedPointAdjustments          PointAdjustmentRequest[]      @relation("PointAdjustmentReviewedBy")
   secondReviewedPointAdjustments    PointAdjustmentRequest[]      @relation("PointAdjustmentSecondReviewedBy")
@@ -765,7 +766,7 @@ model Item {
   sellerChild            ChildProfile     @relation(fields: [sellerChildId], references: [id])
   currentPublicVersion   ContentVersion?  @relation("ItemCurrentPublicVersion", fields: [currentPublicVersionId], references: [id])
   latestVersion          ContentVersion?  @relation("ItemLatestVersion", fields: [latestVersionId], references: [id])
-  auctionSessions        AuctionSession[]
+  auctionSession         AuctionSession?
   wantedResponses        WantedResponse[]
 
   @@index([communityId, status])
@@ -908,21 +909,30 @@ model ManualReviewRecord {
 }
 
 model AuctionSession {
-  id                   String               @id @default(cuid())
-  itemId               String
-  status               AuctionSessionStatus @default(active)
-  startAt              DateTime
-  endAt                DateTime
-  startPoints          Int
-  minIncrementPoints   Int
-  currentPricePoints   Int                  @default(0)
-  highestBidId         String?
-  highestBidderChildId String?
-  version              Int                  @default(1)
-  item                 Item                 @relation(fields: [itemId], references: [id])
-  bids                 Bid[]
-  pointHolds           PointHold[]
-  transaction          Transaction?
+  id                     String               @id @default(cuid())
+  itemId                 String               @unique
+  idempotencyKey         String               @unique
+  status                 AuctionSessionStatus @default(active)
+  startAt                DateTime
+  endAt                  DateTime
+  startPoints            Int
+  minIncrementPoints     Int
+  currentPricePoints     Int                  @default(0)
+  highestBidId           String?
+  highestBidderChildId   String?
+  createdByUserId        String?
+  createdAt              DateTime             @default(now())
+  settledAt              DateTime?
+  cancelledAt            DateTime?
+  cancelReason           String?
+  settlementAttemptCount Int                  @default(0)
+  lastSettlementError    String?
+  version                Int                  @default(1)
+  item                   Item                 @relation(fields: [itemId], references: [id])
+  createdBy              User?                @relation("AuctionSessionCreatedBy", fields: [createdByUserId], references: [id])
+  bids                   Bid[]
+  pointHolds             PointHold[]
+  transaction            Transaction?
 
   @@index([status, endAt])
   @@index([itemId, status])
@@ -936,6 +946,9 @@ model Bid {
   status           BidStatus      @default(active)
   idempotencyKey   String         @unique
   createdAt        DateTime       @default(now())
+  withdrawnAt      DateTime?
+  outbidAt         DateTime?
+  invalidatedAt    DateTime?
   auctionSession   AuctionSession @relation(fields: [auctionSessionId], references: [id])
   bidderChild      ChildProfile   @relation(fields: [bidderChildId], references: [id])
   pointHold        PointHold?

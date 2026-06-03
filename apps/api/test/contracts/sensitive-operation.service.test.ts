@@ -143,6 +143,7 @@ async function createTransactionFixture(label: string) {
       endAt: new Date("2026-05-31T11:34:00.000Z"),
       startPoints: 20,
       minIncrementPoints: 5,
+      idempotencyKey: `sensitive_operation_auction_${label}_${Date.now()}`,
       currentPricePoints: 50,
       highestBidderChildId: buyer.childId
     }
