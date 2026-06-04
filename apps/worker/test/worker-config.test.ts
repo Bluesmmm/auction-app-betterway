@@ -27,6 +27,9 @@ describe("worker runtime config", () => {
       REDIS_URL: "redis://redis:6379/0",
       WORKER_NAME: "auction-worker-runtime",
       LEDGER_CHECK_INTERVAL_SECONDS: "120",
+      OUTBOX_DISPATCH_INTERVAL_SECONDS: "7",
+      OUTBOX_DISPATCH_LIMIT: "11",
+      OUTBOX_DISPATCH_LEASE_SECONDS: "90",
       AUCTION_SETTLEMENT_SCAN_INTERVAL_SECONDS: "30",
       AUCTION_SETTLEMENT_SCAN_LIMIT: "25"
     });
@@ -43,6 +46,9 @@ describe("worker runtime config", () => {
     });
     expect(config.concurrency).toBe(5);
     expect(config.ledgerCheckIntervalMs).toBe(120_000);
+    expect(config.outboxDispatchIntervalMs).toBe(7_000);
+    expect(config.outboxDispatchLimit).toBe(11);
+    expect(config.outboxDispatchLeaseMs).toBe(90_000);
     expect(config.auctionSettlementScanIntervalMs).toBe(30_000);
     expect(config.auctionSettlementScanLimit).toBe(25);
   });
@@ -77,6 +83,9 @@ describe("worker runtime config", () => {
       WORKER_NAME: "auction-worker-runtime"
     });
     expect(config.ledgerCheckIntervalMs).toBe(300_000);
+    expect(config.outboxDispatchIntervalMs).toBe(10_000);
+    expect(config.outboxDispatchLimit).toBe(50);
+    expect(config.outboxDispatchLeaseMs).toBe(300_000);
     expect(config.auctionSettlementScanIntervalMs).toBe(60_000);
     expect(config.auctionSettlementScanLimit).toBe(50);
     expect(() =>
@@ -87,6 +96,30 @@ describe("worker runtime config", () => {
         LEDGER_CHECK_INTERVAL_SECONDS: "0"
       })
     ).toThrow("LEDGER_CHECK_INTERVAL_SECONDS must be a positive integer");
+    expect(() =>
+      loadWorkerRuntimeConfig({
+        DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",
+        REDIS_URL: "redis://redis:6379/0",
+        WORKER_NAME: "auction-worker-runtime",
+        OUTBOX_DISPATCH_INTERVAL_SECONDS: "0"
+      })
+    ).toThrow("OUTBOX_DISPATCH_INTERVAL_SECONDS must be a positive integer");
+    expect(() =>
+      loadWorkerRuntimeConfig({
+        DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",
+        REDIS_URL: "redis://redis:6379/0",
+        WORKER_NAME: "auction-worker-runtime",
+        OUTBOX_DISPATCH_LIMIT: "0"
+      })
+    ).toThrow("OUTBOX_DISPATCH_LIMIT must be a positive integer");
+    expect(() =>
+      loadWorkerRuntimeConfig({
+        DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",
+        REDIS_URL: "redis://redis:6379/0",
+        WORKER_NAME: "auction-worker-runtime",
+        OUTBOX_DISPATCH_LEASE_SECONDS: "0"
+      })
+    ).toThrow("OUTBOX_DISPATCH_LEASE_SECONDS must be a positive integer");
     expect(() =>
       loadWorkerRuntimeConfig({
         DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",

@@ -9,6 +9,11 @@ import {
   PrismaAuctionSettlementRunner,
   startPeriodicAuctionSettlementScanner
 } from "./auction-settlement-worker.js";
+import {
+  createBullMqAuctionSettlementScheduler,
+  PrismaOutboxDispatcher,
+  startPeriodicOutboxDispatcher
+} from "./outbox-dispatcher.js";
 import { RedactingWorkerLogger } from "./redacting-worker-logger.js";
 import { startWorkerHeartbeat } from "./worker-heartbeat.js";
 import { loadWorkerRuntimeConfig } from "./worker-config.js";
@@ -25,6 +30,28 @@ const prisma = new PrismaClient({
 const heartbeat = await startWorkerHeartbeat({
   connection: config.redis,
   workerName: config.workerName
+});
+const auctionSettlementScheduler = createBullMqAuctionSettlementScheduler({
+  connection: config.redis
+});
+const outboxDispatcher = new PrismaOutboxDispatcher(prisma, {
+  workerName: config.workerName,
+  leaseMs: config.outboxDispatchLeaseMs,
+  settlementScheduler: auctionSettlementScheduler,
+  notificationSender: {
+    async send() {
+      return {
+        ok: false,
+        errorCode: "SUBSCRIPTION_MESSAGE_PROVIDER_NOT_CONFIGURED",
+        mutatesBusinessState: false
+      };
+    }
+  }
+});
+const outboxDispatchLoop = startPeriodicOutboxDispatcher({
+  dispatcher: outboxDispatcher,
+  intervalMs: config.outboxDispatchIntervalMs,
+  limit: config.outboxDispatchLimit
 });
 const ledgerChecks = startPeriodicLedgerCheckWorker({
   workerName: config.workerName,
@@ -89,11 +116,13 @@ process.on("SIGTERM", () => {
 });
 
 async function shutdown() {
+  await outboxDispatchLoop.stop();
   await auctionSettlementScanner.stop();
   await ledgerChecks.stop();
   await heartbeat.stop();
   await auctionSettlementWorker.close();
   await outboxWorker.close();
+  await auctionSettlementScheduler.close();
   await prisma.$disconnect();
   process.exit(0);
 }

@@ -16,6 +16,7 @@ Stage 5 settlement is performed by worker paths, not by ordinary read requests.
 
 - A delayed BullMQ job is the primary settlement path.
 - A PostgreSQL-backed scanner worker is the fallback for overdue active auctions.
+- `auction.session_created` outbox events are leased by the worker and translated into fixed-id delayed settlement jobs.
 - Settlement is idempotent and guarded by PostgreSQL row locks and business keys.
 - Ordinary API reads may report that an auction is overdue or pending settlement, but they do not complete settlement.
 - Stage 5 writes durable outbox events for bid accepted, bid outbid, bid withdrawn, auction cancelled, auction settled, and auction unsold.

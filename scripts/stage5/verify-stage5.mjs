@@ -1,0 +1,90 @@
+import { spawnSync } from "node:child_process";
+
+const baseDatabaseUrl =
+  process.env.DATABASE_URL ??
+  "postgresql://auction_app:auction_app@localhost:5432/auction_app?schema=public";
+
+const schemas = {
+  api: "stage5_verify_api",
+  bidding: "stage5_verify_bidding",
+  worker: "stage5_verify_worker"
+};
+
+const commands = [
+  ["npm", ["run", "runtime:up"]],
+  ["npm", ["run", "db:generate"]],
+  ["npm", ["run", "db:validate"]]
+];
+
+for (const schema of Object.values(schemas)) {
+  commands.push([
+    "npm",
+    ["run", "db:deploy"],
+    {
+      DATABASE_URL: databaseUrlForSchema(schema)
+    }
+  ]);
+}
+
+commands.push(
+  [
+    "npm",
+    [
+      "test",
+      "--",
+      "apps/api/test/contracts/stage5-schema.test.ts",
+      "apps/api/test/integration/auction-session.service.test.ts",
+      "apps/api/test/runtime/stage5-scripts.test.ts"
+    ],
+    {
+      DATABASE_URL: databaseUrlForSchema(schemas.api)
+    }
+  ],
+  [
+    "npm",
+    ["test", "--", "apps/api/test/integration/bidding.service.test.ts"],
+    {
+      DATABASE_URL: databaseUrlForSchema(schemas.bidding)
+    }
+  ],
+  [
+    "npm",
+    [
+      "test",
+      "--",
+      "apps/worker/test/worker-config.test.ts",
+      "apps/worker/test/outbox-processor.test.ts",
+      "apps/worker/test/outbox-dispatcher.test.ts",
+      "apps/worker/test/auction-settlement-worker.test.ts"
+    ],
+    {
+      DATABASE_URL: databaseUrlForSchema(schemas.worker)
+    }
+  ],
+  ["npm", ["run", "typecheck"]],
+  ["npm", ["run", "build"]]
+);
+
+for (const command of commands) {
+  const [binary, args, extraEnv] = command;
+  const result = spawnSync(binary, args, {
+    stdio: "inherit",
+    shell: false,
+    env: {
+      ...process.env,
+      ...(extraEnv ?? {})
+    }
+  });
+
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
+  }
+}
+
+console.log("stage5 verification passed");
+
+function databaseUrlForSchema(schema) {
+  const url = new URL(baseDatabaseUrl);
+  url.searchParams.set("schema", schema);
+  return url.toString();
+}

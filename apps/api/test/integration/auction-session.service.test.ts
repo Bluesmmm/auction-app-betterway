@@ -416,6 +416,267 @@ describe("AuctionSessionService", () => {
       responseJson: first
     });
   });
+
+  it("cancels an active auction, releases the current highest hold, and does not duplicate side effects on replay", async () => {
+    const fixture = await createAuctionFixture("cancel_with_highest", 90);
+    const created = await auctions.createAuctionSession({
+      actorUserId: fixture.activityAdminUserId,
+      communityId: fixture.community.id,
+      itemId: fixture.item.id,
+      idempotencyKey: unique("cancel_create"),
+      now: new Date("2026-06-03T09:30:00.000Z")
+    });
+    if (created.result !== "accepted") {
+      throw new Error(`expected auction creation to succeed: ${created.errorCode}`);
+    }
+    const highest = await attachCurrentHighestBid(created.auctionSessionId, {
+      label: "cancel_with_highest",
+      amountPoints: 40,
+      availablePointsAfterHold: 80,
+      frozenPointsAfterHold: 40,
+      bidAt: new Date("2026-06-03T09:35:00.000Z")
+    });
+    const now = new Date("2026-06-03T09:40:00.000Z");
+    const idempotencyKey = unique("cancel_key");
+
+    const result = await auctions.cancelAuctionSession({
+      actorUserId: fixture.activityAdminUserId,
+      auctionSessionId: created.auctionSessionId,
+      idempotencyKey,
+      reason: "moderation_delist",
+      now
+    });
+    const replay = await auctions.cancelAuctionSession({
+      actorUserId: fixture.activityAdminUserId,
+      auctionSessionId: created.auctionSessionId,
+      idempotencyKey,
+      reason: "moderation_delist",
+      now: new Date("2026-06-03T09:41:00.000Z")
+    });
+
+    expect(result).toEqual({
+      result: "accepted",
+      auctionSessionId: created.auctionSessionId,
+      itemId: fixture.item.id,
+      communityId: fixture.community.id,
+      status: "cancelled",
+      cancelledAt: now.toISOString(),
+      cancelReason: "moderation_delist",
+      releasedBidId: highest.bidId,
+      releasedBidderChildId: highest.bidderChildId,
+      releasedAmountPoints: 40,
+      idempotencyKey
+    });
+    expect(replay).toEqual(result);
+    await expect(
+      prisma.auctionSession.findUnique({
+        where: {
+          id: created.auctionSessionId
+        },
+        select: {
+          status: true,
+          cancelledAt: true,
+          cancelReason: true,
+          currentPricePoints: true,
+          highestBidId: true,
+          highestBidderChildId: true,
+          version: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "cancelled",
+      cancelledAt: now,
+      cancelReason: "moderation_delist",
+      currentPricePoints: 0,
+      highestBidId: null,
+      highestBidderChildId: null,
+      version: 3
+    });
+    await expect(
+      prisma.bid.findUnique({
+        where: {
+          id: highest.bidId
+        },
+        select: {
+          status: true,
+          invalidatedAt: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "invalidated",
+      invalidatedAt: now
+    });
+    await expect(
+      prisma.pointHold.findUnique({
+        where: {
+          id: highest.pointHoldId
+        },
+        select: {
+          status: true,
+          releasedAt: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "cancelled",
+      releasedAt: now
+    });
+    await expect(
+      prisma.pointAccount.findUnique({
+        where: {
+          id: highest.pointAccountId
+        },
+        select: {
+          availablePoints: true,
+          frozenPoints: true
+        }
+      })
+    ).resolves.toEqual({
+      availablePoints: 120,
+      frozenPoints: 0
+    });
+    await expect(
+      prisma.pointLedgerEntry.findFirst({
+        where: {
+          relatedType: "auction_session",
+          relatedId: created.auctionSessionId,
+          reason: "auction_cancel_release"
+        }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        accountId: highest.pointAccountId,
+        childId: highest.bidderChildId,
+        type: "release",
+        amountPoints: 40,
+        availableAfter: 120,
+        frozenAfter: 0,
+        createdByUserId: fixture.activityAdminUserId,
+        createdAt: now
+      })
+    );
+    await expect(
+      prisma.outboxEvent.count({
+        where: {
+          eventType: "auction.cancelled",
+          targetId: created.auctionSessionId
+        }
+      })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.outboxEvent.findFirst({
+        where: {
+          eventType: "auction.cancelled",
+          targetId: created.auctionSessionId
+        }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        targetType: "auction_session",
+        payloadJson: expect.objectContaining({
+          auctionSessionId: created.auctionSessionId,
+          itemId: fixture.item.id,
+          communityId: fixture.community.id,
+          status: "cancelled",
+          releasedBidId: highest.bidId,
+          releasedAmountPoints: 40
+        })
+      })
+    );
+    await expect(
+      prisma.auditLog.count({
+        where: {
+          action: "auction.cancel",
+          targetId: created.auctionSessionId
+        }
+      })
+    ).resolves.toBe(1);
+  });
+
+  it("rejects auction cancellation from non-admin actors without releasing the highest hold", async () => {
+    const fixture = await createAuctionFixture("cancel_non_admin", 90);
+    const created = await auctions.createAuctionSession({
+      actorUserId: fixture.activityAdminUserId,
+      communityId: fixture.community.id,
+      itemId: fixture.item.id,
+      idempotencyKey: unique("cancel_non_admin_create"),
+      now: new Date("2026-06-03T09:45:00.000Z")
+    });
+    if (created.result !== "accepted") {
+      throw new Error(`expected auction creation to succeed: ${created.errorCode}`);
+    }
+    const highest = await attachCurrentHighestBid(created.auctionSessionId, {
+      label: "cancel_non_admin",
+      amountPoints: 40,
+      availablePointsAfterHold: 80,
+      frozenPointsAfterHold: 40,
+      bidAt: new Date("2026-06-03T09:46:00.000Z")
+    });
+
+    await expect(
+      auctions.cancelAuctionSession({
+        actorUserId: fixture.outsiderUserId,
+        auctionSessionId: created.auctionSessionId,
+        idempotencyKey: unique("cancel_non_admin_key"),
+        reason: "outsider_attempt",
+        now: new Date("2026-06-03T09:47:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "COMMUNITY_ADMIN_REQUIRED"
+    });
+    await expect(
+      prisma.auctionSession.findUnique({
+        where: {
+          id: created.auctionSessionId
+        },
+        select: {
+          status: true,
+          currentPricePoints: true,
+          highestBidId: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "active",
+      currentPricePoints: 40,
+      highestBidId: highest.bidId
+    });
+    await expect(
+      prisma.pointHold.findUnique({
+        where: {
+          id: highest.pointHoldId
+        },
+        select: {
+          status: true,
+          releasedAt: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "active",
+      releasedAt: null
+    });
+    await expect(
+      prisma.pointAccount.findUnique({
+        where: {
+          id: highest.pointAccountId
+        },
+        select: {
+          availablePoints: true,
+          frozenPoints: true
+        }
+      })
+    ).resolves.toEqual({
+      availablePoints: 80,
+      frozenPoints: 40
+    });
+    await expect(
+      prisma.outboxEvent.count({
+        where: {
+          eventType: "auction.cancelled",
+          targetId: created.auctionSessionId
+        }
+      })
+    ).resolves.toBe(0);
+  });
 });
 
 async function createAuctionFixture(
@@ -613,4 +874,67 @@ async function createItem(
       latestVersionId: contentVersion.id
     }
   });
+}
+
+async function attachCurrentHighestBid(
+  auctionSessionId: string,
+  input: {
+    label: string;
+    amountPoints: number;
+    availablePointsAfterHold: number;
+    frozenPointsAfterHold: number;
+    bidAt: Date;
+  }
+) {
+  const bidder = await createChild(`${input.label}_bidder`);
+  const account = await prisma.pointAccount.create({
+    data: {
+      childId: bidder.id,
+      availablePoints: input.availablePointsAfterHold,
+      frozenPoints: input.frozenPointsAfterHold,
+      totalEarnedPoints:
+        input.availablePointsAfterHold + input.frozenPointsAfterHold
+    }
+  });
+  const bid = await prisma.bid.create({
+    data: {
+      auctionSessionId,
+      bidderChildId: bidder.id,
+      amountPoints: input.amountPoints,
+      status: "active",
+      idempotencyKey: unique(`${input.label}_bid`),
+      createdAt: input.bidAt
+    }
+  });
+  const pointHold = await prisma.pointHold.create({
+    data: {
+      accountId: account.id,
+      auctionSessionId,
+      bidId: bid.id,
+      amountPoints: input.amountPoints,
+      status: "active",
+      createdAt: input.bidAt
+    }
+  });
+
+  await prisma.auctionSession.update({
+    where: {
+      id: auctionSessionId
+    },
+    data: {
+      currentPricePoints: input.amountPoints,
+      highestBidId: bid.id,
+      highestBidderChildId: bidder.id,
+      version: {
+        increment: 1
+      }
+    }
+  });
+
+  return {
+    bidderChildId: bidder.id,
+    pointAccountId: account.id,
+    bidId: bid.id,
+    pointHoldId: pointHold.id
+  };
 }

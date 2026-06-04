@@ -27,6 +27,7 @@
     "stage3:verify": "node scripts/stage3/verify-stage3.mjs",
     "stage4:ledger-check": "node scripts/stage4/check-ledger.mjs",
     "stage4:verify": "node scripts/stage4/verify-stage4.mjs",
+    "stage5:verify": "node scripts/stage5/verify-stage5.mjs",
     "start:api": "npm run start -w @auction/api",
     "start:worker": "npm run start -w @auction/worker",
     "test": "vitest run",

@@ -12,6 +12,9 @@ export type WorkerRuntimeConfig = {
   workerName: string;
   concurrency: number;
   ledgerCheckIntervalMs: number;
+  outboxDispatchIntervalMs: number;
+  outboxDispatchLimit: number;
+  outboxDispatchLeaseMs: number;
   auctionSettlementScanIntervalMs: number;
   auctionSettlementScanLimit: number;
   redis: RedisConnectionConfig;
@@ -33,6 +36,23 @@ export function loadWorkerRuntimeConfig(
         env.LEDGER_CHECK_INTERVAL_SECONDS,
         300,
         "LEDGER_CHECK_INTERVAL_SECONDS"
+      ) * 1000,
+    outboxDispatchIntervalMs:
+      parsePositiveInteger(
+        env.OUTBOX_DISPATCH_INTERVAL_SECONDS,
+        10,
+        "OUTBOX_DISPATCH_INTERVAL_SECONDS"
+      ) * 1000,
+    outboxDispatchLimit: parsePositiveInteger(
+      env.OUTBOX_DISPATCH_LIMIT,
+      50,
+      "OUTBOX_DISPATCH_LIMIT"
+    ),
+    outboxDispatchLeaseMs:
+      parsePositiveInteger(
+        env.OUTBOX_DISPATCH_LEASE_SECONDS,
+        300,
+        "OUTBOX_DISPATCH_LEASE_SECONDS"
       ) * 1000,
     auctionSettlementScanIntervalMs:
       parsePositiveInteger(
