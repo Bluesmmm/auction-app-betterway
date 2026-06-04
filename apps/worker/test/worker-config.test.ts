@@ -31,7 +31,9 @@ describe("worker runtime config", () => {
       OUTBOX_DISPATCH_LIMIT: "11",
       OUTBOX_DISPATCH_LEASE_SECONDS: "90",
       AUCTION_SETTLEMENT_SCAN_INTERVAL_SECONDS: "30",
-      AUCTION_SETTLEMENT_SCAN_LIMIT: "25"
+      AUCTION_SETTLEMENT_SCAN_LIMIT: "25",
+      TRANSACTION_TIMEOUT_SCAN_INTERVAL_SECONDS: "45",
+      TRANSACTION_TIMEOUT_SCAN_LIMIT: "15"
     });
 
     expect(config.databaseUrl).toContain("@postgres:5432/auction_app");
@@ -51,6 +53,8 @@ describe("worker runtime config", () => {
     expect(config.outboxDispatchLeaseMs).toBe(90_000);
     expect(config.auctionSettlementScanIntervalMs).toBe(30_000);
     expect(config.auctionSettlementScanLimit).toBe(25);
+    expect(config.transactionTimeoutScanIntervalMs).toBe(45_000);
+    expect(config.transactionTimeoutScanLimit).toBe(15);
   });
 
   it("parses Redis URLs for BullMQ", () => {
@@ -88,6 +92,8 @@ describe("worker runtime config", () => {
     expect(config.outboxDispatchLeaseMs).toBe(300_000);
     expect(config.auctionSettlementScanIntervalMs).toBe(60_000);
     expect(config.auctionSettlementScanLimit).toBe(50);
+    expect(config.transactionTimeoutScanIntervalMs).toBe(60_000);
+    expect(config.transactionTimeoutScanLimit).toBe(50);
     expect(() =>
       loadWorkerRuntimeConfig({
         DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",
@@ -138,5 +144,23 @@ describe("worker runtime config", () => {
         AUCTION_SETTLEMENT_SCAN_LIMIT: "0"
       })
     ).toThrow("AUCTION_SETTLEMENT_SCAN_LIMIT must be a positive integer");
+    expect(() =>
+      loadWorkerRuntimeConfig({
+        DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",
+        REDIS_URL: "redis://redis:6379/0",
+        WORKER_NAME: "auction-worker-runtime",
+        TRANSACTION_TIMEOUT_SCAN_INTERVAL_SECONDS: "0"
+      })
+    ).toThrow(
+      "TRANSACTION_TIMEOUT_SCAN_INTERVAL_SECONDS must be a positive integer"
+    );
+    expect(() =>
+      loadWorkerRuntimeConfig({
+        DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",
+        REDIS_URL: "redis://redis:6379/0",
+        WORKER_NAME: "auction-worker-runtime",
+        TRANSACTION_TIMEOUT_SCAN_LIMIT: "0"
+      })
+    ).toThrow("TRANSACTION_TIMEOUT_SCAN_LIMIT must be a positive integer");
   });
 });

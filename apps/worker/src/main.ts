@@ -14,6 +14,10 @@ import {
   PrismaOutboxDispatcher,
   startPeriodicOutboxDispatcher
 } from "./outbox-dispatcher.js";
+import {
+  PrismaTransactionTimeoutRunner,
+  startPeriodicTransactionTimeoutScanner
+} from "./transaction-timeout-worker.js";
 import { RedactingWorkerLogger } from "./redacting-worker-logger.js";
 import { startWorkerHeartbeat } from "./worker-heartbeat.js";
 import { loadWorkerRuntimeConfig } from "./worker-config.js";
@@ -66,6 +70,14 @@ const auctionSettlementScanner = startPeriodicAuctionSettlementScanner({
   intervalMs: config.auctionSettlementScanIntervalMs,
   limit: config.auctionSettlementScanLimit
 });
+const transactionTimeoutRunner = new PrismaTransactionTimeoutRunner(prisma);
+const transactionTimeoutScanner = startPeriodicTransactionTimeoutScanner({
+  prisma,
+  runner: transactionTimeoutRunner,
+  workerName: config.workerName,
+  intervalMs: config.transactionTimeoutScanIntervalMs,
+  limit: config.transactionTimeoutScanLimit
+});
 
 const outboxWorker = createOutboxNotificationWorker({
   connection: config.redis,
@@ -117,6 +129,7 @@ process.on("SIGTERM", () => {
 
 async function shutdown() {
   await outboxDispatchLoop.stop();
+  await transactionTimeoutScanner.stop();
   await auctionSettlementScanner.stop();
   await ledgerChecks.stop();
   await heartbeat.stop();

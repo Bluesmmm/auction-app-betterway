@@ -292,6 +292,9 @@ invite_code_validated
 - 成交确认拒绝写 `transaction.cancelled` outbox，并用 `release` 账本流水释放买家冻结积分。
 - 交付确认拒绝写 `transaction.disputed` outbox，交易进入争议状态且冻结积分保持 active。
 - 交付双方确认写 `transaction.completed` outbox，并用买家 `transfer_out` 与卖家 `transfer_in` 两条账本流水表达积分转移。
+- 成交确认超时由 worker 扫描 `pending_guardian_confirm` 交易，写 `transaction.cancelled` outbox，并用 `transaction_guardian_timeout_release` 释放买家冻结积分。
+- 交付确认超时由 worker 扫描 `pending_delivery_confirm` 交易，交易进入 `platform_review`，写 `transaction.platform_review_required` outbox，冻结积分保持 active。
+- 管理员争议裁决 `release_to_buyer` 取消交易并释放买家冻结积分；`transfer_to_seller` 完成交易并转移积分；`keep_frozen_for_platform_review` 将争议升级为 `platform_review` 且继续冻结。
 - 申诉或争议期间，积分继续冻结，直到管理员按允许路径处理。
 
 成交确认超时规则：

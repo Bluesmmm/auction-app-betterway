@@ -37,6 +37,9 @@ describe("stage 5 verification scripts", () => {
     expect(verifyScript).toContain(
       '"apps/worker/test/auction-settlement-worker.test.ts"'
     );
+    expect(verifyScript).toContain(
+      '"apps/worker/test/transaction-timeout-worker.test.ts"'
+    );
     expect(verifyScript).toContain('"typecheck"');
     expect(verifyScript).toContain('"build"');
     expect(verifyScript).toContain("stage5 verification passed");
@@ -55,6 +58,12 @@ describe("stage 5 verification scripts", () => {
     );
     expect(runtimeCompose).toContain(
       "AUCTION_SETTLEMENT_SCAN_LIMIT: ${AUCTION_SETTLEMENT_SCAN_LIMIT:-50}"
+    );
+    expect(runtimeCompose).toContain(
+      "TRANSACTION_TIMEOUT_SCAN_INTERVAL_SECONDS: ${TRANSACTION_TIMEOUT_SCAN_INTERVAL_SECONDS:-60}"
+    );
+    expect(runtimeCompose).toContain(
+      "TRANSACTION_TIMEOUT_SCAN_LIMIT: ${TRANSACTION_TIMEOUT_SCAN_LIMIT:-50}"
     );
   });
 });

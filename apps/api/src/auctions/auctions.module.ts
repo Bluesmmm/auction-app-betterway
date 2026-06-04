@@ -29,8 +29,11 @@ import { TransactionDecisionService } from "./transaction-decision.service.js";
     },
     {
       provide: TransactionDecisionService,
-      inject: [PrismaService],
-      useFactory: (prisma: PrismaService) => new TransactionDecisionService(prisma)
+      inject: [PrismaService, AuctionPermissionsService],
+      useFactory: (
+        prisma: PrismaService,
+        permissions: AuctionPermissionsService
+      ) => new TransactionDecisionService(prisma, permissions)
     }
   ],
   exports: [

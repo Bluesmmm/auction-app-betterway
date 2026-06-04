@@ -17,6 +17,8 @@ export type WorkerRuntimeConfig = {
   outboxDispatchLeaseMs: number;
   auctionSettlementScanIntervalMs: number;
   auctionSettlementScanLimit: number;
+  transactionTimeoutScanIntervalMs: number;
+  transactionTimeoutScanLimit: number;
   redis: RedisConnectionConfig;
 };
 
@@ -64,6 +66,17 @@ export function loadWorkerRuntimeConfig(
       env.AUCTION_SETTLEMENT_SCAN_LIMIT,
       50,
       "AUCTION_SETTLEMENT_SCAN_LIMIT"
+    ),
+    transactionTimeoutScanIntervalMs:
+      parsePositiveInteger(
+        env.TRANSACTION_TIMEOUT_SCAN_INTERVAL_SECONDS,
+        60,
+        "TRANSACTION_TIMEOUT_SCAN_INTERVAL_SECONDS"
+      ) * 1000,
+    transactionTimeoutScanLimit: parsePositiveInteger(
+      env.TRANSACTION_TIMEOUT_SCAN_LIMIT,
+      50,
+      "TRANSACTION_TIMEOUT_SCAN_LIMIT"
     ),
     redis: parseRedisUrl(redisUrl)
   };

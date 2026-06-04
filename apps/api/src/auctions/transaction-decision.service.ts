@@ -7,6 +7,7 @@ import type {
 } from "@prisma/client";
 import { createHash, randomUUID } from "node:crypto";
 import { runCriticalTransaction } from "../prisma/critical-transaction.js";
+import { AuctionPermissionsService } from "./auction-permissions.service.js";
 
 type DecisionSide = "buyer" | "seller";
 
@@ -29,6 +30,18 @@ type TransactionDecisionRejectedErrorCode =
   | "POINT_ACCOUNT_NOT_FOUND"
   | "SELLER_POINT_ACCOUNT_NOT_FOUND";
 
+type AdminDisputeResolutionRejectedErrorCode =
+  | "IDEMPOTENCY_KEY_REQUIRED"
+  | "IDEMPOTENCY_CONFLICT"
+  | "TRANSACTION_NOT_FOUND"
+  | "TRANSACTION_NOT_IN_DISPUTE_REVIEW"
+  | "COMMUNITY_ADMIN_REQUIRED";
+
+export type AdminDisputeResolutionAction =
+  | "release_to_buyer"
+  | "transfer_to_seller"
+  | "keep_frozen_for_platform_review";
+
 export type TransactionDecisionResult =
   | {
       result: "accepted";
@@ -48,6 +61,21 @@ export type TransactionDecisionResult =
   | {
       result: "rejected";
       errorCode: TransactionDecisionRejectedErrorCode;
+    };
+
+export type AdminDisputeResolutionResult =
+  | {
+      result: "accepted";
+      transactionId: string;
+      action: AdminDisputeResolutionAction;
+      status: TransactionStatus;
+      releasedAmountPoints: number;
+      transferredAmountPoints: number;
+      idempotencyKey: string;
+    }
+  | {
+      result: "rejected";
+      errorCode: AdminDisputeResolutionRejectedErrorCode;
     };
 
 type LockedTransactionRow = {
@@ -96,7 +124,10 @@ type DecisionState = {
 const DELIVERY_CONFIRM_WINDOW_MS = 72 * 60 * 60 * 1000;
 
 export class TransactionDecisionService {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly permissions = new AuctionPermissionsService(prisma)
+  ) {}
 
   async decideGuardianConfirmation(input: {
     actorUserId: string;
@@ -121,6 +152,181 @@ export class TransactionDecisionService {
     return this.decide({
       ...input,
       phase: "delivery_confirm"
+    });
+  }
+
+  async resolveTransactionDispute(input: {
+    actorUserId: string;
+    transactionId: string;
+    action: AdminDisputeResolutionAction;
+    idempotencyKey: string;
+    reason: string;
+    now?: Date;
+  }): Promise<AdminDisputeResolutionResult> {
+    const idempotencyKey = input.idempotencyKey.trim();
+    if (!idempotencyKey) {
+      return {
+        result: "rejected",
+        errorCode: "IDEMPOTENCY_KEY_REQUIRED"
+      };
+    }
+
+    const now = input.now ?? new Date();
+    const reason = normalizeAdminReason(input.reason);
+    const requestHash = createStableHash({
+      actorUserId: input.actorUserId,
+      transactionId: input.transactionId,
+      action: input.action,
+      reason
+    });
+
+    return runCriticalTransaction(this.prisma, async (tx) => {
+      const idempotency =
+        await reserveIdempotencyRecord<AdminDisputeResolutionResult>(tx, {
+          key: idempotencyKey,
+          actorUserId: input.actorUserId,
+          action: "transaction.admin_dispute_resolution",
+          targetType: "transaction",
+          targetId: input.transactionId,
+          requestHash
+        });
+
+      if (idempotency.result === "conflict") {
+        return {
+          result: "rejected",
+          errorCode: "IDEMPOTENCY_CONFLICT"
+        };
+      }
+
+      if (idempotency.result === "replay") {
+        return idempotency.response;
+      }
+
+      const transaction = await lockTransaction(tx, input.transactionId);
+      if (!transaction) {
+        return completeIdempotency(tx, idempotency.id, {
+          result: "rejected",
+          errorCode: "TRANSACTION_NOT_FOUND"
+        });
+      }
+
+      if (!canResolveDispute(transaction.status, input.action)) {
+        return completeIdempotency(tx, idempotency.id, {
+          result: "rejected",
+          errorCode: "TRANSACTION_NOT_IN_DISPUTE_REVIEW"
+        });
+      }
+
+      const communityId = await loadTransactionCommunityId(
+        tx,
+        transaction.auctionSessionId
+      );
+      if (!communityId) {
+        return completeIdempotency(tx, idempotency.id, {
+          result: "rejected",
+          errorCode: "TRANSACTION_NOT_FOUND"
+        });
+      }
+
+      const authorization = await this.permissions.canManageCommunityAuction(
+        {
+          actorUserId: input.actorUserId,
+          communityId
+        },
+        tx
+      );
+      if (authorization.result === "rejected") {
+        return completeIdempotency(tx, idempotency.id, authorization);
+      }
+
+      if (input.action === "release_to_buyer") {
+        const releasedAmountPoints = await cancelTransactionAndReleaseHold(tx, {
+          transaction,
+          actorUserId: input.actorUserId,
+          now,
+          reason: "admin_release_to_buyer",
+          ledgerReason: "transaction_admin_release_to_buyer",
+          ledgerIdempotencyKey: `transaction:${transaction.id}:admin_release_to_buyer`,
+          auditAction: "transaction.admin_release_to_buyer",
+          eventType: "transaction.cancelled",
+          payload: {
+            adminAction: input.action,
+            reason
+          }
+        });
+
+        return completeIdempotency(tx, idempotency.id, {
+          result: "accepted",
+          transactionId: transaction.id,
+          action: input.action,
+          status: "cancelled",
+          releasedAmountPoints,
+          transferredAmountPoints: 0,
+          idempotencyKey
+        });
+      }
+
+      if (input.action === "transfer_to_seller") {
+        await completeTransactionAndTransferPoints(tx, {
+          transaction,
+          actorUserId: input.actorUserId,
+          now,
+          transferOutLedgerReason: "transaction_admin_transfer_to_seller_out",
+          transferInLedgerReason: "transaction_admin_transfer_to_seller_in",
+          transferOutIdempotencyKey: `transaction:${transaction.id}:admin_transfer_to_seller:out`,
+          transferInIdempotencyKey: `transaction:${transaction.id}:admin_transfer_to_seller:in`,
+          auditAction: "transaction.admin_transfer_to_seller",
+          eventType: "transaction.completed",
+          payload: {
+            adminAction: input.action,
+            reason
+          }
+        });
+
+        return completeIdempotency(tx, idempotency.id, {
+          result: "accepted",
+          transactionId: transaction.id,
+          action: input.action,
+          status: "completed",
+          releasedAmountPoints: 0,
+          transferredAmountPoints: transaction.pointsAmount,
+          idempotencyKey
+        });
+      }
+
+      await tx.transaction.update({
+        where: {
+          id: transaction.id
+        },
+        data: {
+          status: "platform_review",
+          version: {
+            increment: 1
+          }
+        }
+      });
+      await writeTransactionAuditAndOutbox(tx, {
+        actorUserId: input.actorUserId,
+        action: "transaction.admin_keep_frozen_for_platform_review",
+        eventType: "transaction.platform_review_required",
+        transaction,
+        status: "platform_review",
+        now,
+        payload: {
+          adminAction: input.action,
+          reason
+        }
+      });
+
+      return completeIdempotency(tx, idempotency.id, {
+        result: "accepted",
+        transactionId: transaction.id,
+        action: input.action,
+        status: "platform_review",
+        releasedAmountPoints: 0,
+        transferredAmountPoints: 0,
+        idempotencyKey
+      });
     });
   }
 
@@ -278,7 +484,14 @@ async function applyGuardianDecision(
       transaction: input.transaction,
       actorUserId: input.actorUserId,
       now: input.now,
-      reason: "guardian_rejected"
+      reason: "guardian_rejected",
+      ledgerReason: "transaction_guardian_reject_release",
+      ledgerIdempotencyKey: `transaction:${input.transaction.id}:guardian_reject_release`,
+      auditAction: "transaction.cancel",
+      eventType: "transaction.cancelled",
+      payload: {
+        reason: "guardian_rejected"
+      }
     });
 
     return buildAcceptedResult({
@@ -415,7 +628,14 @@ async function applyDeliveryDecision(
     await completeTransactionAndTransferPoints(tx, {
       transaction: input.transaction,
       actorUserId: input.actorUserId,
-      now: input.now
+      now: input.now,
+      transferOutLedgerReason: "transaction_delivery_complete_transfer_out",
+      transferInLedgerReason: "transaction_delivery_complete_transfer_in",
+      transferOutIdempotencyKey: `transaction:${input.transaction.id}:transfer_out`,
+      transferInIdempotencyKey: `transaction:${input.transaction.id}:transfer_in`,
+      auditAction: "transaction.complete",
+      eventType: "transaction.completed",
+      payload: {}
     });
 
     return buildAcceptedResult({
@@ -454,7 +674,12 @@ async function cancelTransactionAndReleaseHold(
     transaction: LockedTransactionRow;
     actorUserId: string;
     now: Date;
-    reason: "guardian_rejected";
+    reason: string;
+    ledgerReason: string;
+    ledgerIdempotencyKey: string;
+    auditAction: string;
+    eventType: string;
+    payload: Record<string, unknown>;
   }
 ) {
   const pointHold = await lockPointHold(tx, input.transaction.pointHoldId);
@@ -503,8 +728,8 @@ async function cancelTransactionAndReleaseHold(
       frozenAfter,
       relatedType: "transaction",
       relatedId: input.transaction.id,
-      idempotencyKey: `transaction:${input.transaction.id}:guardian_reject_release`,
-      reason: "transaction_guardian_reject_release",
+      idempotencyKey: input.ledgerIdempotencyKey,
+      reason: input.ledgerReason,
       createdByUserId: input.actorUserId,
       createdAt: input.now
     }
@@ -522,14 +747,15 @@ async function cancelTransactionAndReleaseHold(
   });
   await writeTransactionAuditAndOutbox(tx, {
     actorUserId: input.actorUserId,
-    action: "transaction.cancel",
-    eventType: "transaction.cancelled",
+    action: input.auditAction,
+    eventType: input.eventType,
     transaction: input.transaction,
     status: "cancelled",
     now: input.now,
     payload: {
       reason: input.reason,
-      releasedAmountPoints: pointHold.amountPoints
+      releasedAmountPoints: pointHold.amountPoints,
+      ...input.payload
     }
   });
 
@@ -542,6 +768,13 @@ async function completeTransactionAndTransferPoints(
     transaction: LockedTransactionRow;
     actorUserId: string;
     now: Date;
+    transferOutLedgerReason: string;
+    transferInLedgerReason: string;
+    transferOutIdempotencyKey: string;
+    transferInIdempotencyKey: string;
+    auditAction: string;
+    eventType: string;
+    payload: Record<string, unknown>;
   }
 ) {
   const pointHold = await lockPointHold(tx, input.transaction.pointHoldId);
@@ -635,8 +868,8 @@ async function completeTransactionAndTransferPoints(
         frozenAfter: buyerFrozenAfter,
         relatedType: "transaction",
         relatedId: input.transaction.id,
-        idempotencyKey: `transaction:${input.transaction.id}:transfer_out`,
-        reason: "transaction_delivery_complete_transfer_out",
+        idempotencyKey: input.transferOutIdempotencyKey,
+        reason: input.transferOutLedgerReason,
         createdByUserId: input.actorUserId,
         createdAt: input.now
       },
@@ -649,8 +882,8 @@ async function completeTransactionAndTransferPoints(
         frozenAfter: lockedSellerAccount.frozenPoints,
         relatedType: "transaction",
         relatedId: input.transaction.id,
-        idempotencyKey: `transaction:${input.transaction.id}:transfer_in`,
-        reason: "transaction_delivery_complete_transfer_in",
+        idempotencyKey: input.transferInIdempotencyKey,
+        reason: input.transferInLedgerReason,
         createdByUserId: input.actorUserId,
         createdAt: input.now
       }
@@ -669,13 +902,14 @@ async function completeTransactionAndTransferPoints(
   });
   await writeTransactionAuditAndOutbox(tx, {
     actorUserId: input.actorUserId,
-    action: "transaction.complete",
-    eventType: "transaction.completed",
+    action: input.auditAction,
+    eventType: input.eventType,
     transaction: input.transaction,
     status: "completed",
     now: input.now,
     payload: {
-      transferredAmountPoints: pointHold.amountPoints
+      transferredAmountPoints: pointHold.amountPoints,
+      ...input.payload
     }
   });
 }
@@ -863,6 +1097,26 @@ async function loadPrimaryGuardianIds(
   return links.map((link) => link.guardianId);
 }
 
+async function loadTransactionCommunityId(
+  tx: Prisma.TransactionClient,
+  auctionSessionId: string
+) {
+  const auction = await tx.auctionSession.findUnique({
+    where: {
+      id: auctionSessionId
+    },
+    select: {
+      item: {
+        select: {
+          communityId: true
+        }
+      }
+    }
+  });
+
+  return auction?.item.communityId ?? null;
+}
+
 function validateTransactionPhase(
   transaction: LockedTransactionRow,
   phase: DecisionPhase,
@@ -912,6 +1166,17 @@ function validateTransactionPhase(
 
 function hasSideDecided(state: DecisionState, side: DecisionSide) {
   return side === "buyer" ? state.buyerDecided : state.sellerDecided;
+}
+
+function canResolveDispute(
+  status: TransactionStatus,
+  action: AdminDisputeResolutionAction
+) {
+  if (action === "keep_frozen_for_platform_review") {
+    return status === "disputed";
+  }
+
+  return status === "disputed" || status === "platform_review";
 }
 
 function mergeDecisionState(
@@ -1129,6 +1394,11 @@ function buildDecisionAction(phase: DecisionPhase) {
 
 function buildOutboxIdempotencyKey(eventType: string, transactionId: string) {
   return `${eventType}:${createStableHash({ transactionId })}`;
+}
+
+function normalizeAdminReason(reason: string) {
+  const trimmed = reason.trim();
+  return trimmed ? trimmed.slice(0, 300) : "admin_dispute_resolution";
 }
 
 function createStableHash(value: Record<string, string>) {

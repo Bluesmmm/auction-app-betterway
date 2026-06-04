@@ -27,6 +27,7 @@ type ChildFixture = {
 type TransactionFixture = {
   transactionId: string;
   auctionSessionId: string;
+  communityId: string;
   pointHoldId: string;
   buyer: ChildFixture;
   seller: ChildFixture;
@@ -471,12 +472,276 @@ describe("TransactionDecisionService", () => {
       })
     ).resolves.toBe(1);
   });
+
+  it("allows a scoped admin to release disputed transaction points back to the buyer", async () => {
+    const fixture = await createTransactionFixture("admin_release", {
+      status: "disputed",
+      deliveryConfirmDeadlineAt: new Date("2026-06-07T13:00:00.000Z")
+    });
+    const admin = await createActivityAdmin("admin_release", fixture.communityId);
+    const now = new Date("2026-06-04T14:00:00.000Z");
+    const idempotencyKey = unique("admin_release_key");
+
+    const result = await decisions.resolveTransactionDispute({
+      actorUserId: admin.userId,
+      transactionId: fixture.transactionId,
+      action: "release_to_buyer",
+      reason: "seller_no_show",
+      idempotencyKey,
+      now
+    });
+    const replay = await decisions.resolveTransactionDispute({
+      actorUserId: admin.userId,
+      transactionId: fixture.transactionId,
+      action: "release_to_buyer",
+      reason: "seller_no_show",
+      idempotencyKey,
+      now: new Date("2026-06-04T14:01:00.000Z")
+    });
+
+    expect(result).toEqual({
+      result: "accepted",
+      transactionId: fixture.transactionId,
+      action: "release_to_buyer",
+      status: "cancelled",
+      releasedAmountPoints: fixture.pointsAmount,
+      transferredAmountPoints: 0,
+      idempotencyKey
+    });
+    expect(replay).toEqual(result);
+    await expect(
+      prisma.pointHold.findUnique({
+        where: {
+          id: fixture.pointHoldId
+        },
+        select: {
+          status: true,
+          releasedAt: true,
+          transferredAt: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "released",
+      releasedAt: now,
+      transferredAt: null
+    });
+    await expect(
+      prisma.pointLedgerEntry.findFirst({
+        where: {
+          relatedType: "transaction",
+          relatedId: fixture.transactionId,
+          reason: "transaction_admin_release_to_buyer"
+        }
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        accountId: fixture.buyer.pointAccountId,
+        childId: fixture.buyer.childId,
+        type: "release",
+        amountPoints: fixture.pointsAmount,
+        availableAfter: 120,
+        frozenAfter: 0,
+        createdByUserId: admin.userId,
+        createdAt: now
+      })
+    );
+    await expect(
+      prisma.outboxEvent.count({
+        where: {
+          eventType: "transaction.cancelled",
+          targetId: fixture.transactionId
+        }
+      })
+    ).resolves.toBe(1);
+  });
+
+  it("allows a scoped admin to transfer platform-review frozen points to the seller", async () => {
+    const fixture = await createTransactionFixture("admin_transfer", {
+      status: "platform_review",
+      deliveryConfirmDeadlineAt: new Date("2026-06-07T13:00:00.000Z")
+    });
+    const admin = await createActivityAdmin("admin_transfer", fixture.communityId);
+    const now = new Date("2026-06-04T15:00:00.000Z");
+
+    await expect(
+      decisions.resolveTransactionDispute({
+        actorUserId: admin.userId,
+        transactionId: fixture.transactionId,
+        action: "transfer_to_seller",
+        reason: "delivery_confirmed_by_admin",
+        idempotencyKey: unique("admin_transfer_key"),
+        now
+      })
+    ).resolves.toEqual({
+      result: "accepted",
+      transactionId: fixture.transactionId,
+      action: "transfer_to_seller",
+      status: "completed",
+      releasedAmountPoints: 0,
+      transferredAmountPoints: fixture.pointsAmount,
+      idempotencyKey: expect.any(String)
+    });
+    await expect(
+      prisma.pointAccount.findUnique({
+        where: {
+          id: fixture.seller.pointAccountId
+        },
+        select: {
+          availablePoints: true,
+          totalEarnedPoints: true
+        }
+      })
+    ).resolves.toEqual({
+      availablePoints: 100,
+      totalEarnedPoints: 100
+    });
+    await expect(
+      prisma.pointLedgerEntry.findMany({
+        where: {
+          relatedType: "transaction",
+          relatedId: fixture.transactionId,
+          reason: {
+            in: [
+              "transaction_admin_transfer_to_seller_out",
+              "transaction_admin_transfer_to_seller_in"
+            ]
+          }
+        },
+        select: {
+          type: true,
+          reason: true,
+          createdByUserId: true,
+          createdAt: true
+        }
+      })
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        {
+          type: "transfer_out",
+          reason: "transaction_admin_transfer_to_seller_out",
+          createdByUserId: admin.userId,
+          createdAt: now
+        },
+        {
+          type: "transfer_in",
+          reason: "transaction_admin_transfer_to_seller_in",
+          createdByUserId: admin.userId,
+          createdAt: now
+        }
+      ])
+    );
+  });
+
+  it("allows a scoped admin to keep disputed points frozen for platform review", async () => {
+    const fixture = await createTransactionFixture("admin_keep_frozen", {
+      status: "disputed",
+      deliveryConfirmDeadlineAt: new Date("2026-06-07T13:00:00.000Z")
+    });
+    const admin = await createActivityAdmin(
+      "admin_keep_frozen",
+      fixture.communityId
+    );
+
+    await expect(
+      decisions.resolveTransactionDispute({
+        actorUserId: admin.userId,
+        transactionId: fixture.transactionId,
+        action: "keep_frozen_for_platform_review",
+        reason: "needs_platform_review",
+        idempotencyKey: unique("admin_keep_frozen_key"),
+        now: new Date("2026-06-04T16:00:00.000Z")
+      })
+    ).resolves.toMatchObject({
+      result: "accepted",
+      transactionId: fixture.transactionId,
+      action: "keep_frozen_for_platform_review",
+      status: "platform_review",
+      releasedAmountPoints: 0,
+      transferredAmountPoints: 0
+    });
+    await expect(
+      prisma.pointHold.findUnique({
+        where: {
+          id: fixture.pointHoldId
+        },
+        select: {
+          status: true,
+          releasedAt: true,
+          transferredAt: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "active",
+      releasedAt: null,
+      transferredAt: null
+    });
+    await expect(
+      prisma.outboxEvent.count({
+        where: {
+          eventType: "transaction.platform_review_required",
+          targetId: fixture.transactionId
+        }
+      })
+    ).resolves.toBe(1);
+  });
+
+  it("rejects dispute resolution from non-admin actors without changing points", async () => {
+    const fixture = await createTransactionFixture("admin_reject_outsider", {
+      status: "disputed",
+      deliveryConfirmDeadlineAt: new Date("2026-06-07T13:00:00.000Z")
+    });
+    const outsider = await createGuardian("admin_reject_outsider");
+
+    await expect(
+      decisions.resolveTransactionDispute({
+        actorUserId: outsider.userId,
+        transactionId: fixture.transactionId,
+        action: "release_to_buyer",
+        reason: "outsider_attempt",
+        idempotencyKey: unique("admin_reject_outsider_key"),
+        now: new Date("2026-06-04T17:00:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "COMMUNITY_ADMIN_REQUIRED"
+    });
+    await expect(
+      prisma.transaction.findUnique({
+        where: {
+          id: fixture.transactionId
+        },
+        select: {
+          status: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "disputed"
+    });
+    await expect(
+      prisma.pointAccount.findUnique({
+        where: {
+          id: fixture.buyer.pointAccountId
+        },
+        select: {
+          availablePoints: true,
+          frozenPoints: true
+        }
+      })
+    ).resolves.toEqual({
+      availablePoints: 80,
+      frozenPoints: fixture.pointsAmount
+    });
+  });
 });
 
 async function createTransactionFixture(
   label: string,
   input: {
-    status?: "pending_guardian_confirm" | "pending_delivery_confirm";
+    status?:
+      | "pending_guardian_confirm"
+      | "pending_delivery_confirm"
+      | "disputed"
+      | "platform_review";
     deliveryConfirmDeadlineAt?: Date | null;
   } = {}
 ): Promise<TransactionFixture> {
@@ -574,6 +839,7 @@ async function createTransactionFixture(
   return {
     transactionId: transaction.id,
     auctionSessionId: auction.id,
+    communityId: community.id,
     pointHoldId: pointHold.id,
     buyer,
     seller,
@@ -665,5 +931,39 @@ async function createGuardian(label: string): Promise<GuardianFixture> {
   return {
     userId: user.id,
     guardianId: guardian.id
+  };
+}
+
+async function createActivityAdmin(label: string, communityId: string) {
+  const user = await prisma.user.create({
+    data: {
+      status: "active"
+    }
+  });
+  await prisma.wechatIdentity.create({
+    data: {
+      userId: user.id,
+      openid: `mock_openid_${unique(label)}`
+    }
+  });
+  const adminProfile = await prisma.adminProfile.create({
+    data: {
+      userId: user.id,
+      role: "activity_admin",
+      mfaEnabled: true,
+      status: "active"
+    }
+  });
+  await prisma.adminCommunityScope.create({
+    data: {
+      adminProfileId: adminProfile.id,
+      communityId,
+      status: "active"
+    }
+  });
+
+  return {
+    userId: user.id,
+    adminProfileId: adminProfile.id
   };
 }

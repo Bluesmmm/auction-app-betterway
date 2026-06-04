@@ -60,7 +60,8 @@ commands.push(
       "apps/worker/test/worker-config.test.ts",
       "apps/worker/test/outbox-processor.test.ts",
       "apps/worker/test/outbox-dispatcher.test.ts",
-      "apps/worker/test/auction-settlement-worker.test.ts"
+      "apps/worker/test/auction-settlement-worker.test.ts",
+      "apps/worker/test/transaction-timeout-worker.test.ts"
     ],
     {
       DATABASE_URL: databaseUrlForSchema(schemas.worker)
