@@ -8,6 +8,7 @@
 2. [技术架构方案](./TECHNICAL_ARCHITECTURE.md)
 3. [核心数据模型](./DATA_MODEL.md)
 4. [MVP 路线图](./MVP_ROADMAP.md)
+5. [Stage 5 发布验收清单](./STAGE5_RELEASE_CHECKLIST.md)
 
 ## 当前基线
 

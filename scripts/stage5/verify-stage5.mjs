@@ -6,6 +6,7 @@ const baseDatabaseUrl =
 
 const schemas = {
   api: "stage5_verify_api",
+  points: "stage5_verify_points",
   bidding: "stage5_verify_bidding",
   worker: "stage5_verify_worker"
 };
@@ -37,15 +38,29 @@ commands.push(
       "test",
       "--",
       "apps/api/test/contracts/stage5-schema.test.ts",
-      "apps/api/test/integration/point-ledger.service.test.ts",
       "apps/api/test/integration/auction-session.service.test.ts",
       "apps/api/test/integration/transaction-decision.service.test.ts",
+      "apps/api/test/contracts/points.controller.test.ts",
       "apps/api/test/runtime/admin-stage4-shell.test.ts",
       "apps/api/test/runtime/stage4-controller-di.test.ts",
       "apps/api/test/runtime/stage5-scripts.test.ts"
     ],
     {
       DATABASE_URL: databaseUrlForSchema(schemas.api)
+    }
+  ],
+  [
+    "npm",
+    ["test", "--", "apps/api/test/integration/point-ledger.service.test.ts"],
+    {
+      DATABASE_URL: databaseUrlForSchema(schemas.points)
+    }
+  ],
+  [
+    "npm",
+    ["run", "stage4:ledger-check"],
+    {
+      DATABASE_URL: databaseUrlForSchema(schemas.points)
     }
   ],
   [

@@ -17,10 +17,14 @@ describe("stage 5 verification scripts", () => {
     expect(verifyScript).toContain('"db:deploy"');
     expect(verifyScript).toContain('"db:validate"');
     expect(verifyScript).toContain('"stage5_verify_api"');
+    expect(verifyScript).toContain('"stage5_verify_points"');
     expect(verifyScript).toContain('"stage5_verify_bidding"');
     expect(verifyScript).toContain('"stage5_verify_worker"');
     expect(verifyScript).toContain(
       '"apps/api/test/contracts/stage5-schema.test.ts"'
+    );
+    expect(verifyScript).toContain(
+      '"apps/api/test/contracts/points.controller.test.ts"'
     );
     expect(verifyScript).toContain(
       '"apps/api/test/integration/point-ledger.service.test.ts"'
@@ -40,6 +44,7 @@ describe("stage 5 verification scripts", () => {
     expect(verifyScript).toContain(
       '"apps/api/test/integration/bidding.service.test.ts"'
     );
+    expect(verifyScript).toContain('"stage4:ledger-check"');
     expect(verifyScript).toContain(
       '"apps/worker/test/outbox-dispatcher.test.ts"'
     );
