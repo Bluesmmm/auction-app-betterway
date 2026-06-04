@@ -45,6 +45,7 @@ describe("stage 5 verification scripts", () => {
       '"apps/api/test/integration/bidding.service.test.ts"'
     );
     expect(verifyScript).toContain('"stage4:ledger-check"');
+    expect(verifyScript).toContain('"apps/worker/test/periodic-task.test.ts"');
     expect(verifyScript).toContain(
       '"apps/worker/test/outbox-dispatcher.test.ts"'
     );

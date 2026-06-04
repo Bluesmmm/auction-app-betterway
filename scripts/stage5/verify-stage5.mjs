@@ -76,6 +76,7 @@ commands.push(
       "test",
       "--",
       "apps/worker/test/worker-config.test.ts",
+      "apps/worker/test/periodic-task.test.ts",
       "apps/worker/test/outbox-processor.test.ts",
       "apps/worker/test/outbox-dispatcher.test.ts",
       "apps/worker/test/auction-settlement-worker.test.ts",

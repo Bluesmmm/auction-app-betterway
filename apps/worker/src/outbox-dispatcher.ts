@@ -7,6 +7,7 @@ import {
   type NotificationSender,
   type OutboxJobPayload
 } from "./outbox-processor.js";
+import { runPeriodicTask } from "./periodic-task.js";
 import type { RedisConnectionConfig } from "./worker-config.js";
 
 export type ClaimedOutboxEvent = {
@@ -225,13 +226,18 @@ export function startPeriodicOutboxDispatcher(input: {
     }
 
     running = true;
-    void input.dispatcher
-      .dispatchAvailable({
-        limit: input.limit
-      })
-      .finally(() => {
-        running = false;
-      });
+    runPeriodicTask({
+      taskName: "outbox_dispatch",
+      run: async () => {
+        try {
+          await input.dispatcher.dispatchAvailable({
+            limit: input.limit
+          });
+        } finally {
+          running = false;
+        }
+      }
+    });
   }, input.intervalMs);
 
   return {

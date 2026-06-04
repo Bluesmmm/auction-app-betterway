@@ -9,6 +9,7 @@
 3. [核心数据模型](./DATA_MODEL.md)
 4. [MVP 路线图](./MVP_ROADMAP.md)
 5. [Stage 5 发布验收清单](./STAGE5_RELEASE_CHECKLIST.md)
+6. [Stage 5 PR 描述](./STAGE5_PR_DESCRIPTION.md)
 
 ## 当前基线
 

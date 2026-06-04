@@ -4,6 +4,7 @@ import type {
   PrismaClient,
   PointLedgerEntry
 } from "@prisma/client";
+import { runPeriodicTask } from "./periodic-task.js";
 
 export type LedgerCheckRunnerInput = {
   idempotencyKey: string;
@@ -74,10 +75,14 @@ export function startPeriodicLedgerCheckWorker(input: {
   runner: LedgerCheckRunner;
 }): PeriodicLedgerCheckHandle {
   const interval = setInterval(() => {
-    void runLedgerCheckTick({
-      workerName: input.workerName,
-      intervalMs: input.intervalMs,
-      runner: input.runner
+    runPeriodicTask({
+      taskName: "ledger_check",
+      run: () =>
+        runLedgerCheckTick({
+          workerName: input.workerName,
+          intervalMs: input.intervalMs,
+          runner: input.runner
+        })
     });
   }, input.intervalMs);
 

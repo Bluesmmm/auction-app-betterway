@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
 import { createHash } from "node:crypto";
+import { runPeriodicTask } from "./periodic-task.js";
 
 export type TransactionTimeoutResult =
   | {
@@ -205,11 +206,15 @@ export function startPeriodicTransactionTimeoutScanner(input: {
   limit?: number;
 }): PeriodicTransactionTimeoutScannerHandle {
   const interval = setInterval(() => {
-    void scanOverdueTransactionTimeouts({
-      prisma: input.prisma,
-      runner: input.runner,
-      workerName: input.workerName,
-      limit: input.limit
+    runPeriodicTask({
+      taskName: "transaction_timeout_scan",
+      run: () =>
+        scanOverdueTransactionTimeouts({
+          prisma: input.prisma,
+          runner: input.runner,
+          workerName: input.workerName,
+          limit: input.limit
+        })
     });
   }, input.intervalMs);
 

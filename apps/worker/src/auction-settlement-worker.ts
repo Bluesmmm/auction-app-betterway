@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { Worker, type Job } from "bullmq";
 import { createHash } from "node:crypto";
+import { runPeriodicTask } from "./periodic-task.js";
 import { QueueName } from "./queue-names.js";
 import type { RedisConnectionConfig } from "./worker-config.js";
 
@@ -313,11 +314,15 @@ export function startPeriodicAuctionSettlementScanner(input: {
   limit?: number;
 }): PeriodicAuctionSettlementScannerHandle {
   const interval = setInterval(() => {
-    void scanOverdueAuctionSettlements({
-      prisma: input.prisma,
-      runner: input.runner,
-      workerName: input.workerName,
-      limit: input.limit
+    runPeriodicTask({
+      taskName: "auction_settlement_scan",
+      run: () =>
+        scanOverdueAuctionSettlements({
+          prisma: input.prisma,
+          runner: input.runner,
+          workerName: input.workerName,
+          limit: input.limit
+        })
     });
   }, input.intervalMs);
 
