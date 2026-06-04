@@ -1186,11 +1186,11 @@ blocked
 
 ### 15.4 双方家长确认
 
-事务内锁定交易；追加 `guardian_decisions`；按主监护人优先规则计算有效决策；任一有效拒绝则取消并解冻；双方有效确认则进入待交付确认。
+事务内锁定交易；追加 `guardian_decisions`；只接受买卖双方 active 主监护人的有效决策；任一有效拒绝则交易置为 `cancelled` 并释放买家冻结积分；双方有效确认则交易进入 `pending_delivery_confirm`，买家积分继续冻结。
 
 ### 15.5 交付完成
 
-事务内锁定交易、交付记录和买卖双方账户；追加交付阶段 `guardian_decisions`；双方有效确认后将冻结积分从买家转给卖家；写 transfer out/in 流水；交易置为完成。
+事务内锁定交易、交付确认决策和买卖双方账户；追加交付阶段 `guardian_decisions`；任一有效拒绝则交易置为 `disputed` 且买家积分继续冻结；双方有效确认后将冻结积分从买家转给卖家，写 `transfer_out` / `transfer_in` 流水，交易置为 `completed`。
 
 ### 15.6 管理员争议处理
 

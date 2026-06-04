@@ -26,6 +26,9 @@ describe("stage 5 verification scripts", () => {
       '"apps/api/test/integration/auction-session.service.test.ts"'
     );
     expect(verifyScript).toContain(
+      '"apps/api/test/integration/transaction-decision.service.test.ts"'
+    );
+    expect(verifyScript).toContain(
       '"apps/api/test/integration/bidding.service.test.ts"'
     );
     expect(verifyScript).toContain(

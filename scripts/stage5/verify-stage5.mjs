@@ -38,6 +38,7 @@ commands.push(
       "--",
       "apps/api/test/contracts/stage5-schema.test.ts",
       "apps/api/test/integration/auction-session.service.test.ts",
+      "apps/api/test/integration/transaction-decision.service.test.ts",
       "apps/api/test/runtime/stage5-scripts.test.ts"
     ],
     {

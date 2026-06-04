@@ -289,6 +289,9 @@ invite_code_validated
 - 任一方家长拒绝或确认超时规则判取消时，冻结积分释放给买家。
 - 双方家长确认后进入交付确认阶段，积分仍继续冻结。
 - 双方交付确认后，买家冻结积分转移给卖家可用积分。
+- 成交确认拒绝写 `transaction.cancelled` outbox，并用 `release` 账本流水释放买家冻结积分。
+- 交付确认拒绝写 `transaction.disputed` outbox，交易进入争议状态且冻结积分保持 active。
+- 交付双方确认写 `transaction.completed` outbox，并用买家 `transfer_out` 与卖家 `transfer_in` 两条账本流水表达积分转移。
 - 申诉或争议期间，积分继续冻结，直到管理员按允许路径处理。
 
 成交确认超时规则：

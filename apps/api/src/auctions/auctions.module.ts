@@ -4,6 +4,7 @@ import { PrismaService } from "../prisma/prisma.service.js";
 import { AuctionPermissionsService } from "./auction-permissions.service.js";
 import { BiddingService } from "./bidding.service.js";
 import { AuctionSessionService } from "./auction-session.service.js";
+import { TransactionDecisionService } from "./transaction-decision.service.js";
 
 @Module({
   imports: [PrismaModule],
@@ -25,8 +26,18 @@ import { AuctionSessionService } from "./auction-session.service.js";
       provide: BiddingService,
       inject: [PrismaService],
       useFactory: (prisma: PrismaService) => new BiddingService(prisma)
+    },
+    {
+      provide: TransactionDecisionService,
+      inject: [PrismaService],
+      useFactory: (prisma: PrismaService) => new TransactionDecisionService(prisma)
     }
   ],
-  exports: [AuctionPermissionsService, AuctionSessionService, BiddingService]
+  exports: [
+    AuctionPermissionsService,
+    AuctionSessionService,
+    BiddingService,
+    TransactionDecisionService
+  ]
 })
 export class AuctionsModule {}
