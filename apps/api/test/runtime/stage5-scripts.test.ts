@@ -23,10 +23,19 @@ describe("stage 5 verification scripts", () => {
       '"apps/api/test/contracts/stage5-schema.test.ts"'
     );
     expect(verifyScript).toContain(
+      '"apps/api/test/integration/point-ledger.service.test.ts"'
+    );
+    expect(verifyScript).toContain(
       '"apps/api/test/integration/auction-session.service.test.ts"'
     );
     expect(verifyScript).toContain(
       '"apps/api/test/integration/transaction-decision.service.test.ts"'
+    );
+    expect(verifyScript).toContain(
+      '"apps/api/test/runtime/admin-stage4-shell.test.ts"'
+    );
+    expect(verifyScript).toContain(
+      '"apps/api/test/runtime/stage4-controller-di.test.ts"'
     );
     expect(verifyScript).toContain(
       '"apps/api/test/integration/bidding.service.test.ts"'

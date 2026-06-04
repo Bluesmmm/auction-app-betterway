@@ -38,6 +38,113 @@ const ledgerCheckRunRowSchema = z.object({
   failureReason: z.string().nullable()
 });
 
+const operationsLedgerEntryRowSchema = z.object({
+  id: z.string(),
+  childId: z.string(),
+  type: z.string(),
+  amountPoints: z.number().int(),
+  availableAfter: z.number().int(),
+  frozenAfter: z.number().int(),
+  relatedType: z.string(),
+  relatedId: z.string(),
+  reason: z.string().nullable(),
+  createdAt: z.string()
+});
+
+const operationsActiveHoldRowSchema = z.object({
+  id: z.string(),
+  accountId: z.string(),
+  childId: z.string(),
+  childDisplayName: z.string(),
+  auctionSessionId: z.string(),
+  communityId: z.string(),
+  sellerChildId: z.string(),
+  amountPoints: z.number().int(),
+  status: z.string(),
+  auctionStatus: z.string(),
+  currentPricePoints: z.number().int(),
+  createdAt: z.string()
+});
+
+const operationsTransactionRowSchema = z.object({
+  id: z.string(),
+  auctionSessionId: z.string(),
+  communityId: z.string(),
+  buyerChildId: z.string(),
+  sellerChildId: z.string(),
+  pointHoldId: z.string(),
+  pointsAmount: z.number().int(),
+  status: z.string(),
+  auctionStatus: z.string(),
+  guardianConfirmDeadlineAt: z.string(),
+  deliveryConfirmDeadlineAt: z.string().nullable(),
+  createdAt: z.string()
+});
+
+const operationsOutboxRowSchema = z.object({
+  id: z.string(),
+  eventType: z.string(),
+  targetType: z.string(),
+  targetId: z.string(),
+  status: z.string(),
+  attempts: z.number().int(),
+  availableAt: z.string(),
+  lockedAt: z.string().nullable(),
+  createdAt: z.string()
+});
+
+const operationsDashboardPayloadSchema = z.object({
+  generatedAt: z.string(),
+  totals: z.object({
+    accountCount: z.number().int(),
+    availablePoints: z.number().int(),
+    frozenPoints: z.number().int(),
+    totalEarnedPoints: z.number().int(),
+    totalSpentPoints: z.number().int(),
+    totalAwardedPoints: z.number().int(),
+    totalPenaltyPoints: z.number().int()
+  }),
+  holds: z.object({
+    activeCount: z.number().int(),
+    releasedCount: z.number().int(),
+    transferredCount: z.number().int(),
+    cancelledCount: z.number().int(),
+    disputedCount: z.number().int(),
+    activeAmountPoints: z.number().int()
+  }),
+  transactions: z.object({
+    pendingGuardianConfirmCount: z.number().int(),
+    pendingDeliveryConfirmCount: z.number().int(),
+    completedCount: z.number().int(),
+    cancelledCount: z.number().int(),
+    disputedCount: z.number().int(),
+    platformReviewCount: z.number().int(),
+    reviewQueueCount: z.number().int()
+  }),
+  auctions: z.object({
+    pendingStartCount: z.number().int(),
+    activeCount: z.number().int(),
+    pendingSettlementCount: z.number().int(),
+    settledCount: z.number().int(),
+    cancelledCount: z.number().int(),
+    unsoldCount: z.number().int(),
+    delistedCount: z.number().int()
+  }),
+  outbox: z.object({
+    pendingCount: z.number().int(),
+    processingCount: z.number().int(),
+    sentCount: z.number().int(),
+    failedCount: z.number().int(),
+    cancelledCount: z.number().int(),
+    exceptionCount: z.number().int()
+  }),
+  activeHolds: z.array(operationsActiveHoldRowSchema),
+  reviewTransactions: z.array(operationsTransactionRowSchema),
+  recentLedgerEntries: z.array(operationsLedgerEntryRowSchema),
+  outboxExceptions: z.array(operationsOutboxRowSchema),
+  latestLedgerCheckRun: ledgerCheckRunRowSchema.nullable()
+});
+
 const stage4RejectedResponseSchema = stage4BaseResponseSchema.extend({
   result: z.literal("rejected"),
   errorCode: z.string()
@@ -57,6 +164,12 @@ const listLedgerCheckRunsAcceptedSchema = stage4BaseResponseSchema.extend({
   runs: z.array(ledgerCheckRunRowSchema)
 });
 
+const listOperationsDashboardAcceptedSchema = stage4BaseResponseSchema
+  .extend({
+    result: z.literal("accepted")
+  })
+  .merge(operationsDashboardPayloadSchema);
+
 export const listPointAdjustmentRequestsResultSchema = z.union([
   listPointAdjustmentRequestsAcceptedSchema,
   platformAdminRejectedResponseSchema
@@ -64,6 +177,11 @@ export const listPointAdjustmentRequestsResultSchema = z.union([
 
 export const listLedgerCheckRunsResultSchema = z.union([
   listLedgerCheckRunsAcceptedSchema,
+  platformAdminRejectedResponseSchema
+]);
+
+export const listOperationsDashboardResultSchema = z.union([
+  listOperationsDashboardAcceptedSchema,
   platformAdminRejectedResponseSchema
 ]);
 
@@ -87,6 +205,9 @@ export type ListPointAdjustmentRequestsResult = z.infer<
 >;
 export type ListLedgerCheckRunsResult = z.infer<
   typeof listLedgerCheckRunsResultSchema
+>;
+export type ListOperationsDashboardResult = z.infer<
+  typeof listOperationsDashboardResultSchema
 >;
 export type PointAdjustmentCommandResult = z.infer<
   typeof pointAdjustmentCommandResultSchema
@@ -121,6 +242,11 @@ export const stage4AdminCommandCatalog = {
     method: "GET",
     path: "/points/ledger-check-runs",
     resultSchema: listLedgerCheckRunsResultSchema
+  },
+  listOperationsDashboard: {
+    method: "GET",
+    path: "/points/operations-dashboard",
+    resultSchema: listOperationsDashboardResultSchema
   },
   createAdminPointAdjustment: {
     method: "POST",
@@ -177,6 +303,26 @@ export async function listLedgerCheckRuns(
   );
 
   return parseStage4Response(response, listLedgerCheckRunsResultSchema);
+}
+
+export async function listOperationsDashboard(
+  apiBaseUrl: string,
+  auth: Stage4Auth
+): Promise<ListOperationsDashboardResult> {
+  const parsed = stage4AuthSchema.parse(auth);
+  const response = await fetch(
+    buildStage2AdminUrl(
+      apiBaseUrl,
+      stage4AdminCommandCatalog.listOperationsDashboard.path
+    ),
+    {
+      headers: {
+        authorization: `Bearer ${parsed.accessToken}`
+      }
+    }
+  );
+
+  return parseStage4Response(response, listOperationsDashboardResultSchema);
 }
 
 export async function createAdminPointAdjustment(

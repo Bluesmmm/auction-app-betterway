@@ -18,6 +18,13 @@ describe("admin stage4 shell", () => {
     expect(api).toContain("/points/adjustment-requests/:requestId/review");
     expect(api).toContain("/points/adjustment-requests/:requestId/second-review");
     expect(api).toContain("/points/ledger-check-runs");
+    expect(api).toContain("/points/operations-dashboard");
+    expect(api).toContain("listOperationsDashboard");
+    expect(view).toContain("Points Operations");
+    expect(view).toContain("Transaction Review Queue");
+    expect(view).toContain("Active Holds");
+    expect(view).toContain("Outbox Exceptions");
+    expect(view).toContain("Recent Ledger Entries");
     expect(view).toContain("Adjustment Queue");
     expect(view).toContain("Ledger Check Results");
     expect(view).toContain("Second Approve");

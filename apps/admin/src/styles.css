@@ -149,6 +149,56 @@ a {
   font-size: 12px;
 }
 
+.stage5-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.stage5-metric {
+  display: grid;
+  min-height: 78px;
+  align-content: center;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #dbe2ea;
+  border-left: 4px solid #5b708b;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.stage5-metric-warning {
+  border-left-color: #d48806;
+}
+
+.stage5-metric-danger {
+  border-left-color: #cf1322;
+}
+
+.stage5-metric-value.ant-typography {
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.stage5-ops-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.stage5-ops-grid .ops-band h3.ant-typography,
+.stage5-ledger-health h3.ant-typography {
+  margin-top: 0;
+  margin-bottom: 12px;
+  font-size: 16px;
+}
+
+.stage5-ledger-health {
+  margin-bottom: 16px;
+}
+
 @media (max-width: 640px) {
   .admin-header {
     align-items: flex-start;
@@ -165,10 +215,18 @@ a {
     align-items: stretch;
     flex-direction: column;
   }
+
+  .stage5-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1080px) {
   .ops-layout {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .stage5-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

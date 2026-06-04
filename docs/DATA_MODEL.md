@@ -636,7 +636,7 @@
 | `buyer_child_id` | 买家 |
 | `winning_bid_id` | 成交出价 |
 | `points_amount` | 成交积分 |
-| `status` | pending_guardian_confirm / pending_delivery_confirm / completed / cancelled / disputed |
+| `status` | pending_guardian_confirm / pending_delivery_confirm / completed / cancelled / disputed / platform_review |
 | `buyer_guardian_confirmed_at` | 买方家长确认 |
 | `seller_guardian_confirmed_at` | 卖方家长确认 |
 | `buyer_effective_decision_id` | 买方当前有效监护人决策 |
@@ -1219,3 +1219,7 @@ blocked
 ### 15.12 全链路删除
 
 注销完成后创建 `deletion_jobs`，覆盖主库、搜索索引、对象存储、导出文件、通知、缓存和备份保留策略；必要保留数据必须记录保留原因。
+
+### 15.13 积分运营大屏
+
+只读聚合 `point_accounts`、`point_holds`、`point_ledger_entries`、`transactions`、`auction_sessions`、`outbox_events` 和最近 `ledger_check_runs`；仅 active MFA 平台管理员可读取。大屏不写业务事实，不替代出价、结算、争议裁决、积分调整或 outbox 派发命令。

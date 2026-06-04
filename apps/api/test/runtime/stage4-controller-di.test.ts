@@ -28,6 +28,7 @@ describe("Stage 4 points controller wiring", () => {
     expect(pointsController).toContain('Get("children/:childId/ledger-entries")');
     expect(pointsController).toContain('Get("adjustment-requests")');
     expect(pointsController).toContain('Get("ledger-check-runs")');
+    expect(pointsController).toContain('Get("operations-dashboard")');
     expect(pointsController).toContain(
       'Post("children/:childId/adjustment-requests")'
     );

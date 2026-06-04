@@ -205,6 +205,38 @@ export class PointsController {
     );
   }
 
+  async getOperationsDashboard(authorization?: string) {
+    const now = new Date();
+    const actor = await this.authenticate(authorization, now);
+    const result = await this.points.getOperationsDashboard({
+      platformAdminUserId: actor.userId,
+      now
+    });
+
+    if (result.result === "rejected") {
+      return rejectedWriteResponse(
+        {
+          now,
+          targetType: "points_operations_dashboard",
+          targetId: "latest",
+          latestStatus: "rejected"
+        },
+        result.errorCode
+      );
+    }
+
+    const { result: _result, ...payload } = result;
+    return acceptedWriteResponse(
+      {
+        now,
+        targetType: "points_operations_dashboard",
+        targetId: "latest",
+        latestStatus: "active"
+      },
+      payload
+    );
+  }
+
   async createAdminAdjustmentRequest(
     body: {
       childId: string;
@@ -348,6 +380,11 @@ applyMethodDecorator(
   "listLedgerCheckRuns"
 );
 applyMethodDecorator(
+  Get("operations-dashboard"),
+  PointsController.prototype,
+  "getOperationsDashboard"
+);
+applyMethodDecorator(
   Post("children/:childId/adjustment-requests"),
   PointsController.prototype,
   "createGuardianAdjustmentRequest"
@@ -401,6 +438,12 @@ applyParameterDecorator(
   Headers("authorization"),
   PointsController.prototype,
   "listLedgerCheckRuns",
+  0
+);
+applyParameterDecorator(
+  Headers("authorization"),
+  PointsController.prototype,
+  "getOperationsDashboard",
   0
 );
 applyParameterDecorator(

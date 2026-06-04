@@ -140,6 +140,123 @@ export type PointLedgerEntryRow = {
   createdAt: string;
 };
 
+export type PointOperationsDashboardLedgerEntryRow = PointLedgerEntryRow & {
+  childId: string;
+};
+
+export type PointOperationsDashboardActiveHoldRow = {
+  id: string;
+  accountId: string;
+  childId: string;
+  childDisplayName: string;
+  auctionSessionId: string;
+  communityId: string;
+  sellerChildId: string;
+  amountPoints: number;
+  status: string;
+  auctionStatus: string;
+  currentPricePoints: number;
+  createdAt: string;
+};
+
+export type PointOperationsDashboardTransactionRow = {
+  id: string;
+  auctionSessionId: string;
+  communityId: string;
+  buyerChildId: string;
+  sellerChildId: string;
+  pointHoldId: string;
+  pointsAmount: number;
+  status: string;
+  auctionStatus: string;
+  guardianConfirmDeadlineAt: string;
+  deliveryConfirmDeadlineAt: string | null;
+  createdAt: string;
+};
+
+export type PointOperationsDashboardOutboxRow = {
+  id: string;
+  eventType: string;
+  targetType: string;
+  targetId: string;
+  status: string;
+  attempts: number;
+  availableAt: string;
+  lockedAt: string | null;
+  createdAt: string;
+};
+
+export type PointOperationsDashboardLedgerCheckRunRow = {
+  id: string;
+  status: string;
+  checkedAccountCount: number;
+  ledgerDiffCount: number;
+  negativeReplayCount: number;
+  orphanLedgerCount: number;
+  startedAt: string;
+  finishedAt: string | null;
+  workerName: string | null;
+  failureReason: string | null;
+};
+
+export type PointOperationsDashboardResult =
+  | {
+      result: "accepted";
+      generatedAt: string;
+      totals: {
+        accountCount: number;
+        availablePoints: number;
+        frozenPoints: number;
+        totalEarnedPoints: number;
+        totalSpentPoints: number;
+        totalAwardedPoints: number;
+        totalPenaltyPoints: number;
+      };
+      holds: {
+        activeCount: number;
+        releasedCount: number;
+        transferredCount: number;
+        cancelledCount: number;
+        disputedCount: number;
+        activeAmountPoints: number;
+      };
+      transactions: {
+        pendingGuardianConfirmCount: number;
+        pendingDeliveryConfirmCount: number;
+        completedCount: number;
+        cancelledCount: number;
+        disputedCount: number;
+        platformReviewCount: number;
+        reviewQueueCount: number;
+      };
+      auctions: {
+        pendingStartCount: number;
+        activeCount: number;
+        pendingSettlementCount: number;
+        settledCount: number;
+        cancelledCount: number;
+        unsoldCount: number;
+        delistedCount: number;
+      };
+      outbox: {
+        pendingCount: number;
+        processingCount: number;
+        sentCount: number;
+        failedCount: number;
+        cancelledCount: number;
+        exceptionCount: number;
+      };
+      activeHolds: PointOperationsDashboardActiveHoldRow[];
+      reviewTransactions: PointOperationsDashboardTransactionRow[];
+      recentLedgerEntries: PointOperationsDashboardLedgerEntryRow[];
+      outboxExceptions: PointOperationsDashboardOutboxRow[];
+      latestLedgerCheckRun: PointOperationsDashboardLedgerCheckRunRow | null;
+    }
+  | {
+      result: "rejected";
+      errorCode: "PLATFORM_ADMIN_REQUIRED";
+    };
+
 export type PointLedgerEntriesResult =
   | {
       result: "accepted";
@@ -282,6 +399,310 @@ export class PointLedgerService {
         ...row,
         createdAt: row.createdAt.toISOString()
       }))
+    };
+  }
+
+  async getOperationsDashboard(input: {
+    platformAdminUserId: string;
+    now?: Date;
+  }): Promise<PointOperationsDashboardResult> {
+    const authorization = await this.authorizePlatformAdmin({
+      platformAdminUserId: input.platformAdminUserId
+    });
+    if (authorization.result === "rejected") {
+      return authorization;
+    }
+
+    const now = input.now ?? new Date();
+    const [
+      accountTotals,
+      holdStatusRows,
+      activeHoldTotals,
+      transactionStatusRows,
+      auctionStatusRows,
+      outboxStatusRows,
+      activeHolds,
+      reviewTransactions,
+      recentLedgerEntries,
+      outboxExceptions,
+      latestLedgerCheckRun
+    ] = await Promise.all([
+      this.prisma.pointAccount.aggregate({
+        _count: { _all: true },
+        _sum: {
+          availablePoints: true,
+          frozenPoints: true,
+          totalEarnedPoints: true,
+          totalSpentPoints: true,
+          totalAwardedPoints: true,
+          totalPenaltyPoints: true
+        }
+      }),
+      this.prisma.pointHold.groupBy({
+        by: ["status"],
+        _count: { _all: true }
+      }),
+      this.prisma.pointHold.aggregate({
+        where: { status: "active" },
+        _count: { _all: true },
+        _sum: { amountPoints: true }
+      }),
+      this.prisma.transaction.groupBy({
+        by: ["status"],
+        _count: { _all: true }
+      }),
+      this.prisma.auctionSession.groupBy({
+        by: ["status"],
+        _count: { _all: true }
+      }),
+      this.prisma.outboxEvent.groupBy({
+        by: ["status"],
+        _count: { _all: true }
+      }),
+      this.prisma.pointHold.findMany({
+        where: { status: "active" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 20,
+        select: {
+          id: true,
+          accountId: true,
+          auctionSessionId: true,
+          amountPoints: true,
+          status: true,
+          createdAt: true,
+          account: {
+            select: {
+              childId: true,
+              child: {
+                select: {
+                  displayName: true
+                }
+              }
+            }
+          },
+          auctionSession: {
+            select: {
+              status: true,
+              currentPricePoints: true,
+              item: {
+                select: {
+                  communityId: true,
+                  sellerChildId: true
+                }
+              }
+            }
+          }
+        }
+      }),
+      this.prisma.transaction.findMany({
+        where: {
+          status: {
+            in: [
+              "pending_guardian_confirm",
+              "pending_delivery_confirm",
+              "disputed",
+              "platform_review"
+            ]
+          }
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 20,
+        select: {
+          id: true,
+          auctionSessionId: true,
+          buyerChildId: true,
+          sellerChildId: true,
+          pointHoldId: true,
+          pointsAmount: true,
+          status: true,
+          guardianConfirmDeadlineAt: true,
+          deliveryConfirmDeadlineAt: true,
+          createdAt: true,
+          auctionSession: {
+            select: {
+              status: true,
+              item: {
+                select: {
+                  communityId: true
+                }
+              }
+            }
+          }
+        }
+      }),
+      this.prisma.pointLedgerEntry.findMany({
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 20,
+        select: {
+          id: true,
+          childId: true,
+          type: true,
+          amountPoints: true,
+          availableAfter: true,
+          frozenAfter: true,
+          relatedType: true,
+          relatedId: true,
+          reason: true,
+          createdAt: true
+        }
+      }),
+      this.prisma.outboxEvent.findMany({
+        where: {
+          OR: [
+            { status: "failed" },
+            {
+              status: "pending",
+              availableAt: {
+                lte: now
+              }
+            }
+          ]
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 20,
+        select: {
+          id: true,
+          eventType: true,
+          targetType: true,
+          targetId: true,
+          status: true,
+          attempts: true,
+          availableAt: true,
+          lockedAt: true,
+          createdAt: true
+        }
+      }),
+      this.prisma.ledgerCheckRun.findFirst({
+        orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+        select: {
+          id: true,
+          status: true,
+          checkedAccountCount: true,
+          ledgerDiffCount: true,
+          negativeReplayCount: true,
+          orphanLedgerCount: true,
+          startedAt: true,
+          finishedAt: true,
+          workerName: true,
+          failureReason: true
+        }
+      })
+    ]);
+
+    const pendingGuardianConfirmCount = countStatus(
+      transactionStatusRows,
+      "pending_guardian_confirm"
+    );
+    const pendingDeliveryConfirmCount = countStatus(
+      transactionStatusRows,
+      "pending_delivery_confirm"
+    );
+    const disputedCount = countStatus(transactionStatusRows, "disputed");
+    const platformReviewCount = countStatus(
+      transactionStatusRows,
+      "platform_review"
+    );
+
+    return {
+      result: "accepted",
+      generatedAt: now.toISOString(),
+      totals: {
+        accountCount: accountTotals._count._all,
+        availablePoints: accountTotals._sum.availablePoints ?? 0,
+        frozenPoints: accountTotals._sum.frozenPoints ?? 0,
+        totalEarnedPoints: accountTotals._sum.totalEarnedPoints ?? 0,
+        totalSpentPoints: accountTotals._sum.totalSpentPoints ?? 0,
+        totalAwardedPoints: accountTotals._sum.totalAwardedPoints ?? 0,
+        totalPenaltyPoints: accountTotals._sum.totalPenaltyPoints ?? 0
+      },
+      holds: {
+        activeCount: activeHoldTotals._count._all,
+        releasedCount: countStatus(holdStatusRows, "released"),
+        transferredCount: countStatus(holdStatusRows, "transferred"),
+        cancelledCount: countStatus(holdStatusRows, "cancelled"),
+        disputedCount: countStatus(holdStatusRows, "disputed"),
+        activeAmountPoints: activeHoldTotals._sum.amountPoints ?? 0
+      },
+      transactions: {
+        pendingGuardianConfirmCount,
+        pendingDeliveryConfirmCount,
+        completedCount: countStatus(transactionStatusRows, "completed"),
+        cancelledCount: countStatus(transactionStatusRows, "cancelled"),
+        disputedCount,
+        platformReviewCount,
+        reviewQueueCount:
+          pendingGuardianConfirmCount +
+          pendingDeliveryConfirmCount +
+          disputedCount +
+          platformReviewCount
+      },
+      auctions: {
+        pendingStartCount: countStatus(auctionStatusRows, "pending_start"),
+        activeCount: countStatus(auctionStatusRows, "active"),
+        pendingSettlementCount: countStatus(
+          auctionStatusRows,
+          "pending_settlement"
+        ),
+        settledCount: countStatus(auctionStatusRows, "settled"),
+        cancelledCount: countStatus(auctionStatusRows, "cancelled"),
+        unsoldCount: countStatus(auctionStatusRows, "unsold"),
+        delistedCount: countStatus(auctionStatusRows, "delisted")
+      },
+      outbox: {
+        pendingCount: countStatus(outboxStatusRows, "pending"),
+        processingCount: countStatus(outboxStatusRows, "processing"),
+        sentCount: countStatus(outboxStatusRows, "sent"),
+        failedCount: countStatus(outboxStatusRows, "failed"),
+        cancelledCount: countStatus(outboxStatusRows, "cancelled"),
+        exceptionCount: outboxExceptions.length
+      },
+      activeHolds: activeHolds.map((hold) => ({
+        id: hold.id,
+        accountId: hold.accountId,
+        childId: hold.account.childId,
+        childDisplayName: hold.account.child.displayName,
+        auctionSessionId: hold.auctionSessionId,
+        communityId: hold.auctionSession.item.communityId,
+        sellerChildId: hold.auctionSession.item.sellerChildId,
+        amountPoints: hold.amountPoints,
+        status: hold.status,
+        auctionStatus: hold.auctionSession.status,
+        currentPricePoints: hold.auctionSession.currentPricePoints,
+        createdAt: hold.createdAt.toISOString()
+      })),
+      reviewTransactions: reviewTransactions.map((transaction) => ({
+        id: transaction.id,
+        auctionSessionId: transaction.auctionSessionId,
+        communityId: transaction.auctionSession.item.communityId,
+        buyerChildId: transaction.buyerChildId,
+        sellerChildId: transaction.sellerChildId,
+        pointHoldId: transaction.pointHoldId,
+        pointsAmount: transaction.pointsAmount,
+        status: transaction.status,
+        auctionStatus: transaction.auctionSession.status,
+        guardianConfirmDeadlineAt:
+          transaction.guardianConfirmDeadlineAt.toISOString(),
+        deliveryConfirmDeadlineAt:
+          transaction.deliveryConfirmDeadlineAt?.toISOString() ?? null,
+        createdAt: transaction.createdAt.toISOString()
+      })),
+      recentLedgerEntries: recentLedgerEntries.map((entry) => ({
+        ...entry,
+        createdAt: entry.createdAt.toISOString()
+      })),
+      outboxExceptions: outboxExceptions.map((event) => ({
+        ...event,
+        availableAt: event.availableAt.toISOString(),
+        lockedAt: event.lockedAt?.toISOString() ?? null,
+        createdAt: event.createdAt.toISOString()
+      })),
+      latestLedgerCheckRun: latestLedgerCheckRun
+        ? {
+            ...latestLedgerCheckRun,
+            startedAt: latestLedgerCheckRun.startedAt.toISOString(),
+            finishedAt: latestLedgerCheckRun.finishedAt?.toISOString() ?? null
+          }
+        : null
     };
   }
 
@@ -1143,6 +1564,13 @@ function ledgerEntryTypeFor(
   }
 
   return "admin_award";
+}
+
+function countStatus<TStatus extends string>(
+  rows: Array<{ status: TStatus; _count: { _all: number } }>,
+  status: TStatus
+): number {
+  return rows.find((row) => row.status === status)?._count._all ?? 0;
 }
 
 async function hasFrozenGuardianDispute(
