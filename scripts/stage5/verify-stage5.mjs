@@ -22,6 +22,10 @@ for (const schema of Object.values(schemas)) {
     ["run", "db:deploy"],
     {
       DATABASE_URL: databaseUrlForSchema(schema)
+    },
+    {
+      attempts: 20,
+      retryDelayMs: 1000
     }
   ]);
 }
@@ -66,7 +70,15 @@ commands.push(
 );
 
 for (const command of commands) {
-  const [binary, args, extraEnv] = command;
+  const [binary, args, extraEnv, options] = command;
+  runCommand(binary, args, extraEnv, options);
+}
+
+console.log("stage5 verification passed");
+
+function runCommand(binary, args, extraEnv, options = {}) {
+  const attempts = options.attempts ?? 1;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
   const result = spawnSync(binary, args, {
     stdio: "inherit",
     shell: false,
@@ -76,15 +88,25 @@ for (const command of commands) {
     }
   });
 
-  if (result.status !== 0) {
+    if (result.status === 0) {
+      return;
+    }
+
+    if (attempt < attempts) {
+      sleep(options.retryDelayMs ?? 1000);
+      continue;
+    }
+
     process.exit(result.status ?? 1);
   }
 }
-
-console.log("stage5 verification passed");
 
 function databaseUrlForSchema(schema) {
   const url = new URL(baseDatabaseUrl);
   url.searchParams.set("schema", schema);
   return url.toString();
+}
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
