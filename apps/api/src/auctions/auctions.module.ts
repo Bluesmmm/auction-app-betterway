@@ -1,9 +1,11 @@
 import { Module } from "@nestjs/common";
 import { PrismaModule } from "../prisma/prisma.module.js";
 import { PrismaService } from "../prisma/prisma.service.js";
+import { FakeContentSafetyProvider } from "../providers/fake-providers.js";
 import { AuctionPermissionsService } from "./auction-permissions.service.js";
 import { BiddingService } from "./bidding.service.js";
 import { AuctionSessionService } from "./auction-session.service.js";
+import { TransactionAppealService } from "./transaction-appeal.service.js";
 import { TransactionDecisionService } from "./transaction-decision.service.js";
 
 @Module({
@@ -34,13 +36,26 @@ import { TransactionDecisionService } from "./transaction-decision.service.js";
         prisma: PrismaService,
         permissions: AuctionPermissionsService
       ) => new TransactionDecisionService(prisma, permissions)
+    },
+    {
+      provide: FakeContentSafetyProvider,
+      useFactory: () => new FakeContentSafetyProvider()
+    },
+    {
+      provide: TransactionAppealService,
+      inject: [PrismaService, FakeContentSafetyProvider],
+      useFactory: (
+        prisma: PrismaService,
+        contentSafety: FakeContentSafetyProvider
+      ) => new TransactionAppealService(prisma, contentSafety)
     }
   ],
   exports: [
     AuctionPermissionsService,
     AuctionSessionService,
     BiddingService,
-    TransactionDecisionService
+    TransactionDecisionService,
+    TransactionAppealService
   ]
 })
 export class AuctionsModule {}

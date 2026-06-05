@@ -250,6 +250,48 @@ enum DecisionValue {
   rejected
 }
 
+enum TransactionSide {
+  buyer
+  seller
+}
+
+enum DeliveryMethod {
+  designated_point
+  guardian_arranged
+  courier
+}
+
+enum DeliveryPointStatus {
+  active
+  disabled
+}
+
+enum DeliveryRecordStatus {
+  pending
+  completed
+  disputed
+  admin_resolved
+}
+
+enum AppealTargetType {
+  transaction
+}
+
+enum AppealStatus {
+  pending_activity_admin
+  resolved
+  escalated_platform
+  platform_resolved
+  rejected
+}
+
+enum AppealAttachmentStatus {
+  pending_scan
+  accepted
+  escalated_platform
+  rejected
+}
+
 enum IdempotencyStatus {
   processing
   completed
@@ -386,6 +428,7 @@ model User {
   reviewedPointAdjustments          PointAdjustmentRequest[]      @relation("PointAdjustmentReviewedBy")
   secondReviewedPointAdjustments    PointAdjustmentRequest[]      @relation("PointAdjustmentSecondReviewedBy")
   manualReviewRecords               ManualReviewRecord[]          @relation("ManualReviewRecordReviewer")
+  reviewedAppeals                    Appeal[]                      @relation("AppealReviewer")
 }
 
 model WechatIdentity {
@@ -411,6 +454,7 @@ model GuardianProfile {
   childLinks                GuardianChildLink[]
   communityCreationRequests CommunityCreationRequest[]
   submittedDisputes         GuardianDispute[]
+  submittedAppeals          Appeal[]                    @relation("GuardianSubmittedAppeals")
   pointAdjustmentRequests   PointAdjustmentRequest[]
   riskSignals               RiskSignal[]
   riskRestrictions          RiskRestriction[]
@@ -451,6 +495,7 @@ model ChildProfile {
   wantedPosts            WantedPost[]
   wantedResponses        WantedResponse[]
   bids                   Bid[]
+  guardianDecisions      GuardianDecision[]
 }
 
 model GuardianChildLink {
@@ -484,6 +529,8 @@ model AuctionCommunity {
   riskRestrictions              RiskRestriction[]
   items                         Item[]
   wantedPosts                   WantedPost[]
+  deliveryPoints                DeliveryPoint[]
+  appeals                       Appeal[]
 }
 
 model AdminCommunityScope {
@@ -747,8 +794,24 @@ model MediaAsset {
   revokedAt           DateTime?
   createdAt           DateTime        @default(now())
   contentVersionMedia ContentVersionMedia?
+  appealAttachment    AppealAttachment?
 
   @@index([ownerUserId, visibility])
+}
+
+model DeliveryPoint {
+  id                String              @id @default(cuid())
+  communityId       String
+  name              String
+  addressText       String
+  availableTimeText String
+  status            DeliveryPointStatus @default(active)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  community         AuctionCommunity    @relation(fields: [communityId], references: [id])
+  deliveryRecords   DeliveryRecord[]
+
+  @@index([communityId, status])
 }
 
 model Item {
@@ -1101,6 +1164,8 @@ model Transaction {
   createdAt                 DateTime           @default(now())
   auctionSession            AuctionSession     @relation(fields: [auctionSessionId], references: [id])
   decisions                 GuardianDecision[]
+  deliveryRecord            DeliveryRecord?
+  appeals                   Appeal[]
 }
 
 model GuardianDecision {
@@ -1109,11 +1174,78 @@ model GuardianDecision {
   guardianId    String
   phase         DecisionPhase
   value         DecisionValue
+  side          TransactionSide?
+  childId       String?
+  guardianRole  GuardianRole?
+  transactionVersion Int?
+  reason        String?
   effective     Boolean       @default(true)
   createdAt     DateTime      @default(now())
   transaction   Transaction   @relation(fields: [transactionId], references: [id])
+  child         ChildProfile?  @relation(fields: [childId], references: [id])
 
   @@index([transactionId, phase, effective])
+  @@index([transactionId, phase, side, effective])
+}
+
+model DeliveryRecord {
+  id               String               @id @default(cuid())
+  transactionId    String               @unique
+  deliveryMethod   DeliveryMethod
+  deliveryPointId  String?
+  sellerConfirmedAt DateTime?
+  buyerConfirmedAt  DateTime?
+  status           DeliveryRecordStatus @default(pending)
+  deadlineAt       DateTime?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  transaction      Transaction          @relation(fields: [transactionId], references: [id])
+  deliveryPoint    DeliveryPoint?       @relation(fields: [deliveryPointId], references: [id])
+
+  @@index([deliveryMethod, status])
+  @@index([deliveryPointId, status])
+}
+
+model Appeal {
+  id                    String       @id @default(cuid())
+  targetType            AppealTargetType
+  targetId              String
+  transactionId         String?
+  submittedByGuardianId String
+  communityId           String
+  status                AppealStatus @default(pending_activity_admin)
+  reason                String
+  resolution            String?
+  reviewedByUserId      String?
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+  resolvedAt            DateTime?
+  transaction           Transaction? @relation(fields: [transactionId], references: [id])
+  submittedByGuardian   GuardianProfile @relation("GuardianSubmittedAppeals", fields: [submittedByGuardianId], references: [id])
+  community             AuctionCommunity @relation(fields: [communityId], references: [id])
+  reviewedBy            User?        @relation("AppealReviewer", fields: [reviewedByUserId], references: [id])
+  attachments           AppealAttachment[]
+
+  @@index([communityId, status])
+  @@index([submittedByGuardianId, status])
+  @@index([transactionId, status])
+}
+
+model AppealAttachment {
+  id              String                 @id @default(cuid())
+  appealId        String
+  mediaAssetId    String                 @unique
+  status          AppealAttachmentStatus @default(pending_scan)
+  sortOrder       Int
+  riskLabelsJson  Json?
+  rejectionReason String?
+  createdAt       DateTime               @default(now())
+  reviewedAt      DateTime?
+  appeal          Appeal                 @relation(fields: [appealId], references: [id])
+  mediaAsset      MediaAsset             @relation(fields: [mediaAssetId], references: [id])
+
+  @@unique([appealId, sortOrder])
+  @@index([appealId, status])
 }
 
 model IdempotencyRecord {

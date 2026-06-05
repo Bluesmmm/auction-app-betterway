@@ -57,6 +57,9 @@ delisted
 ### 4.2 `transaction.status`
 
 `transaction.status` 表达成交后的家长确认、交付确认、完成、取消和争议处理。
+Stage 6 将 `pending_guardian_confirm` 内部顺序收口为“卖方主监护人提出成交确认提案 -> 买方主监护人接受或拒绝”。状态枚举不拆分该内部顺序，但实现和验证必须阻止买方在有效提案缺失时先确认成交。
+副监护人意见不能直接驱动 `transaction.status` 流转；只能进入交易申诉、补充说明、风险信号，或在确认监护冲突后进入 `guardian_dispute.status`。
+所有家长驱动的 `transaction.status` 流转，包括成交确认、成交拒绝、交付确认和交付拒绝，都必须先通过敏感操作二次验证。
 
 ```text
 pending_guardian_confirm
@@ -126,5 +129,17 @@ banned
 pending_platform_review
 frozen
 resolved
+rejected
+```
+
+### 4.8 `appeal.status`
+
+`appeal.status` 表达交易申诉的一线处理和平台升级路径。普通交易申诉先进入目标社区活动管理员队列；升级、跨社区、高风险、管理员被投诉或长期冻结时进入平台管理员复核。
+
+```text
+pending_activity_admin
+resolved
+escalated_platform
+platform_resolved
 rejected
 ```

@@ -649,6 +649,9 @@
 ### 8.2 `guardian_decisions`
 
 记录成交确认、交付确认和拒绝，不覆盖历史决策。
+Stage 6 必须补齐当前 schema 与本节设计之间的证据缺口：决策写入时持久化 `side`、`child_id`、`guardian_role`、`transaction_version` 和 `reason`，但第一轮不改变成交确认和交付确认只接受有效主监护人的规则。
+副监护人不能通过 `guardian_decisions` 改变成交或交付状态；其意见应记录为交易申诉、补充说明或风险信号。只有确认存在真实监护关系争议时，才另行打开 `guardian_disputes`。
+写入成交确认、成交拒绝、交付确认或交付拒绝的有效 `guardian_decisions` 前，必须校验家长已完成有效敏感操作二次验证；未通过验证时不得改变交易状态或积分冻结。
 
 | 字段 | 说明 |
 | --- | --- |
@@ -673,6 +676,10 @@
 
 ### 8.3 `delivery_records`
 
+Stage 6 第一版只开放 `designated_point` 和 `guardian_arranged`。`courier` 可以保留为后续扩展枚举，但 API/UI 必须失败关闭，不能在第一版采集地址、电话、运单或物流状态。
+
+交付方式由卖方主监护人在成交确认阶段先提出，买方主监护人的成交确认同时表示接受。买方主监护人不能在有效成交确认提案缺失时先确认成交。双方成交确认完成后，`delivery_records.delivery_method` 和 `designated_point_id` 锁定；买方不接受交付方式时应拒绝成交并释放冻结积分，而不是在同一交易内反复改写交付方式。
+
 | 字段 | 说明 |
 | --- | --- |
 | `id` | 主键 |
@@ -687,6 +694,8 @@
 
 ### 8.4 `delivery_points`
 
+指定交付点是社区级治理资源，由具备社区 scope 的活动管理员维护、平台管理员兜底。交付点不做物理删除，只允许 `active / disabled`；`disabled` 交付点不能被新交易选择，但已经绑定历史交易的证据必须继续可读。创建、编辑和禁用必须写审计和 outbox。
+
 | 字段 | 说明 |
 | --- | --- |
 | `id` | 主键 |
@@ -700,6 +709,11 @@
 
 ### 9.1 `appeals`
 
+Stage 6 交易申诉使用独立 `appeals` 事实，不复用 `guardian_disputes(type = transaction)`。`guardian_disputes` 仍只表达监护关系、授权、解绑、注销或同意冲突；交易申诉只围绕目标交易的证据、状态和冻结积分收口，除非申诉暴露出真实监护冲突，否则不默认冻结孩子全部参与能力。普通交易申诉先进入目标社区活动管理员队列；升级、跨社区、高风险、管理员被投诉或长期冻结时进入平台管理员复核。
+
+交易申诉第一版允许最多 4 张申诉图片附件。附件必须使用临时私有上传和短期 `appeal` purpose 访问授权，不公开展示；不接受视频、音频、PDF、压缩包、聊天记录导出文件或任意文件。不可解析、疑似恶意、命中地址电话二维码儿童隐私或严重风险的附件必须拒绝或升级平台复核，不能直接暴露给活动管理员。申诉图片附件复用 Stage 3 的 `MediaAsset`、内容安全 provider 和私有文件授权网关，但不创建 `ContentVersion`、`ModerationTask` 或孩子端公开内容入口。
+提交普通交易申诉文本和申诉图片附件不强制敏感操作二次验证，但必须校验提交者是目标交易买卖双方孩子档案的有效监护人。
+
 | 字段 | 说明 |
 | --- | --- |
 | `id` | 主键 |
@@ -711,6 +725,24 @@
 | `reason` | 申诉内容 |
 | `resolution` | 处理结果 |
 | `created_at` | 创建时间 |
+
+### 9.1.1 `appeal_attachments`
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `appeal_id` | 申诉 |
+| `media_asset_id` | 私有图片文件 |
+| `status` | pending_scan / accepted / escalated_platform / rejected |
+| `risk_labels_json` | 内容安全、OCR、二维码、EXIF 和恶意文件风险标签 |
+| `rejection_reason` | 拒绝原因，可空 |
+| `created_at` | 创建时间 |
+
+约束：
+
+- 同一 `appeal_id` 最多 4 个附件。
+- 附件只能引用私有图片文件，不能引用视频、音频、文档、压缩包或任意文件。
+- `accepted` 附件只允许提交申诉的家长、目标社区活动管理员和平台管理员通过 `appeal` purpose 短期授权访问。
 
 ### 9.2 `violations`
 
@@ -1184,9 +1216,9 @@ blocked
 
 事务内锁定拍卖场次；校验状态和结束时间；无有效出价置为流拍；有最高出价创建交易并进入待家长确认；写审计和 outbox。
 
-### 15.4 双方家长确认
+### 15.4 成交确认提案与接受
 
-事务内锁定交易；追加 `guardian_decisions`；只接受买卖双方 active 主监护人的有效决策；任一有效拒绝则交易置为 `cancelled` 并释放买家冻结积分；双方有效确认则交易进入 `pending_delivery_confirm`，买家积分继续冻结。
+事务内锁定交易；卖方 active 主监护人先追加成交确认阶段 `guardian_decisions` 并提出交付方式；买方 active 主监护人只能在有效成交确认提案存在后确认接受。任一有效拒绝则交易置为 `cancelled` 并释放买家冻结积分；买方确认接受后交易进入 `pending_delivery_confirm`，买家积分继续冻结。
 
 ### 15.5 交付完成
 

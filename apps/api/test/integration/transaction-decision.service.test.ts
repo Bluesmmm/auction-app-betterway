@@ -61,54 +61,68 @@ describe("TransactionDecisionService", () => {
     await prisma.$disconnect();
   });
 
-  it("moves to delivery confirmation only after both primary guardians confirm the transaction", async () => {
-    const fixture = await createTransactionFixture("guardian_both_confirm");
+  it("requires seller proposal before buyer accepts the transaction delivery method", async () => {
+    const fixture = await createTransactionFixture("guardian_seller_proposal");
     const buyerNow = new Date("2026-06-04T10:00:00.000Z");
     const sellerNow = new Date("2026-06-04T10:05:00.000Z");
 
+    await expect(
+      decisions.decideGuardianConfirmation({
+        actorUserId: fixture.buyer.guardianUserId,
+        transactionId: fixture.transactionId,
+        value: "confirmed",
+        idempotencyKey: unique("buyer_guardian_confirm_first"),
+        now: buyerNow
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "SELLER_DELIVERY_PROPOSAL_REQUIRED"
+    });
+
+    const sellerDecision = await decisions.decideGuardianConfirmation({
+      actorUserId: fixture.seller.guardianUserId,
+      transactionId: fixture.transactionId,
+      value: "confirmed",
+      deliveryMethod: "guardian_arranged",
+      idempotencyKey: unique("seller_guardian_confirm"),
+      now: sellerNow
+    });
     const buyerDecision = await decisions.decideGuardianConfirmation({
       actorUserId: fixture.buyer.guardianUserId,
       transactionId: fixture.transactionId,
       value: "confirmed",
       idempotencyKey: unique("buyer_guardian_confirm"),
-      now: buyerNow
-    });
-    const sellerDecision = await decisions.decideGuardianConfirmation({
-      actorUserId: fixture.seller.guardianUserId,
-      transactionId: fixture.transactionId,
-      value: "confirmed",
-      idempotencyKey: unique("seller_guardian_confirm"),
-      now: sellerNow
+      now: new Date("2026-06-04T10:06:00.000Z")
     });
 
-    expect(buyerDecision).toEqual({
-      result: "accepted",
-      transactionId: fixture.transactionId,
-      phase: "guardian_confirm",
-      value: "confirmed",
-      side: "buyer",
-      status: "pending_guardian_confirm",
-      decisionId: expect.any(String),
-      buyerConfirmed: true,
-      sellerConfirmed: false,
-      releasedAmountPoints: 0,
-      transferredAmountPoints: 0,
-      deliveryConfirmDeadlineAt: null,
-      idempotencyKey: expect.any(String)
-    });
     expect(sellerDecision).toEqual({
       result: "accepted",
       transactionId: fixture.transactionId,
       phase: "guardian_confirm",
       value: "confirmed",
       side: "seller",
+      status: "pending_guardian_confirm",
+      decisionId: expect.any(String),
+      buyerConfirmed: false,
+      sellerConfirmed: true,
+      releasedAmountPoints: 0,
+      transferredAmountPoints: 0,
+      deliveryConfirmDeadlineAt: null,
+      idempotencyKey: expect.any(String)
+    });
+    expect(buyerDecision).toEqual({
+      result: "accepted",
+      transactionId: fixture.transactionId,
+      phase: "guardian_confirm",
+      value: "confirmed",
+      side: "buyer",
       status: "pending_delivery_confirm",
       decisionId: expect.any(String),
       buyerConfirmed: true,
       sellerConfirmed: true,
       releasedAmountPoints: 0,
       transferredAmountPoints: 0,
-      deliveryConfirmDeadlineAt: "2026-06-07T10:05:00.000Z",
+      deliveryConfirmDeadlineAt: "2026-06-07T10:06:00.000Z",
       idempotencyKey: expect.any(String)
     });
     await expect(
@@ -124,18 +138,64 @@ describe("TransactionDecisionService", () => {
       })
     ).resolves.toEqual({
       status: "pending_delivery_confirm",
-      deliveryConfirmDeadlineAt: new Date("2026-06-07T10:05:00.000Z"),
+      deliveryConfirmDeadlineAt: new Date("2026-06-07T10:06:00.000Z"),
       version: 2
     });
     await expect(
-      prisma.guardianDecision.count({
+      prisma.guardianDecision.findMany({
         where: {
           transactionId: fixture.transactionId,
           phase: "guardian_confirm",
           effective: true
+        },
+        orderBy: {
+          createdAt: "asc"
+        },
+        select: {
+          side: true,
+          childId: true,
+          guardianRole: true,
+          transactionVersion: true,
+          reason: true,
+          value: true
         }
       })
-    ).resolves.toBe(2);
+    ).resolves.toEqual([
+      {
+        side: "seller",
+        childId: fixture.seller.childId,
+        guardianRole: "primary",
+        transactionVersion: 1,
+        reason: null,
+        value: "confirmed"
+      },
+      {
+        side: "buyer",
+        childId: fixture.buyer.childId,
+        guardianRole: "primary",
+        transactionVersion: 1,
+        reason: null,
+        value: "confirmed"
+      }
+    ]);
+    await expect(
+      prisma.deliveryRecord.findUnique({
+        where: {
+          transactionId: fixture.transactionId
+        },
+        select: {
+          deliveryMethod: true,
+          deliveryPointId: true,
+          status: true,
+          deadlineAt: true
+        }
+      })
+    ).resolves.toEqual({
+      deliveryMethod: "guardian_arranged",
+      deliveryPointId: null,
+      status: "pending",
+      deadlineAt: new Date("2026-06-07T10:06:00.000Z")
+    });
     await expect(
       prisma.outboxEvent.count({
         where: {
@@ -240,6 +300,142 @@ describe("TransactionDecisionService", () => {
         }
       })
     ).resolves.toBe(1);
+  });
+
+  it("validates seller delivery method proposals before buyer acceptance", async () => {
+    const courierFixture = await createTransactionFixture("delivery_courier");
+    await expect(
+      decisions.decideGuardianConfirmation({
+        actorUserId: courierFixture.seller.guardianUserId,
+        transactionId: courierFixture.transactionId,
+        value: "confirmed",
+        deliveryMethod: "courier",
+        idempotencyKey: unique("courier_delivery_rejected"),
+        now: new Date("2026-06-04T11:10:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "DELIVERY_METHOD_NOT_ALLOWED"
+    });
+
+    const disabledPointFixture = await createTransactionFixture(
+      "delivery_disabled_point"
+    );
+    const disabledPoint = await createDeliveryPoint(
+      "disabled_delivery_point",
+      disabledPointFixture.communityId,
+      "disabled"
+    );
+    await expect(
+      decisions.decideGuardianConfirmation({
+        actorUserId: disabledPointFixture.seller.guardianUserId,
+        transactionId: disabledPointFixture.transactionId,
+        value: "confirmed",
+        deliveryMethod: "designated_point",
+        deliveryPointId: disabledPoint.id,
+        idempotencyKey: unique("disabled_point_rejected"),
+        now: new Date("2026-06-04T11:20:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "DELIVERY_POINT_NOT_AVAILABLE"
+    });
+
+    const crossCommunityFixture = await createTransactionFixture(
+      "delivery_cross_community"
+    );
+    const otherCommunity = await prisma.auctionCommunity.create({
+      data: {
+        name: `Other Delivery Community ${unique("delivery_other")}`,
+        creatorGuardianId: crossCommunityFixture.seller.guardianId,
+        status: "active",
+        defaultAuctionDurationMinutes: 90
+      }
+    });
+    const crossCommunityPoint = await createDeliveryPoint(
+      "cross_community_delivery_point",
+      otherCommunity.id,
+      "active"
+    );
+    await expect(
+      decisions.decideGuardianConfirmation({
+        actorUserId: crossCommunityFixture.seller.guardianUserId,
+        transactionId: crossCommunityFixture.transactionId,
+        value: "confirmed",
+        deliveryMethod: "designated_point",
+        deliveryPointId: crossCommunityPoint.id,
+        idempotencyKey: unique("cross_community_point_rejected"),
+        now: new Date("2026-06-04T11:30:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "DELIVERY_POINT_NOT_AVAILABLE"
+    });
+
+    const guardianArrangedFixture = await createTransactionFixture(
+      "delivery_guardian_arranged_disabled"
+    );
+    await prisma.childGuardianSettings.update({
+      where: {
+        childId: guardianArrangedFixture.buyer.childId
+      },
+      data: {
+        canUseGuardianArrangedDelivery: false
+      }
+    });
+    await expect(
+      decisions.decideGuardianConfirmation({
+        actorUserId: guardianArrangedFixture.seller.guardianUserId,
+        transactionId: guardianArrangedFixture.transactionId,
+        value: "confirmed",
+        deliveryMethod: "guardian_arranged",
+        idempotencyKey: unique("guardian_arranged_disabled"),
+        now: new Date("2026-06-04T11:40:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "rejected",
+      errorCode: "GUARDIAN_ARRANGED_DELIVERY_NOT_ALLOWED"
+    });
+
+    const activePointFixture = await createTransactionFixture(
+      "delivery_active_point"
+    );
+    const activePoint = await createDeliveryPoint(
+      "active_delivery_point",
+      activePointFixture.communityId,
+      "active"
+    );
+    await expect(
+      decisions.decideGuardianConfirmation({
+        actorUserId: activePointFixture.seller.guardianUserId,
+        transactionId: activePointFixture.transactionId,
+        value: "confirmed",
+        deliveryMethod: "designated_point",
+        deliveryPointId: activePoint.id,
+        idempotencyKey: unique("active_point_accepted"),
+        now: new Date("2026-06-04T11:50:00.000Z")
+      })
+    ).resolves.toMatchObject({
+      result: "accepted",
+      side: "seller",
+      status: "pending_guardian_confirm"
+    });
+    await expect(
+      prisma.deliveryRecord.findUnique({
+        where: {
+          transactionId: activePointFixture.transactionId
+        },
+        select: {
+          deliveryMethod: true,
+          deliveryPointId: true,
+          status: true
+        }
+      })
+    ).resolves.toEqual({
+      deliveryMethod: "designated_point",
+      deliveryPointId: activePoint.id,
+      status: "pending"
+    });
   });
 
   it("transfers buyer frozen points to seller available points after both delivery confirmations", async () => {
@@ -870,6 +1066,17 @@ async function createChildWithPrimaryGuardian(
       confirmedAt: new Date("2026-06-04T08:00:00.000Z")
     }
   });
+  await prisma.childGuardianSettings.create({
+    data: {
+      childId: child.id,
+      canPublish: true,
+      canBid: true,
+      canUseCourier: false,
+      canUseGuardianArrangedDelivery: true,
+      canFavorite: true,
+      bidRequiresGuardianConfirmation: true
+    }
+  });
   const totalPoints = availablePoints + frozenPoints;
   const account = await prisma.pointAccount.create({
     data: {
@@ -903,6 +1110,22 @@ async function createChildWithPrimaryGuardian(
     guardianId: guardian.guardianId,
     pointAccountId: account.id
   };
+}
+
+async function createDeliveryPoint(
+  label: string,
+  communityId: string,
+  status: "active" | "disabled"
+) {
+  return prisma.deliveryPoint.create({
+    data: {
+      communityId,
+      name: `Delivery Point ${unique(label)}`,
+      addressText: `Address ${unique(label)}`,
+      availableTimeText: "Weekdays 16:00-18:00",
+      status
+    }
+  });
 }
 
 async function createGuardian(label: string): Promise<GuardianFixture> {

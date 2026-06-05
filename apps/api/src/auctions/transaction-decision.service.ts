@@ -2,6 +2,8 @@ import { Prisma } from "@prisma/client";
 import type {
   DecisionPhase,
   DecisionValue,
+  DeliveryMethod,
+  GuardianRole,
   PrismaClient,
   TransactionStatus
 } from "@prisma/client";
@@ -28,7 +30,12 @@ type TransactionDecisionRejectedErrorCode =
   | "DELIVERY_CONFIRM_DEADLINE_EXPIRED"
   | "POINT_HOLD_NOT_FOUND"
   | "POINT_ACCOUNT_NOT_FOUND"
-  | "SELLER_POINT_ACCOUNT_NOT_FOUND";
+  | "SELLER_POINT_ACCOUNT_NOT_FOUND"
+  | "SELLER_DELIVERY_PROPOSAL_REQUIRED"
+  | "DELIVERY_METHOD_REQUIRED"
+  | "DELIVERY_METHOD_NOT_ALLOWED"
+  | "DELIVERY_POINT_NOT_AVAILABLE"
+  | "GUARDIAN_ARRANGED_DELIVERY_NOT_ALLOWED";
 
 type AdminDisputeResolutionRejectedErrorCode =
   | "IDEMPOTENCY_KEY_REQUIRED"
@@ -110,6 +117,8 @@ type PointHoldRow = {
 type GuardianAuthorization = {
   side: DecisionSide;
   guardianId: string;
+  childId: string;
+  guardianRole: GuardianRole;
 };
 
 type DecisionState = {
@@ -133,6 +142,9 @@ export class TransactionDecisionService {
     actorUserId: string;
     transactionId: string;
     value: DecisionValue;
+    deliveryMethod?: DeliveryMethod;
+    deliveryPointId?: string | null;
+    reason?: string;
     idempotencyKey: string;
     now?: Date;
   }): Promise<TransactionDecisionResult> {
@@ -335,6 +347,9 @@ export class TransactionDecisionService {
     transactionId: string;
     phase: DecisionPhase;
     value: DecisionValue;
+    deliveryMethod?: DeliveryMethod;
+    deliveryPointId?: string | null;
+    reason?: string;
     idempotencyKey: string;
     now?: Date;
   }): Promise<TransactionDecisionResult> {
@@ -351,7 +366,10 @@ export class TransactionDecisionService {
       actorUserId: input.actorUserId,
       transactionId: input.transactionId,
       phase: input.phase,
-      value: input.value
+      value: input.value,
+      deliveryMethod: input.deliveryMethod ?? "",
+      deliveryPointId: input.deliveryPointId ?? "",
+      reason: normalizeDecisionReason(input.reason)
     });
 
     return runCriticalTransaction(this.prisma, async (tx) => {
@@ -412,12 +430,30 @@ export class TransactionDecisionService {
         });
       }
 
+      const guardianProposalValidation = await validateGuardianProposal(tx, {
+        phase: input.phase,
+        value: input.value,
+        transaction,
+        authorization,
+        stateBefore,
+        deliveryMethod: input.deliveryMethod,
+        deliveryPointId: input.deliveryPointId
+      });
+      if (guardianProposalValidation.result === "rejected") {
+        return completeIdempotency(tx, idempotency.id, guardianProposalValidation);
+      }
+
       const decision = await tx.guardianDecision.create({
         data: {
           transactionId: transaction.id,
           guardianId: authorization.guardianId,
           phase: input.phase,
           value: input.value,
+          side: authorization.side,
+          childId: authorization.childId,
+          guardianRole: authorization.guardianRole,
+          transactionVersion: transaction.version,
+          reason: normalizeDecisionReason(input.reason) || null,
           effective: true,
           createdAt: now
         },
@@ -436,6 +472,8 @@ export class TransactionDecisionService {
             decisionId: decision.id,
             value: input.value,
             stateBefore,
+            deliveryMethod: input.deliveryMethod,
+            deliveryPointId: input.deliveryPointId,
             actorUserId: input.actorUserId,
             idempotencyKey,
             now
@@ -469,6 +507,8 @@ async function applyGuardianDecision(
     decisionId: string;
     value: DecisionValue;
     stateBefore: DecisionState;
+    deliveryMethod?: DeliveryMethod;
+    deliveryPointId?: string | null;
     actorUserId: string;
     idempotencyKey: string;
     now: Date;
@@ -509,6 +549,17 @@ async function applyGuardianDecision(
     });
   }
 
+  if (input.authorization.side === "seller") {
+    await tx.deliveryRecord.create({
+      data: {
+        transactionId: input.transaction.id,
+        deliveryMethod: input.deliveryMethod as DeliveryMethod,
+        deliveryPointId: input.deliveryPointId ?? null,
+        status: "pending"
+      }
+    });
+  }
+
   if (stateAfter.buyerConfirmed && stateAfter.sellerConfirmed) {
     const deliveryConfirmDeadlineAt = new Date(
       input.now.getTime() + DELIVERY_CONFIRM_WINDOW_MS
@@ -523,6 +574,14 @@ async function applyGuardianDecision(
         version: {
           increment: 1
         }
+      }
+    });
+    await tx.deliveryRecord.update({
+      where: {
+        transactionId: input.transaction.id
+      },
+      data: {
+        deadlineAt: deliveryConfirmDeadlineAt
       }
     });
     await writeTransactionAuditAndOutbox(tx, {
@@ -1017,13 +1076,16 @@ async function loadGuardianAuthorization(
         }
       },
       select: {
-        guardianId: true
+        guardianId: true,
+        role: true
       }
     });
     if (link) {
       return {
         side: candidate.side,
-        guardianId: link.guardianId
+        guardianId: link.guardianId,
+        childId: candidate.childId,
+        guardianRole: link.role
       };
     }
   }
@@ -1177,6 +1239,128 @@ function canResolveDispute(
   }
 
   return status === "disputed" || status === "platform_review";
+}
+
+async function validateGuardianProposal(
+  tx: Prisma.TransactionClient,
+  input: {
+    phase: DecisionPhase;
+    value: DecisionValue;
+    transaction: LockedTransactionRow;
+    authorization: GuardianAuthorization;
+    stateBefore: DecisionState;
+    deliveryMethod?: DeliveryMethod;
+    deliveryPointId?: string | null;
+  }
+): Promise<
+  { result: "accepted" } | Extract<TransactionDecisionResult, { result: "rejected" }>
+> {
+  if (input.phase !== "guardian_confirm" || input.value !== "confirmed") {
+    return { result: "accepted" };
+  }
+
+  if (input.authorization.side === "buyer" && !input.stateBefore.sellerConfirmed) {
+    return {
+      result: "rejected",
+      errorCode: "SELLER_DELIVERY_PROPOSAL_REQUIRED"
+    };
+  }
+
+  if (input.authorization.side === "seller") {
+    if (!input.deliveryMethod) {
+      return {
+        result: "rejected",
+        errorCode: "DELIVERY_METHOD_REQUIRED"
+      };
+    }
+
+    if (input.deliveryMethod === "courier") {
+      return {
+        result: "rejected",
+        errorCode: "DELIVERY_METHOD_NOT_ALLOWED"
+      };
+    }
+
+    if (input.deliveryMethod === "designated_point" && !input.deliveryPointId) {
+      return {
+        result: "rejected",
+        errorCode: "DELIVERY_METHOD_REQUIRED"
+      };
+    }
+
+    if (input.deliveryMethod === "designated_point" && input.deliveryPointId) {
+      const communityId = await loadTransactionCommunityId(
+        tx,
+        input.transaction.auctionSessionId
+      );
+      if (!communityId) {
+        return {
+          result: "rejected",
+          errorCode: "TRANSACTION_NOT_FOUND"
+        };
+      }
+
+      const deliveryPoint = await tx.deliveryPoint.findFirst({
+        where: {
+          id: input.deliveryPointId,
+          communityId,
+          status: "active"
+        },
+        select: {
+          id: true
+        }
+      });
+      if (!deliveryPoint) {
+        return {
+          result: "rejected",
+          errorCode: "DELIVERY_POINT_NOT_AVAILABLE"
+        };
+      }
+    }
+
+    if (
+      input.deliveryMethod === "guardian_arranged" &&
+      input.deliveryPointId
+    ) {
+      return {
+        result: "rejected",
+        errorCode: "DELIVERY_METHOD_NOT_ALLOWED"
+      };
+    }
+
+    if (input.deliveryMethod === "guardian_arranged") {
+      const settings = await tx.childGuardianSettings.findMany({
+        where: {
+          childId: {
+            in: [
+              input.transaction.buyerChildId,
+              input.transaction.sellerChildId
+            ]
+          }
+        },
+        select: {
+          childId: true,
+          canUseGuardianArrangedDelivery: true
+        }
+      });
+      const allowedChildIds = new Set(
+        settings
+          .filter((setting) => setting.canUseGuardianArrangedDelivery)
+          .map((setting) => setting.childId)
+      );
+      if (
+        !allowedChildIds.has(input.transaction.buyerChildId) ||
+        !allowedChildIds.has(input.transaction.sellerChildId)
+      ) {
+        return {
+          result: "rejected",
+          errorCode: "GUARDIAN_ARRANGED_DELIVERY_NOT_ALLOWED"
+        };
+      }
+    }
+  }
+
+  return { result: "accepted" };
 }
 
 function mergeDecisionState(
@@ -1399,6 +1583,11 @@ function buildOutboxIdempotencyKey(eventType: string, transactionId: string) {
 function normalizeAdminReason(reason: string) {
   const trimmed = reason.trim();
   return trimmed ? trimmed.slice(0, 300) : "admin_dispute_resolution";
+}
+
+function normalizeDecisionReason(reason: string | undefined) {
+  const trimmed = reason?.trim() ?? "";
+  return trimmed ? trimmed.slice(0, 300) : "";
 }
 
 function createStableHash(value: Record<string, string>) {
