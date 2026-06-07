@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("stage 6 verification scripts", () => {
-  it("keeps a Stage 6 first-round verification entrypoint wired through package.json", () => {
+  it("keeps a Stage 6 verification entrypoint wired through package.json", () => {
     expect(existsSync("scripts/stage6/verify-stage6.mjs")).toBe(true);
 
     const rootPackage = readFileSync("package.json", "utf8");
@@ -21,19 +21,37 @@ describe("stage 6 verification scripts", () => {
       '"apps/api/test/contracts/stage6-schema.test.ts"'
     );
     expect(verifyScript).toContain(
+      '"apps/api/test/contracts/auctions.controller.test.ts"'
+    );
+    expect(verifyScript).toContain(
       '"apps/api/test/integration/transaction-decision.service.test.ts"'
     );
     expect(verifyScript).toContain(
       '"apps/api/test/integration/transaction-appeal.service.test.ts"'
     );
     expect(verifyScript).toContain(
+      '"apps/api/test/integration/stage6-api-flow.test.ts"'
+    );
+    expect(verifyScript).toContain(
+      '"apps/api/test/runtime/stage6-controller-di.test.ts"'
+    );
+    expect(verifyScript).toContain(
       '"apps/api/test/runtime/stage6-scripts.test.ts"'
+    );
+    expect(verifyScript).toContain(
+      '"apps/api/test/runtime/admin-stage6-shell.test.ts"'
+    );
+    expect(verifyScript).toContain(
+      '"apps/api/test/runtime/miniprogram-stage6-shell.test.ts"'
     );
     expect(verifyScript).toContain(
       '"apps/worker/test/transaction-timeout-worker.test.ts"'
     );
     expect(verifyScript).toContain('"typecheck"');
     expect(verifyScript).toContain('"build"');
+    expect(verifyScript).toContain('"git"');
+    expect(verifyScript).toContain('"diff"');
+    expect(verifyScript).toContain('"--check"');
     expect(verifyScript).toContain("stage6 verification passed");
   });
 });

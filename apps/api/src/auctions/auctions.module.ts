@@ -1,15 +1,18 @@
 import { Module } from "@nestjs/common";
+import { AccountsModule } from "../accounts/accounts.module.js";
 import { PrismaModule } from "../prisma/prisma.module.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { FakeContentSafetyProvider } from "../providers/fake-providers.js";
 import { AuctionPermissionsService } from "./auction-permissions.service.js";
 import { BiddingService } from "./bidding.service.js";
 import { AuctionSessionService } from "./auction-session.service.js";
+import { AuctionsController } from "./auctions.controller.js";
 import { TransactionAppealService } from "./transaction-appeal.service.js";
 import { TransactionDecisionService } from "./transaction-decision.service.js";
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, AccountsModule],
+  controllers: [AuctionsController],
   providers: [
     {
       provide: AuctionPermissionsService,

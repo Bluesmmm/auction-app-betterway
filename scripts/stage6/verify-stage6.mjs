@@ -36,9 +36,14 @@ commands.push(
       "test",
       "--",
       "apps/api/test/contracts/stage6-schema.test.ts",
+      "apps/api/test/contracts/auctions.controller.test.ts",
       "apps/api/test/integration/transaction-decision.service.test.ts",
       "apps/api/test/integration/transaction-appeal.service.test.ts",
-      "apps/api/test/runtime/stage6-scripts.test.ts"
+      "apps/api/test/integration/stage6-api-flow.test.ts",
+      "apps/api/test/runtime/stage6-controller-di.test.ts",
+      "apps/api/test/runtime/stage6-scripts.test.ts",
+      "apps/api/test/runtime/admin-stage6-shell.test.ts",
+      "apps/api/test/runtime/miniprogram-stage6-shell.test.ts"
     ],
     {
       DATABASE_URL: databaseUrlForSchema(schemas.api)
@@ -52,7 +57,8 @@ commands.push(
     }
   ],
   ["npm", ["run", "typecheck"]],
-  ["npm", ["run", "build"]]
+  ["npm", ["run", "build"]],
+  ["git", ["diff", "--check"]]
 );
 
 for (const command of commands) {

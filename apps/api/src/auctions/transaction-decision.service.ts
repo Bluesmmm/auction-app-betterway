@@ -44,6 +44,10 @@ type AdminDisputeResolutionRejectedErrorCode =
   | "TRANSACTION_NOT_IN_DISPUTE_REVIEW"
   | "COMMUNITY_ADMIN_REQUIRED";
 
+type TransactionDetailRejectedErrorCode =
+  | "TRANSACTION_NOT_FOUND"
+  | "TRANSACTION_ACCESS_DENIED";
+
 export type AdminDisputeResolutionAction =
   | "release_to_buyer"
   | "transfer_to_seller"
@@ -83,6 +87,51 @@ export type AdminDisputeResolutionResult =
   | {
       result: "rejected";
       errorCode: AdminDisputeResolutionRejectedErrorCode;
+    };
+
+export type TransactionDetailResult =
+  | {
+      result: "accepted";
+      transactionId: string;
+      auctionSessionId: string;
+      communityId: string;
+      buyerChildId: string;
+      sellerChildId: string;
+      pointHoldId: string;
+      pointsAmount: number;
+      status: TransactionStatus;
+      guardianConfirmDeadlineAt: string;
+      deliveryConfirmDeadlineAt: string | null;
+      version: number;
+      deliveryRecord: {
+        id: string;
+        deliveryMethod: DeliveryMethod;
+        deliveryPointId: string | null;
+        status: string;
+        deadlineAt: string | null;
+        deliveryPoint: {
+          id: string;
+          name: string;
+          addressText: string;
+          availableTimeText: string;
+          status: string;
+        } | null;
+      } | null;
+      decisions: Array<{
+        id: string;
+        phase: DecisionPhase;
+        value: DecisionValue;
+        side: DecisionSide | null;
+        childId: string | null;
+        guardianRole: GuardianRole | null;
+        transactionVersion: number | null;
+        reason: string | null;
+        createdAt: string;
+      }>;
+    }
+  | {
+      result: "rejected";
+      errorCode: TransactionDetailRejectedErrorCode;
     };
 
 type LockedTransactionRow = {
@@ -137,6 +186,145 @@ export class TransactionDecisionService {
     private readonly prisma: PrismaClient,
     private readonly permissions = new AuctionPermissionsService(prisma)
   ) {}
+
+  async getTransactionDetail(input: {
+    actorUserId: string;
+    transactionId: string;
+  }): Promise<TransactionDetailResult> {
+    const transaction = await this.prisma.transaction.findUnique({
+      where: {
+        id: input.transactionId
+      },
+      select: {
+        id: true,
+        auctionSessionId: true,
+        buyerChildId: true,
+        sellerChildId: true,
+        pointHoldId: true,
+        pointsAmount: true,
+        status: true,
+        guardianConfirmDeadlineAt: true,
+        deliveryConfirmDeadlineAt: true,
+        version: true,
+        auctionSession: {
+          select: {
+            item: {
+              select: {
+                communityId: true
+              }
+            }
+          }
+        },
+        deliveryRecord: {
+          select: {
+            id: true,
+            deliveryMethod: true,
+            deliveryPointId: true,
+            status: true,
+            deadlineAt: true,
+            deliveryPoint: {
+              select: {
+                id: true,
+                name: true,
+                addressText: true,
+                availableTimeText: true,
+                status: true
+              }
+            }
+          }
+        },
+        decisions: {
+          where: {
+            effective: true
+          },
+          orderBy: {
+            createdAt: "asc"
+          },
+          select: {
+            id: true,
+            phase: true,
+            value: true,
+            side: true,
+            childId: true,
+            guardianRole: true,
+            transactionVersion: true,
+            reason: true,
+            createdAt: true
+          }
+        }
+      }
+    });
+
+    if (!transaction) {
+      return {
+        result: "rejected",
+        errorCode: "TRANSACTION_NOT_FOUND"
+      };
+    }
+
+    const canReadAsGuardian = await this.prisma.guardianChildLink.findFirst({
+      where: {
+        childId: {
+          in: [transaction.buyerChildId, transaction.sellerChildId]
+        },
+        status: "active",
+        guardian: {
+          userId: input.actorUserId,
+          status: "active"
+        },
+        child: {
+          status: "active"
+        }
+      },
+      select: {
+        id: true
+      }
+    });
+    if (!canReadAsGuardian) {
+      const admin = await this.permissions.canManageCommunityAuction({
+        actorUserId: input.actorUserId,
+        communityId: transaction.auctionSession.item.communityId
+      });
+      if (admin.result === "rejected") {
+        return {
+          result: "rejected",
+          errorCode: "TRANSACTION_ACCESS_DENIED"
+        };
+      }
+    }
+
+    return {
+      result: "accepted",
+      transactionId: transaction.id,
+      auctionSessionId: transaction.auctionSessionId,
+      communityId: transaction.auctionSession.item.communityId,
+      buyerChildId: transaction.buyerChildId,
+      sellerChildId: transaction.sellerChildId,
+      pointHoldId: transaction.pointHoldId,
+      pointsAmount: transaction.pointsAmount,
+      status: transaction.status,
+      guardianConfirmDeadlineAt:
+        transaction.guardianConfirmDeadlineAt.toISOString(),
+      deliveryConfirmDeadlineAt:
+        transaction.deliveryConfirmDeadlineAt?.toISOString() ?? null,
+      version: transaction.version,
+      deliveryRecord: transaction.deliveryRecord
+        ? {
+            id: transaction.deliveryRecord.id,
+            deliveryMethod: transaction.deliveryRecord.deliveryMethod,
+            deliveryPointId: transaction.deliveryRecord.deliveryPointId,
+            status: transaction.deliveryRecord.status,
+            deadlineAt:
+              transaction.deliveryRecord.deadlineAt?.toISOString() ?? null,
+            deliveryPoint: transaction.deliveryRecord.deliveryPoint
+          }
+        : null,
+      decisions: transaction.decisions.map((decision) => ({
+        ...decision,
+        createdAt: decision.createdAt.toISOString()
+      }))
+    };
+  }
 
   async decideGuardianConfirmation(input: {
     actorUserId: string;
