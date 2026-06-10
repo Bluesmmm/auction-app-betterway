@@ -1,6 +1,7 @@
-import { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient, type TransactionStatus } from "@prisma/client";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { PrismaNotificationSender } from "../src/notification-sender.js";
+import type { RealtimeHintEvent } from "../src/realtime-hint-publisher.js";
 
 const databaseUrl = requireIsolatedDatabaseUrl();
 const prisma = new PrismaClient({
@@ -45,7 +46,19 @@ describe("PrismaNotificationSender", () => {
   });
 
   it("persists layered auction settlement notifications and sends parent subscriptions once", async () => {
-    const fixture = await createTransactionFixture("settled");
+    const fixture = await createTransactionFixture("settled", {
+      transactionStatus: "pending_guardian_confirm"
+    });
+    await enableWechatPreference({
+      userId: fixture.buyer.guardianUserId,
+      childId: fixture.buyer.childId,
+      eventType: "auction_settled"
+    });
+    await enableWechatPreference({
+      userId: fixture.seller.guardianUserId,
+      childId: fixture.seller.childId,
+      eventType: "auction_settled"
+    });
     const event = await createOutboxEvent("settled", {
       eventType: "auction.settled",
       targetType: "auction_session",
@@ -167,6 +180,231 @@ describe("PrismaNotificationSender", () => {
     expect(subscriptionPayloads).toHaveLength(2);
   });
 
+  it("keeps external subscriptions suppressed unless WeChat subscription is enabled", async () => {
+    const fixture = await createTransactionFixture("subscription_default", {
+      transactionStatus: "pending_guardian_confirm"
+    });
+    const event = await createOutboxEvent("subscription_default", {
+      eventType: "auction.settled",
+      targetType: "auction_session",
+      targetId: fixture.auctionSessionId,
+      payloadJson: {
+        auctionSessionId: fixture.auctionSessionId,
+        transactionId: fixture.transactionId
+      }
+    });
+    const subscriptionPayloads: unknown[] = [];
+    const sender = new PrismaNotificationSender(prisma, {
+      async send(input) {
+        subscriptionPayloads.push(input);
+        return {
+          ok: true,
+          providerMessageId: `provider_${input.recipientUserId}`,
+          mutatesBusinessState: false
+        };
+      }
+    });
+
+    await sender.send({
+      outboxEventId: event.id,
+      eventType: event.eventType,
+      targetType: event.targetType,
+      targetId: event.targetId,
+      idempotencyKey: event.idempotencyKey,
+      payloadJson: event.payloadJson as Record<string, unknown>
+    });
+
+    await expect(
+      prisma.notification.findMany({
+        where: {
+          eventId: event.id,
+          recipientChildId: {
+            not: null
+          },
+          priority: "high"
+        },
+        select: {
+          recipientUserId: true,
+          deliveryStatus: true
+        },
+        orderBy: {
+          recipientUserId: "asc"
+        }
+      })
+    ).resolves.toEqual([
+      {
+        recipientUserId: fixture.buyer.guardianUserId,
+        deliveryStatus: "suppressed"
+      },
+      {
+        recipientUserId: fixture.seller.guardianUserId,
+        deliveryStatus: "suppressed"
+      }
+    ]);
+    expect(subscriptionPayloads).toHaveLength(0);
+  });
+
+  it("falls back to user-level subscription preferences for child-scoped notifications", async () => {
+    const fixture = await createTransactionFixture("subscription_user_level", {
+      transactionStatus: "pending_guardian_confirm"
+    });
+    await enableWechatPreference({
+      userId: fixture.buyer.guardianUserId,
+      childId: null,
+      eventType: "auction_settled"
+    });
+    const event = await createOutboxEvent("subscription_user_level", {
+      eventType: "auction.settled",
+      targetType: "auction_session",
+      targetId: fixture.auctionSessionId,
+      payloadJson: {
+        auctionSessionId: fixture.auctionSessionId,
+        transactionId: fixture.transactionId
+      }
+    });
+    const subscriptionPayloads: unknown[] = [];
+    const sender = new PrismaNotificationSender(prisma, {
+      async send(input) {
+        subscriptionPayloads.push(input);
+        return {
+          ok: true,
+          providerMessageId: `provider_${input.recipientUserId}`,
+          mutatesBusinessState: false
+        };
+      }
+    });
+
+    await sender.send({
+      outboxEventId: event.id,
+      eventType: event.eventType,
+      targetType: event.targetType,
+      targetId: event.targetId,
+      idempotencyKey: event.idempotencyKey,
+      payloadJson: event.payloadJson as Record<string, unknown>
+    });
+
+    await expect(
+      prisma.notification.findMany({
+        where: {
+          eventId: event.id,
+          recipientUserId: {
+            in: [fixture.buyer.guardianUserId, fixture.seller.guardianUserId]
+          }
+        },
+        select: {
+          recipientUserId: true,
+          deliveryStatus: true
+        },
+        orderBy: {
+          recipientUserId: "asc"
+        }
+      })
+    ).resolves.toEqual([
+      {
+        recipientUserId: fixture.buyer.guardianUserId,
+        deliveryStatus: "sent"
+      },
+      {
+        recipientUserId: fixture.seller.guardianUserId,
+        deliveryStatus: "suppressed"
+      }
+    ]);
+    expect(subscriptionPayloads).toEqual([
+      expect.objectContaining({
+        recipientUserId: fixture.buyer.guardianUserId,
+        templateKey: "auction_settled"
+      })
+    ]);
+  });
+
+  it("does not send transaction notifications when the source status has moved on", async () => {
+    const fixture = await createTransactionFixture("stale_transaction_status", {
+      transactionStatus: "completed"
+    });
+    const event = await createOutboxEvent("stale_transaction_status", {
+      eventType: "transaction.platform_review_required",
+      targetType: "transaction",
+      targetId: fixture.transactionId,
+      payloadJson: {
+        transactionId: fixture.transactionId,
+        status: "platform_review"
+      }
+    });
+    const sender = new PrismaNotificationSender(prisma);
+
+    await sender.send({
+      outboxEventId: event.id,
+      eventType: event.eventType,
+      targetType: event.targetType,
+      targetId: event.targetId,
+      idempotencyKey: event.idempotencyKey,
+      payloadJson: event.payloadJson as Record<string, unknown>
+    });
+
+    await expect(
+      prisma.notification.count({
+        where: {
+          eventId: event.id
+        }
+      })
+    ).resolves.toBe(0);
+  });
+
+  it("publishes notification realtime hints per affected recipient", async () => {
+    const fixture = await createTransactionFixture("notification_realtime", {
+      transactionStatus: "pending_guardian_confirm"
+    });
+    const event = await createOutboxEvent("notification_realtime", {
+      eventType: "auction.settled",
+      targetType: "auction_session",
+      targetId: fixture.auctionSessionId,
+      payloadJson: {
+        auctionSessionId: fixture.auctionSessionId,
+        transactionId: fixture.transactionId
+      }
+    });
+    const realtimeEvents: RealtimeHintEvent[] = [];
+    const sender = new PrismaNotificationSender(prisma, undefined, {
+      async publish(realtimeEvent) {
+        realtimeEvents.push(realtimeEvent);
+        return {
+          ok: true,
+          mutatesBusinessState: false
+        };
+      }
+    });
+
+    await sender.send({
+      outboxEventId: event.id,
+      eventType: event.eventType,
+      targetType: event.targetType,
+      targetId: event.targetId,
+      idempotencyKey: event.idempotencyKey,
+      payloadJson: event.payloadJson as Record<string, unknown>
+    });
+
+    expect(realtimeEvents).toHaveLength(4);
+    expect(realtimeEvents).toEqual(
+      expect.arrayContaining(
+        [
+          fixture.buyer.childUserId,
+          fixture.seller.childUserId,
+          fixture.buyer.guardianUserId,
+          fixture.seller.guardianUserId
+        ].map((recipientUserId) =>
+          expect.objectContaining({
+            eventId: event.id,
+            eventType: "notifications.updated",
+            targetType: "notifications",
+            targetId: recipientUserId,
+            targetVersion: 1,
+            refreshRequired: true
+          })
+        )
+      )
+    );
+  });
+
   it("suppresses child and parent notifications when the child is no longer an active community member", async () => {
     const fixture = await createTransactionFixture("removed_member");
     await prisma.communityMember.update({
@@ -275,7 +513,12 @@ describe("PrismaNotificationSender", () => {
   });
 });
 
-async function createTransactionFixture(label: string) {
+async function createTransactionFixture(
+  label: string,
+  input: {
+    transactionStatus?: TransactionStatus;
+  } = {}
+) {
   const buyer = await createChildWithGuardian(`${label}_buyer`);
   const seller = await createChildWithGuardian(`${label}_seller`);
   const community = await prisma.auctionCommunity.create({
@@ -373,7 +616,7 @@ async function createTransactionFixture(label: string) {
       sellerChildId: seller.childId,
       pointHoldId: pointHold.id,
       pointsAmount: 40,
-      status: "platform_review",
+      status: input.transactionStatus ?? "platform_review",
       guardianConfirmDeadlineAt: new Date("2026-06-11T09:00:00.000Z"),
       version: 3
     }
@@ -389,6 +632,23 @@ async function createTransactionFixture(label: string) {
     activityAdminUserId: activityAdminUser.id,
     platformAdminUserId: platformAdminUser.id
   };
+}
+
+async function enableWechatPreference(input: {
+  userId: string;
+  childId: string | null;
+  eventType: string;
+}) {
+  await prisma.notificationPreference.create({
+    data: {
+      id: unique(`preference_${input.userId}_${input.eventType}`),
+      userId: input.userId,
+      childId: input.childId,
+      eventType: input.eventType,
+      inAppEnabled: true,
+      wechatSubscribeEnabled: true
+    }
+  });
 }
 
 async function createChildWithGuardian(label: string) {
@@ -467,6 +727,22 @@ async function createOutboxEvent(
 }
 
 async function cleanup() {
+  await prisma.notificationPreference.deleteMany({
+    where: {
+      OR: [
+        {
+          id: {
+            startsWith: targetPrefix
+          }
+        },
+        {
+          userId: {
+            startsWith: targetPrefix
+          }
+        }
+      ]
+    }
+  });
   await prisma.notification.deleteMany({
     where: {
       recipientUserId: {

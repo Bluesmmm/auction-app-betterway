@@ -40,10 +40,14 @@ const heartbeat = await startWorkerHeartbeat({
 const auctionSettlementScheduler = createBullMqAuctionSettlementScheduler({
   connection: config.redis
 });
-const notificationSender = new PrismaNotificationSender(prisma);
 const realtimePublisher = createRedisRealtimeHintPublisher({
   connection: config.redis
 });
+const notificationSender = new PrismaNotificationSender(
+  prisma,
+  undefined,
+  realtimePublisher
+);
 const outboxDispatcher = new PrismaOutboxDispatcher(prisma, {
   workerName: config.workerName,
   leaseMs: config.outboxDispatchLeaseMs,

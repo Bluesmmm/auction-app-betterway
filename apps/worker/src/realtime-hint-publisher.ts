@@ -8,7 +8,7 @@ export type RealtimeHintEvent = {
   eventId: string;
   serverTime: string;
   eventType: string;
-  targetType: "auction_session" | "transaction";
+  targetType: "auction_session" | "transaction" | "notifications";
   targetId: string;
   targetVersion: number;
   refreshRequired: true;

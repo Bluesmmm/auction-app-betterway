@@ -239,32 +239,56 @@ export class Stage7DiscoveryService {
       return allowed;
     }
 
-    const favorites = await this.prisma.itemFavorite.findMany({
-      where: {
-        childId: input.childId,
-        communityId: input.communityId,
-        status: "active"
-      },
-      orderBy: {
-        updatedAt: "desc"
-      },
-      take: 50
-    });
-
     const visible: Stage7SearchResultItem[] = [];
-    for (const favorite of favorites) {
-      const result = await this.visibleItemSummary({
-        actorUserId: input.actorUserId,
-        childId: input.childId,
-        communityId: input.communityId,
-        itemId: favorite.itemId
+    const limit = 50;
+    const batchSize = 50;
+    let cursor: string | undefined;
+    let hasMoreCandidates = true;
+
+    while (visible.length < limit && hasMoreCandidates) {
+      const candidates = await this.prisma.itemFavorite.findMany({
+        where: {
+          childId: input.childId,
+          communityId: input.communityId,
+          status: "active"
+        },
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+        take: batchSize + 1,
+        ...(cursor
+          ? {
+              cursor: {
+                id: cursor
+              },
+              skip: 1
+            }
+          : {})
       });
-      if (result) {
-        visible.push({
-          ...result,
-          isFavorited: true
+      const batch = candidates.slice(0, batchSize);
+      hasMoreCandidates = candidates.length > batchSize;
+
+      for (const favorite of batch) {
+        const result = await this.visibleItemSummary({
+          actorUserId: input.actorUserId,
+          childId: input.childId,
+          communityId: input.communityId,
+          itemId: favorite.itemId
         });
+        if (result) {
+          visible.push({
+            ...result,
+            isFavorited: true
+          });
+        }
+        if (visible.length >= limit) {
+          break;
+        }
       }
+
+      const lastScanned = batch.at(-1);
+      if (!lastScanned || visible.length >= limit) {
+        break;
+      }
+      cursor = lastScanned.id;
     }
 
     return {

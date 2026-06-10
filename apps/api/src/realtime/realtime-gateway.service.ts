@@ -242,13 +242,20 @@ export class RealtimeGatewayService {
     connection: RealtimeConnection,
     event: RealtimeHintEvent
   ) {
-    if (connection.sentEventIds.has(event.eventId)) {
+    const dedupeKey = realtimeHintDedupeKey(event);
+    if (connection.sentEventIds.has(dedupeKey)) {
       return;
     }
 
     let shouldSend = false;
     for (const [roomId, subscription] of [...connection.subscriptions]) {
-      if (!eventMatchesRoom(event, subscription.room)) {
+      if (
+        !eventMatchesConnectionRoom(
+          event,
+          subscription.room,
+          connection.actorUserId
+        )
+      ) {
         continue;
       }
       const authorization = await this.permissions.authorizeRoom({
@@ -273,7 +280,7 @@ export class RealtimeGatewayService {
     }
 
     if (shouldSend) {
-      connection.sentEventIds.add(event.eventId);
+      connection.sentEventIds.add(dedupeKey);
       this.sendFrame(connection, {
         type: "hint",
         event,
@@ -339,4 +346,22 @@ function safeJsonParse(input: string) {
   } catch {
     return null;
   }
+}
+
+function eventMatchesConnectionRoom(
+  event: RealtimeHintEvent,
+  room: RealtimeRoomKey,
+  actorUserId: string
+) {
+  if (room.kind === "notifications") {
+    return (
+      event.targetType === "notifications" && event.targetId === actorUserId
+    );
+  }
+
+  return eventMatchesRoom(event, room);
+}
+
+function realtimeHintDedupeKey(event: RealtimeHintEvent) {
+  return `${event.eventId}:${event.targetType}:${event.targetId}`;
 }

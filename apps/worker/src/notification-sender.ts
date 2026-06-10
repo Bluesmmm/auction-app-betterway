@@ -4,9 +4,14 @@ import type {
   NotificationPriority,
   NotificationType,
   Prisma,
-  PrismaClient
+  PrismaClient,
+  TransactionStatus
 } from "@prisma/client";
 import type { NotificationSender } from "./outbox-processor.js";
+import type {
+  RealtimeHintEvent,
+  RealtimeHintPublisher
+} from "./realtime-hint-publisher.js";
 
 type SubscriptionMessageSender = {
   send(input: {
@@ -48,6 +53,7 @@ type TransactionContext = {
   communityId: string;
   buyerChildId: string;
   sellerChildId: string;
+  status: TransactionStatus;
   version: number;
 };
 
@@ -95,7 +101,8 @@ export class PrismaNotificationSender implements NotificationSender {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly subscriptionSender: SubscriptionMessageSender =
-      new FakeWorkerSubscriptionMessageSender()
+      new FakeWorkerSubscriptionMessageSender(),
+    private readonly realtimePublisher?: RealtimeHintPublisher
   ) {}
 
   async send(input: {
@@ -120,6 +127,10 @@ export class PrismaNotificationSender implements NotificationSender {
       drafts
     });
     await this.deliverPendingSubscriptions(input.outboxEventId);
+    await this.publishNotificationHints({
+      outboxEventId: input.outboxEventId,
+      drafts
+    });
 
     return {
       ok: true as const,
@@ -196,6 +207,37 @@ export class PrismaNotificationSender implements NotificationSender {
       });
     }
   }
+
+  private async publishNotificationHints(input: {
+    outboxEventId: string;
+    drafts: NotificationDraft[];
+  }) {
+    if (!this.realtimePublisher || input.drafts.length === 0) {
+      return;
+    }
+
+    const recipientUserIds = [
+      ...new Set(input.drafts.map((draft) => draft.recipientUserId))
+    ];
+    for (const recipientUserId of recipientUserIds) {
+      const targetVersion = await this.prisma.notification.count({
+        where: {
+          recipientUserId
+        }
+      });
+      const event: RealtimeHintEvent = {
+        kind: "stage7_realtime_hint",
+        eventId: input.outboxEventId,
+        serverTime: new Date().toISOString(),
+        eventType: "notifications.updated",
+        targetType: "notifications",
+        targetId: recipientUserId,
+        targetVersion,
+        refreshRequired: true
+      };
+      await this.realtimePublisher.publish(event);
+    }
+  }
 }
 
 async function deriveNotificationDrafts(
@@ -222,6 +264,7 @@ async function deriveNotificationDrafts(
     case "transaction.guardian_confirmed":
       return deriveTransactionEvent(prisma, input.targetId, {
         type: "transaction_guardian_confirmed",
+        expectedStatus: "pending_delivery_confirm",
         priority: "high",
         mandatory: true,
         parentTitle: "成交确认已更新",
@@ -230,6 +273,7 @@ async function deriveNotificationDrafts(
     case "transaction.cancelled":
       return deriveTransactionEvent(prisma, input.targetId, {
         type: "transaction_cancelled",
+        expectedStatus: "cancelled",
         priority: "high",
         mandatory: true,
         childTitle: "交易已取消",
@@ -240,6 +284,7 @@ async function deriveNotificationDrafts(
     case "transaction.completed":
       return deriveTransactionEvent(prisma, input.targetId, {
         type: "transaction_completed",
+        expectedStatus: "completed",
         priority: "high",
         mandatory: true,
         childTitle: "交易已完成",
@@ -250,6 +295,7 @@ async function deriveNotificationDrafts(
     case "transaction.disputed":
       return deriveTransactionEvent(prisma, input.targetId, {
         type: "transaction_disputed",
+        expectedStatus: "disputed",
         priority: "urgent",
         mandatory: true,
         parentTitle: "交易进入争议处理",
@@ -260,6 +306,7 @@ async function deriveNotificationDrafts(
     case "transaction.platform_review_required":
       return deriveTransactionEvent(prisma, input.targetId, {
         type: "transaction_platform_review_required",
+        expectedStatus: "platform_review",
         priority: "urgent",
         mandatory: true,
         parentTitle: "交易进入平台复核",
@@ -363,7 +410,7 @@ async function deriveAuctionSettled(
 ) {
   const transactionId = expectString(payload.transactionId);
   const transaction = await getTransactionContext(prisma, transactionId);
-  if (!transaction) {
+  if (!transaction || transaction.status !== "pending_guardian_confirm") {
     return [];
   }
 
@@ -449,6 +496,7 @@ async function deriveTransactionEvent(
   transactionId: string,
   input: {
     type: NotificationType;
+    expectedStatus: TransactionStatus;
     priority: NotificationPriority;
     mandatory: boolean;
     childTitle?: string;
@@ -461,7 +509,7 @@ async function deriveTransactionEvent(
   }
 ) {
   const transaction = await getTransactionContext(prisma, transactionId);
-  if (!transaction) {
+  if (!transaction || transaction.status !== input.expectedStatus) {
     return [];
   }
 
@@ -566,7 +614,12 @@ async function notificationsForChildren(
       relatedId: input.relatedId,
       targetVersion: input.targetVersion,
       actionType: actionTypeForRelatedType(input.relatedType),
-      deliveryStatus: shouldAttemptSubscription(input.priority)
+      deliveryStatus: (await shouldAttemptSubscription(prisma, {
+        userId: guardian.userId,
+        childId: guardian.childId,
+        eventType: input.type,
+        priority: input.priority
+      }))
         ? "pending"
         : "suppressed"
     });
@@ -635,8 +688,9 @@ async function adminNotifications(
       })
     : [];
 
-  return dedupeDrafts(
-    [...activityAdmins, ...platformAdmins].map((admin) => ({
+  const drafts: NotificationDraft[] = [];
+  for (const admin of [...activityAdmins, ...platformAdmins]) {
+    drafts.push({
       recipientUserId: admin.userId,
       recipientChildId: null,
       type: input.type,
@@ -648,11 +702,18 @@ async function adminNotifications(
       relatedId: input.relatedId,
       targetVersion: input.targetVersion,
       actionType: actionTypeForRelatedType(input.relatedType),
-      deliveryStatus: shouldAttemptSubscription(input.priority)
+      deliveryStatus: (await shouldAttemptSubscription(prisma, {
+        userId: admin.userId,
+        childId: null,
+        eventType: input.type,
+        priority: input.priority
+      }))
         ? "pending"
         : "suppressed"
-    }))
-  );
+    });
+  }
+
+  return dedupeDrafts(drafts);
 }
 
 async function childUserRecipients(
@@ -777,18 +838,61 @@ async function shouldPersistInAppNotification(
     return true;
   }
 
-  const preference = await prisma.notificationPreference.findFirst({
+  const preference = await findNotificationPreference(prisma, input);
+
+  return preference?.inAppEnabled ?? true;
+}
+
+async function shouldAttemptSubscription(
+  prisma: PrismaClient,
+  input: {
+    userId: string;
+    childId: string | null;
+    eventType: string;
+    priority: NotificationPriority;
+  }
+) {
+  if (input.priority !== "high" && input.priority !== "urgent") {
+    return false;
+  }
+
+  const preference = await findNotificationPreference(prisma, input);
+  return preference?.wechatSubscribeEnabled ?? false;
+}
+
+async function findNotificationPreference(
+  prisma: PrismaClient,
+  input: {
+    userId: string;
+    childId: string | null;
+    eventType: string;
+  }
+) {
+  const preferences = await prisma.notificationPreference.findMany({
     where: {
       userId: input.userId,
-      childId: input.childId,
-      eventType: input.eventType
+      eventType: input.eventType,
+      OR: [
+        {
+          childId: input.childId
+        },
+        {
+          childId: null
+        }
+      ]
     },
     select: {
-      inAppEnabled: true
+      childId: true,
+      inAppEnabled: true,
+      wechatSubscribeEnabled: true
     }
   });
 
-  return preference?.inAppEnabled ?? true;
+  return (
+    preferences.find((preference) => preference.childId === input.childId) ??
+    preferences.find((preference) => preference.childId === null) ??
+    null
+  );
 }
 
 async function getAuctionContext(
@@ -836,6 +940,7 @@ async function getTransactionContext(
       auctionSessionId: true,
       buyerChildId: true,
       sellerChildId: true,
+      status: true,
       version: true,
       auctionSession: {
         select: {
@@ -856,13 +961,10 @@ async function getTransactionContext(
         communityId: transaction.auctionSession.item.communityId,
         buyerChildId: transaction.buyerChildId,
         sellerChildId: transaction.sellerChildId,
+        status: transaction.status,
         version: transaction.version
       }
     : null;
-}
-
-function shouldAttemptSubscription(priority: NotificationPriority) {
-  return priority === "high" || priority === "urgent";
 }
 
 function actionTypeForRelatedType(

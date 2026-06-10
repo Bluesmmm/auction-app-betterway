@@ -152,6 +152,70 @@ describe("Stage7DiscoveryService search and favorites flow", () => {
     });
   });
 
+  it("continues scanning favorite candidates when the first batch is stale", async () => {
+    const fixture = await createSearchFixture("favorite_stale_batch", {
+      canFavorite: true
+    });
+    await prisma.itemFavorite.create({
+      data: {
+        id: unique("favorite_visible"),
+        childId: fixture.childId,
+        itemId: fixture.itemId,
+        communityId: fixture.communityId,
+        status: "active",
+        createdAt: new Date("2026-06-09T08:00:00.000Z"),
+        updatedAt: new Date("2026-06-09T08:00:00.000Z")
+      }
+    });
+
+    for (let index = 0; index < 50; index += 1) {
+      const staleFavoriteAt = new Date(
+        `2026-06-09T10:${String(index).padStart(2, "0")}:00.000Z`
+      );
+      const staleItemId = await createAdditionalSearchItem(fixture, {
+        label: `favorite_stale_${index}`,
+        title: `science stale favorite ${index}`,
+        createdAt: new Date(`2026-06-09T09:00:00.000Z`)
+      });
+      await prisma.itemFavorite.create({
+        data: {
+          id: unique(`favorite_stale_${index}`),
+          childId: fixture.childId,
+          itemId: staleItemId,
+          communityId: fixture.communityId,
+          status: "active",
+          createdAt: staleFavoriteAt,
+          updatedAt: staleFavoriteAt
+        }
+      });
+      await prisma.item.update({
+        where: {
+          id: staleItemId
+        },
+        data: {
+          status: "delisted"
+        }
+      });
+    }
+
+    await expect(
+      discovery.listFavoriteItems({
+        actorUserId: fixture.guardianUserId,
+        childId: fixture.childId,
+        communityId: fixture.communityId
+      })
+    ).resolves.toMatchObject({
+      result: "accepted",
+      favorites: [
+        expect.objectContaining({
+          targetId: fixture.itemId,
+          title: "science kit",
+          isFavorited: true
+        })
+      ]
+    });
+  });
+
   it("favorites visible items only when guardian settings allow favorites", async () => {
     const fixture = await createSearchFixture("favorite_allowed", {
       canFavorite: true
