@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import type {
   ItemFavorite,
   Prisma,
@@ -73,8 +74,35 @@ export type ListFavoriteItemsResult =
     };
 
 type VisibleCandidate = Stage7SearchResultItem & {
-  cursor: string;
+  indexDocumentId: string;
+  position: SearchCursorPosition;
 };
+
+type SearchCursorScope = {
+  communityId: string;
+  query: string | null;
+  category: string | null;
+  targetType: SearchIndexTargetType | null;
+  sort: Stage7SearchSort;
+};
+
+type SearchCursorPosition = {
+  id: string;
+  sourceCreatedAt: string;
+  indexedAt: string;
+  auctionEndAt: string | null;
+  bidCount: number;
+  favoriteCount: number;
+};
+
+type SearchCursorState = {
+  v: 1;
+  scope: SearchCursorScope;
+  position: SearchCursorPosition;
+  seenIds: string[];
+};
+
+const SEARCH_CURSOR_PREFIX = "s7search_";
 
 export class Stage7DiscoveryService {
   constructor(
@@ -100,15 +128,24 @@ export class Stage7DiscoveryService {
     }
 
     const limit = clampLimit(input.limit);
+    const sort = input.sort ?? "latest";
+    const cursorScope = buildSearchCursorScope(input, sort);
+    const externalCursor = await this.resolveSearchCursor(
+      input.cursor,
+      cursorScope
+    );
+    const seenIds = externalCursor?.seenIds ?? [];
     const visible: VisibleCandidate[] = [];
     const batchSize = limit * 3;
-    let cursor = input.cursor;
+    let cursor: SearchCursorPosition | null = null;
     let hasMoreCandidates = true;
 
     while (visible.length <= limit && hasMoreCandidates) {
       const candidates = await this.searchCandidates({
         ...input,
+        sort,
         cursor,
+        excludedIds: seenIds,
         take: batchSize + 1
       });
       const batch = candidates.slice(0, batchSize);
@@ -119,7 +156,8 @@ export class Stage7DiscoveryService {
         if (result) {
           visible.push({
             ...result,
-            cursor: candidate.id
+            indexDocumentId: candidate.id,
+            position: searchCursorPositionFromDocument(candidate)
           });
         }
         if (visible.length > limit) {
@@ -131,14 +169,31 @@ export class Stage7DiscoveryService {
       if (!lastScanned || visible.length > limit) {
         break;
       }
-      cursor = lastScanned.id;
+      cursor = searchCursorPositionFromDocument(lastScanned);
     }
 
     const page = visible.slice(0, limit);
+    const pageLast = page.at(-1);
+    const nextSeenIds = uniqueStrings([
+      ...seenIds,
+      ...page.map((candidate) => candidate.indexDocumentId)
+    ]);
     return {
       result: "accepted",
-      results: page.map(({ cursor: _cursor, ...result }) => result),
-      nextCursor: visible.length > limit ? page.at(-1)?.cursor ?? null : null
+      results: page.map(
+        ({ indexDocumentId: _indexDocumentId, position: _position, ...result }) =>
+          result
+      ),
+      nextCursor:
+        visible.length > limit && pageLast
+          ? encodeSearchCursor(
+              buildSearchCursorState(
+                cursorScope,
+                pageLast.position,
+                nextSeenIds
+              )
+            )
+          : null
     };
   }
 
@@ -314,14 +369,26 @@ export class Stage7DiscoveryService {
     category?: string;
     targetType?: SearchIndexTargetType;
     sort?: Stage7SearchSort;
-    cursor?: string;
+    cursor?: SearchCursorPosition | null;
+    excludedIds?: string[];
     take: number;
   }) {
+    const cursorWhere = input.cursor
+      ? searchCursorWhere(input.sort ?? "latest", input.cursor)
+      : undefined;
+
     return this.prisma.searchIndexDocument.findMany({
       where: {
         communityId: input.communityId,
         visibilityStatus: "searchable",
         ...(input.targetType ? { targetType: input.targetType } : {}),
+        ...(input.excludedIds?.length
+          ? {
+              id: {
+                notIn: input.excludedIds
+              }
+            }
+          : {}),
         ...(input.category ? { category: input.category } : {}),
         ...(input.query?.trim()
           ? {
@@ -330,19 +397,41 @@ export class Stage7DiscoveryService {
                 mode: "insensitive"
               }
             }
-          : {})
+          : {}),
+        ...(cursorWhere ? { AND: [cursorWhere] } : {})
       },
       orderBy: orderByForSort(input.sort ?? "latest"),
-      take: input.take,
-      ...(input.cursor
-        ? {
-            cursor: {
-              id: input.cursor
-            },
-            skip: 1
-          }
-        : {})
+      take: input.take
     });
+  }
+
+  private async resolveSearchCursor(
+    cursor: string | undefined,
+    scope: SearchCursorScope
+  ): Promise<SearchCursorState | null> {
+    if (!cursor) {
+      return null;
+    }
+
+    const decoded = decodeSearchCursor(cursor);
+    if (decoded) {
+      return searchCursorScopeMatches(decoded.scope, scope) ? decoded : null;
+    }
+
+    const legacyDocument = await this.prisma.searchIndexDocument.findUnique({
+      where: {
+        id: cursor
+      }
+    });
+    if (!legacyDocument || !searchDocumentMatchesScope(legacyDocument, scope)) {
+      return null;
+    }
+
+    return buildSearchCursorState(
+      scope,
+      searchCursorPositionFromDocument(legacyDocument),
+      [legacyDocument.id]
+    );
   }
 
   private async upsertItemSearchIndex(itemId: string) {
@@ -695,7 +784,345 @@ export class Stage7DiscoveryService {
   }
 }
 
-function orderByForSort(sort: Stage7SearchSort): Prisma.SearchIndexDocumentOrderByWithRelationInput[] {
+function buildSearchCursorScope(
+  input: {
+    communityId: string;
+    query?: string;
+    category?: string;
+    targetType?: SearchIndexTargetType;
+  },
+  sort: Stage7SearchSort
+): SearchCursorScope {
+  return {
+    communityId: input.communityId,
+    query: normalizeSearchQuery(input.query),
+    category: normalizeOptionalString(input.category),
+    targetType: input.targetType ?? null,
+    sort
+  };
+}
+
+function buildSearchCursorState(
+  scope: SearchCursorScope,
+  position: SearchCursorPosition,
+  seenIds: string[]
+): SearchCursorState {
+  return {
+    v: 1,
+    scope,
+    position,
+    seenIds
+  };
+}
+
+function searchCursorPositionFromDocument(
+  document: SearchIndexDocument
+): SearchCursorPosition {
+  return {
+    id: document.id,
+    sourceCreatedAt: document.sourceCreatedAt.toISOString(),
+    indexedAt: document.indexedAt.toISOString(),
+    auctionEndAt: document.auctionEndAt?.toISOString() ?? null,
+    bidCount: document.bidCount,
+    favoriteCount: document.favoriteCount
+  };
+}
+
+function encodeSearchCursor(cursor: SearchCursorState) {
+  return `${SEARCH_CURSOR_PREFIX}${base64UrlEncode(JSON.stringify(cursor))}`;
+}
+
+function decodeSearchCursor(cursor: string): SearchCursorState | null {
+  if (!cursor.startsWith(SEARCH_CURSOR_PREFIX)) {
+    return null;
+  }
+
+  try {
+    const decoded = JSON.parse(
+      base64UrlDecode(cursor.slice(SEARCH_CURSOR_PREFIX.length))
+    ) as unknown;
+    return isSearchCursorState(decoded) ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+function searchCursorWhere(
+  sort: Stage7SearchSort,
+  position: SearchCursorPosition
+): Prisma.SearchIndexDocumentWhereInput {
+  const indexedAt = new Date(position.indexedAt);
+  switch (sort) {
+    case "ending_soon": {
+      if (position.auctionEndAt === null) {
+        return {
+          OR: [
+            {
+              auctionEndAt: null,
+              indexedAt: {
+                lt: indexedAt
+              }
+            },
+            {
+              auctionEndAt: null,
+              indexedAt,
+              id: {
+                lt: position.id
+              }
+            }
+          ]
+        };
+      }
+
+      const auctionEndAt = new Date(position.auctionEndAt);
+      return {
+        OR: [
+          {
+            auctionEndAt: {
+              gt: auctionEndAt
+            }
+          },
+          {
+            auctionEndAt: null
+          },
+          {
+            auctionEndAt,
+            indexedAt: {
+              lt: indexedAt
+            }
+          },
+          {
+            auctionEndAt,
+            indexedAt,
+            id: {
+              lt: position.id
+            }
+          }
+        ]
+      };
+    }
+    case "bid_count":
+      return {
+        OR: [
+          {
+            bidCount: {
+              lt: position.bidCount
+            }
+          },
+          {
+            bidCount: position.bidCount,
+            indexedAt: {
+              lt: indexedAt
+            }
+          },
+          {
+            bidCount: position.bidCount,
+            indexedAt,
+            id: {
+              lt: position.id
+            }
+          }
+        ]
+      };
+    case "popular":
+      return {
+        OR: [
+          {
+            favoriteCount: {
+              lt: position.favoriteCount
+            }
+          },
+          {
+            favoriteCount: position.favoriteCount,
+            bidCount: {
+              lt: position.bidCount
+            }
+          },
+          {
+            favoriteCount: position.favoriteCount,
+            bidCount: position.bidCount,
+            indexedAt: {
+              lt: indexedAt
+            }
+          },
+          {
+            favoriteCount: position.favoriteCount,
+            bidCount: position.bidCount,
+            indexedAt,
+            id: {
+              lt: position.id
+            }
+          }
+        ]
+      };
+    case "latest":
+    default: {
+      const sourceCreatedAt = new Date(position.sourceCreatedAt);
+      return {
+        OR: [
+          {
+            sourceCreatedAt: {
+              lt: sourceCreatedAt
+            }
+          },
+          {
+            sourceCreatedAt,
+            indexedAt: {
+              lt: indexedAt
+            }
+          },
+          {
+            sourceCreatedAt,
+            indexedAt,
+            id: {
+              lt: position.id
+            }
+          }
+        ]
+      };
+    }
+  }
+}
+
+function searchCursorScopeMatches(
+  actual: SearchCursorScope,
+  expected: SearchCursorScope
+) {
+  return (
+    actual.communityId === expected.communityId &&
+    actual.query === expected.query &&
+    actual.category === expected.category &&
+    actual.targetType === expected.targetType &&
+    actual.sort === expected.sort
+  );
+}
+
+function searchDocumentMatchesScope(
+  document: SearchIndexDocument,
+  scope: SearchCursorScope
+) {
+  if (
+    document.communityId !== scope.communityId ||
+    document.visibilityStatus !== "searchable"
+  ) {
+    return false;
+  }
+  if (scope.targetType && document.targetType !== scope.targetType) {
+    return false;
+  }
+  if (scope.category && document.category !== scope.category) {
+    return false;
+  }
+  if (
+    scope.query &&
+    !document.searchText.toLowerCase().includes(scope.query)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function isSearchCursorState(input: unknown): input is SearchCursorState {
+  if (!input || typeof input !== "object") {
+    return false;
+  }
+  const cursor = input as Partial<SearchCursorState>;
+  return (
+    cursor.v === 1 &&
+    isSearchCursorScope(cursor.scope) &&
+    isSearchCursorPosition(cursor.position) &&
+    Array.isArray(cursor.seenIds) &&
+    cursor.seenIds.every((id) => typeof id === "string" && Boolean(id))
+  );
+}
+
+function isSearchCursorScope(input: unknown): input is SearchCursorScope {
+  if (!input || typeof input !== "object") {
+    return false;
+  }
+  const scope = input as Partial<SearchCursorScope>;
+  return (
+    typeof scope.communityId === "string" &&
+    Boolean(scope.communityId) &&
+    (typeof scope.query === "string" || scope.query === null) &&
+    (typeof scope.category === "string" || scope.category === null) &&
+    (scope.targetType === "item" ||
+      scope.targetType === "wanted_post" ||
+      scope.targetType === null) &&
+    isStage7SearchSort(scope.sort)
+  );
+}
+
+function isSearchCursorPosition(input: unknown): input is SearchCursorPosition {
+  if (!input || typeof input !== "object") {
+    return false;
+  }
+  const position = input as Partial<SearchCursorPosition>;
+  return (
+    typeof position.id === "string" &&
+    Boolean(position.id) &&
+    isCursorDateString(position.sourceCreatedAt) &&
+    isCursorDateString(position.indexedAt) &&
+    (position.auctionEndAt === null ||
+      isCursorDateString(position.auctionEndAt)) &&
+    isNonNegativeInteger(position.bidCount) &&
+    isNonNegativeInteger(position.favoriteCount)
+  );
+}
+
+function isStage7SearchSort(value: unknown): value is Stage7SearchSort {
+  return (
+    value === "latest" ||
+    value === "ending_soon" ||
+    value === "bid_count" ||
+    value === "popular"
+  );
+}
+
+function isCursorDateString(value: unknown): value is string {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return (
+    typeof value === "number" && Number.isInteger(value) && value >= 0
+  );
+}
+
+function normalizeSearchQuery(query?: string) {
+  return normalizeOptionalString(query)?.toLowerCase() ?? null;
+}
+
+function normalizeOptionalString(value?: string) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values)];
+}
+
+function base64UrlEncode(value: string) {
+  return Buffer.from(value, "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/u, "");
+}
+
+function base64UrlDecode(value: string) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(
+    normalized.length + ((4 - (normalized.length % 4)) % 4),
+    "="
+  );
+  return Buffer.from(padded, "base64").toString("utf8");
+}
+
+function orderByForSort(
+  sort: Stage7SearchSort
+): Prisma.SearchIndexDocumentOrderByWithRelationInput[] {
   switch (sort) {
     case "ending_soon":
       return [

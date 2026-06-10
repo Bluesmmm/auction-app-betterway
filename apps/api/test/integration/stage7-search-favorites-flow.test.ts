@@ -152,6 +152,97 @@ describe("Stage7DiscoveryService search and favorites flow", () => {
     });
   });
 
+  it("continues pagination when popular sort counts change after cursor issuance", async () => {
+    const fixture = await createSearchFixture("popular_cursor_drift", {
+      canFavorite: true
+    });
+    const secondItemId = await createAdditionalSearchItem(fixture, {
+      label: "popular_cursor_second",
+      title: "science board",
+      createdAt: new Date("2026-06-09T08:30:00.000Z")
+    });
+    const thirdItemId = await createAdditionalSearchItem(fixture, {
+      label: "popular_cursor_third",
+      title: "science scope",
+      createdAt: new Date("2026-06-09T08:15:00.000Z")
+    });
+    for (const itemId of [fixture.itemId, secondItemId, thirdItemId]) {
+      await discovery.upsertSearchIndexDocument({
+        targetType: "item",
+        targetId: itemId
+      });
+    }
+    await setSearchFavoriteCount(fixture.itemId, 10);
+    await setSearchFavoriteCount(secondItemId, 5);
+    await setSearchFavoriteCount(thirdItemId, 4);
+
+    const firstPage = await discovery.searchCommunityContent({
+      actorUserId: fixture.guardianUserId,
+      childId: fixture.childId,
+      communityId: fixture.communityId,
+      query: "science",
+      sort: "popular",
+      limit: 1
+    });
+    expect(firstPage).toMatchObject({
+      result: "accepted",
+      results: [
+        expect.objectContaining({
+          targetId: fixture.itemId
+        })
+      ],
+      nextCursor: expect.stringMatching(/^s7search_/)
+    });
+    if (firstPage.result !== "accepted" || !firstPage.nextCursor) {
+      throw new Error("expected first page cursor");
+    }
+
+    await setSearchFavoriteCount(fixture.itemId, 0);
+    await setSearchFavoriteCount(secondItemId, 20);
+
+    const secondPage = await discovery.searchCommunityContent({
+      actorUserId: fixture.guardianUserId,
+      childId: fixture.childId,
+      communityId: fixture.communityId,
+      query: "science",
+      sort: "popular",
+      limit: 1,
+      cursor: firstPage.nextCursor
+    });
+    expect(secondPage).toMatchObject({
+      result: "accepted",
+      results: [
+        expect.objectContaining({
+          targetId: secondItemId
+        })
+      ],
+      nextCursor: expect.stringMatching(/^s7search_/)
+    });
+    if (secondPage.result !== "accepted" || !secondPage.nextCursor) {
+      throw new Error("expected second page cursor");
+    }
+
+    await expect(
+      discovery.searchCommunityContent({
+        actorUserId: fixture.guardianUserId,
+        childId: fixture.childId,
+        communityId: fixture.communityId,
+        query: "science",
+        sort: "popular",
+        limit: 1,
+        cursor: secondPage.nextCursor
+      })
+    ).resolves.toMatchObject({
+      result: "accepted",
+      results: [
+        expect.objectContaining({
+          targetId: thirdItemId
+        })
+      ],
+      nextCursor: null
+    });
+  });
+
   it("continues scanning favorite candidates when the first batch is stale", async () => {
     const fixture = await createSearchFixture("favorite_stale_batch", {
       canFavorite: true
@@ -334,6 +425,20 @@ async function createAdditionalSearchItem(
   });
 
   return item.id;
+}
+
+async function setSearchFavoriteCount(itemId: string, favoriteCount: number) {
+  await prisma.searchIndexDocument.update({
+    where: {
+      targetType_targetId: {
+        targetType: "item",
+        targetId: itemId
+      }
+    },
+    data: {
+      favoriteCount
+    }
+  });
 }
 
 async function createSearchFixture(

@@ -4,6 +4,7 @@
 - Add Stage 7 search/list/favorites with source-of-truth visibility checks, typed notification actions, and miniprogram search/favorite shell.
 - Add Stage 7 realtime refresh hints over authenticated WebSocket rooms, Redis outbox publication, permission revocation, stale/duplicate suppression, and miniprogram REST compensation shell.
 - Address external review findings: source-check transaction notification status, require explicit WeChat subscription opt-in, publish notification realtime hints, scope notification hints to the target actor, and keep scanning favorites past stale candidates.
+- Stabilize search pagination across mutable ranking fields with opaque Stage 7 search cursors that track returned result ids and per-request composite scan boundaries.
 
 ## Safety Boundaries
 
@@ -18,7 +19,7 @@
 - `npm run stage7:verify`
   - starts Postgres/Redis runtime
   - runs Prisma generate/validate/deploy
-  - runs Stage 7 notification/search/realtime contract and integration tests: 12 files, 60 tests
+  - runs Stage 7 notification/search/realtime contract and integration tests: 12 files, 61 tests
   - runs worker notification/outbox/realtime publisher tests: 4 files, 16 tests
   - runs miniprogram Stage 7 shell tests
   - runs `npm run typecheck`
