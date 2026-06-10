@@ -164,7 +164,8 @@ describe("outbox dispatcher", () => {
       sentCount: 1,
       failedCount: 0,
       settlementScheduledCount: 1,
-      notificationSentCount: 0
+      notificationSentCount: 0,
+      realtimeHintPublishedCount: 0
     });
     expect(scheduled).toEqual([
       {
@@ -198,14 +199,25 @@ describe("outbox dispatcher", () => {
 
   it("marks failed notification delivery for retry and dispatches it after availableAt", async () => {
     const now = new Date("2000-01-01T00:00:00.000Z");
+    const auctionSessionId = unique("auction_session");
     const event = await createOutboxEvent("notification_retry", {
       eventType: "auction.bid_accepted",
       payloadJson: {
-        auctionSessionId: unique("auction_session"),
+        auctionSessionId,
         bidId: unique("bid")
       },
       availableAt: new Date("1999-12-31T23:59:59.000Z")
     });
+    const realtimeHints: unknown[] = [];
+    const realtimePublisher = {
+      async publish(input: unknown) {
+        realtimeHints.push(input);
+        return {
+          ok: true as const,
+          mutatesBusinessState: false as const
+        };
+      }
+    };
     const failingDispatcher = new PrismaOutboxDispatcher(prisma, {
       workerName: "outbox-dispatcher-c",
       retryBaseDelayMs: 1000,
@@ -223,7 +235,8 @@ describe("outbox dispatcher", () => {
         async scheduleSettlement() {
           throw new Error("settlement scheduler should not be called");
         }
-      }
+      },
+      realtimePublisher
     });
 
     await expect(
@@ -237,8 +250,10 @@ describe("outbox dispatcher", () => {
       sentCount: 0,
       failedCount: 1,
       settlementScheduledCount: 0,
-      notificationSentCount: 0
+      notificationSentCount: 0,
+      realtimeHintPublishedCount: 0
     });
+    expect(realtimeHints).toHaveLength(0);
     await expect(
       prisma.outboxEvent.findUnique({
         where: {
@@ -288,7 +303,8 @@ describe("outbox dispatcher", () => {
         async scheduleSettlement() {
           throw new Error("settlement scheduler should not be called");
         }
-      }
+      },
+      realtimePublisher
     });
     await expect(
       succeedingDispatcher.dispatchAvailable({
@@ -301,9 +317,18 @@ describe("outbox dispatcher", () => {
       sentCount: 1,
       failedCount: 0,
       settlementScheduledCount: 0,
-      notificationSentCount: 1
+      notificationSentCount: 1,
+      realtimeHintPublishedCount: 1
     });
     expect(sentPayloads).toHaveLength(1);
+    expect(realtimeHints).toEqual([
+      expect.objectContaining({
+        eventId: event.id,
+        targetType: "auction_session",
+        targetId: auctionSessionId,
+        refreshRequired: true
+      })
+    ]);
     await expect(
       prisma.outboxEvent.findUnique({
         where: {
@@ -323,12 +348,81 @@ describe("outbox dispatcher", () => {
       lockedBy: null
     });
   });
+
+  it("keeps an outbox event sent when realtime hint publishing fails", async () => {
+    const now = new Date("2000-01-01T00:00:00.000Z");
+    const event = await createOutboxEvent("realtime_publish_failure", {
+      eventType: "transaction.completed",
+      targetType: "transaction",
+      payloadJson: {
+        transactionId: unique("transaction"),
+        targetVersion: 5
+      },
+      availableAt: new Date("1999-12-31T23:59:59.000Z")
+    });
+    const dispatcher = new PrismaOutboxDispatcher(prisma, {
+      workerName: "outbox-dispatcher-d",
+      notificationSender: {
+        async send() {
+          return {
+            ok: true,
+            providerMessageId: "provider-message-realtime-failed",
+            mutatesBusinessState: false
+          };
+        }
+      },
+      settlementScheduler: {
+        async scheduleSettlement() {
+          throw new Error("settlement scheduler should not be called");
+        }
+      },
+      realtimePublisher: {
+        async publish() {
+          throw new Error("redis publish failed");
+        }
+      }
+    });
+
+    await expect(
+      dispatcher.dispatchAvailable({
+        now,
+        limit: 10
+      })
+    ).resolves.toEqual({
+      result: "dispatched",
+      claimedCount: 1,
+      sentCount: 1,
+      failedCount: 0,
+      settlementScheduledCount: 0,
+      notificationSentCount: 1,
+      realtimeHintPublishedCount: 0
+    });
+    await expect(
+      prisma.outboxEvent.findUnique({
+        where: {
+          id: event.id
+        },
+        select: {
+          status: true,
+          attempts: true,
+          lockedAt: true,
+          lockedBy: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "sent",
+      attempts: 0,
+      lockedAt: null,
+      lockedBy: null
+    });
+  });
 });
 
 async function createOutboxEvent(
   label: string,
   input: {
     eventType?: string;
+    targetType?: string;
     targetId?: string;
     payloadJson?: Record<string, unknown>;
     status?: "pending" | "processing" | "failed";
@@ -341,7 +435,7 @@ async function createOutboxEvent(
   return prisma.outboxEvent.create({
     data: {
       eventType: input.eventType ?? "notification.test",
-      targetType: "auction_session",
+      targetType: input.targetType ?? "auction_session",
       targetId,
       idempotencyKey: unique(`${label}_idempotency`),
       payloadJson: (input.payloadJson ?? {

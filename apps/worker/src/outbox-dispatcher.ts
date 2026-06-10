@@ -8,6 +8,11 @@ import {
   type OutboxJobPayload
 } from "./outbox-processor.js";
 import { runPeriodicTask } from "./periodic-task.js";
+import {
+  buildRealtimeHintFromOutboxEvent,
+  type RealtimeHintPublisher,
+  type RealtimeHintTarget
+} from "./realtime-hint-publisher.js";
 import type { RedisConnectionConfig } from "./worker-config.js";
 
 export type ClaimedOutboxEvent = {
@@ -27,6 +32,7 @@ export type OutboxDispatchSummary = {
   failedCount: number;
   settlementScheduledCount: number;
   notificationSentCount: number;
+  realtimeHintPublishedCount: number;
 };
 
 export type SettlementJobScheduler = {
@@ -55,6 +61,7 @@ export class PrismaOutboxDispatcher {
       workerName: string;
       notificationSender: NotificationSender;
       settlementScheduler: SettlementJobScheduler;
+      realtimePublisher?: RealtimeHintPublisher;
       leaseMs?: number;
       retryBaseDelayMs?: number;
       maxRetryDelayMs?: number;
@@ -78,7 +85,8 @@ export class PrismaOutboxDispatcher {
       sentCount: 0,
       failedCount: 0,
       settlementScheduledCount: 0,
-      notificationSentCount: 0
+      notificationSentCount: 0,
+      realtimeHintPublishedCount: 0
     };
 
     for (const event of claimed) {
@@ -97,6 +105,15 @@ export class PrismaOutboxDispatcher {
           summary.settlementScheduledCount += 1;
         } else {
           summary.notificationSentCount += 1;
+        }
+        const realtimePublished = await publishRealtimeHint({
+          prisma: this.prisma,
+          event,
+          publisher: this.input.realtimePublisher,
+          now
+        });
+        if (realtimePublished) {
+          summary.realtimeHintPublishedCount += 1;
         }
       } catch (error) {
         await markOutboxEventFailed(this.prisma, {
@@ -296,6 +313,60 @@ async function dispatchClaimedOutboxEvent(
   }
 
   return "notification_sent";
+}
+
+async function publishRealtimeHint(input: {
+  prisma: Pick<PrismaClient, "auctionSession" | "transaction">;
+  event: ClaimedOutboxEvent;
+  publisher?: RealtimeHintPublisher;
+  now: Date;
+}) {
+  try {
+    if (!input.publisher) {
+      return false;
+    }
+
+    const hint = await buildRealtimeHintFromOutboxEvent(input.event, {
+      now: input.now,
+      loadTargetVersion: (target) =>
+        resolveRealtimeTargetVersion(input.prisma, target)
+    });
+    if (!hint) {
+      return false;
+    }
+
+    const result = await input.publisher.publish(hint);
+    return result.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveRealtimeTargetVersion(
+  prisma: Pick<PrismaClient, "auctionSession" | "transaction">,
+  target: RealtimeHintTarget
+) {
+  if (target.targetType === "auction_session") {
+    const auction = await prisma.auctionSession.findUnique({
+      where: {
+        id: target.targetId
+      },
+      select: {
+        version: true
+      }
+    });
+    return auction?.version ?? null;
+  }
+
+  const transaction = await prisma.transaction.findUnique({
+    where: {
+      id: target.targetId
+    },
+    select: {
+      version: true
+    }
+  });
+  return transaction?.version ?? null;
 }
 
 async function markOutboxEventSent(

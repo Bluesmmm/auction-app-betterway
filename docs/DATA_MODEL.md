@@ -837,12 +837,15 @@ Stage 6 交易申诉使用独立 `appeals` 事实，不复用 `guardian_disputes
 | `recipient_user_id` | 接收用户 |
 | `recipient_child_id` | 关联孩子，可空 |
 | `type` | 通知类型 |
+| `priority` | low / normal / high / urgent |
+| `mandatory` | 是否不可被偏好关闭 |
 | `title` | 标题 |
 | `body` | 内容 |
 | `related_type` | 关联类型 |
 | `related_id` | 关联 ID |
 | `event_id` | 对应 outbox 事件，可空 |
 | `target_version` | 目标版本号，可空 |
+| `action_type` | 类型化动作，可空 |
 | `delivery_status` | pending / sent / failed / suppressed |
 | `read_at` | 阅读时间 |
 | `created_at` | 创建时间 |
@@ -850,6 +853,9 @@ Stage 6 交易申诉使用独立 `appeals` 事实，不复用 `guardian_disputes
 约束：
 
 - 通知正文不得包含明文手机号、地址、对象 key、签名 URL、快递信息或儿童身份信息。
+- 第一轮 outbox 派生通知使用 `event_id + recipient_user_id + recipient_child_id + type` 去重；同一 outbox 事件可以按孩子、家长、活动管理员或平台管理员角色生成多条不同语义的通知。
+- 第一轮微信订阅消息投递状态直接记录在 `notifications.delivery_status`；站内通知创建是主路径，微信投递失败不能影响业务事实。
+- 第二轮 `action_type` 只能使用服务端枚举，例如 `view_auction`、`view_transaction`、`view_appeal`、`view_points` 和 `open_search_result`；客户端执行动作前仍必须 REST 回源读取目标最新状态。
 
 ### 10.2 `notification_preferences`
 
@@ -876,14 +882,64 @@ Stage 6 交易申诉使用独立 `appeals` 事实，不复用 `guardian_disputes
 | `community_id` | 社区 |
 | `visibility_status` | searchable / hidden / delisted |
 | `search_payload` | 脱敏搜索字段 JSON |
+| `search_text` | 规范化检索文本 |
+| `category` | 分类，可空 |
 | `indexed_at` | 索引时间 |
 | `source_version` | 源业务版本 |
+| `source_created_at` | 源业务创建时间 |
+| `auction_end_at` | 拍卖结束时间，可空 |
+| `bid_count` | 出价数快照 |
+| `favorite_count` | 收藏数快照 |
 
 约束：
 
 - 只索引已审核、可见、未下架内容。
 - `search_payload` 不得包含原价、手机号、地址、对象 key、快递信息或家长身份信息。
 - 搜索返回前必须按 PostgreSQL 当前状态回源校验成员、内容版本、下架、暂停和限制状态。
+- 最新、即将结束、出价最多和热门排序只能使用可解释字段；第一版热门排序使用全局聚合信号，不使用个人画像。
+
+### 10.4 `item_favorites`
+
+孩子维度的拍品收藏/关注事实。收藏不授予出价、成交、交付或绕过下架的权限。
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 主键 |
+| `child_id` | 孩子 |
+| `item_id` | 拍品 |
+| `community_id` | 社区 |
+| `status` | active / removed |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+| `removed_at` | 取消时间，可空 |
+
+约束：
+
+- `child_id + item_id` 唯一，重复收藏幂等恢复为 active。
+- 收藏和收藏列表返回前必须回源校验孩子参与能力、社区成员状态、家长控制项和内容可见性。
+
+### 10.5 实时提示事件
+
+实时提示是 Redis/WebSocket 上传递的非持久化刷新信号，不新增业务事实表。权威事实仍来自 `auction_sessions`、`transactions`、`notifications`、`search_index_documents`、`item_favorites` 和对应 REST API。
+
+事件字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `eventId` | 来源 outbox 事件 ID |
+| `serverTime` | 服务端发布时间 |
+| `eventType` | 来源事件类型 |
+| `targetType` | auction_session / transaction |
+| `targetId` | 目标业务 ID |
+| `targetVersion` | 目标当前版本，用于客户端和 gateway 丢弃旧提示 |
+| `refreshRequired` | 固定为 true，只表示需要 REST 刷新 |
+
+约束：
+
+- 实时提示只触发刷新或红点，不能作为出价、拍卖结束、成交确认、交付确认、申诉裁决或积分转移的事实源。
+- worker 在 outbox 主路径成功后发布提示；提示发布失败不能回滚业务状态，也不能改变 outbox 重试语义。
+- gateway 对连接和订阅房间做回源权限校验，发送前再次校验；权限失效时发送 `subscription_revoked` 并移除订阅。
+- 客户端重连、页面恢复前台、通知跳转或收到提示后必须调用 REST API 读取最新状态；断线期间不能用本地旧价或旧交易状态继续裁决操作。
 
 ## 11. 审计与异步事件
 

@@ -307,6 +307,58 @@ enum OutboxStatus {
   cancelled
 }
 
+enum NotificationType {
+  auction_bid_accepted
+  auction_bid_outbid
+  auction_bid_withdrawn
+  auction_settled
+  auction_unsold
+  auction_cancelled
+  transaction_guardian_confirmed
+  transaction_cancelled
+  transaction_completed
+  transaction_disputed
+  transaction_platform_review_required
+}
+
+enum NotificationPriority {
+  low
+  normal
+  high
+  urgent
+}
+
+enum NotificationDeliveryStatus {
+  pending
+  sent
+  failed
+  suppressed
+}
+
+enum NotificationActionType {
+  view_auction
+  view_transaction
+  view_appeal
+  view_points
+  open_search_result
+}
+
+enum SearchIndexTargetType {
+  item
+  wanted_post
+}
+
+enum SearchIndexVisibilityStatus {
+  searchable
+  hidden
+  delisted
+}
+
+enum ItemFavoriteStatus {
+  active
+  removed
+}
+
 enum SessionStatus {
   active
   revoked
@@ -429,6 +481,8 @@ model User {
   secondReviewedPointAdjustments    PointAdjustmentRequest[]      @relation("PointAdjustmentSecondReviewedBy")
   manualReviewRecords               ManualReviewRecord[]          @relation("ManualReviewRecordReviewer")
   reviewedAppeals                    Appeal[]                      @relation("AppealReviewer")
+  notifications                      Notification[]
+  notificationPreferences            NotificationPreference[]
 }
 
 model WechatIdentity {
@@ -496,6 +550,9 @@ model ChildProfile {
   wantedResponses        WantedResponse[]
   bids                   Bid[]
   guardianDecisions      GuardianDecision[]
+  notifications          Notification[]
+  notificationPreferences NotificationPreference[]
+  itemFavorites          ItemFavorite[]
 }
 
 model GuardianChildLink {
@@ -531,6 +588,8 @@ model AuctionCommunity {
   wantedPosts                   WantedPost[]
   deliveryPoints                DeliveryPoint[]
   appeals                       Appeal[]
+  searchIndexDocuments          SearchIndexDocument[]
+  itemFavorites                 ItemFavorite[]
 }
 
 model AdminCommunityScope {
@@ -831,6 +890,7 @@ model Item {
   latestVersion          ContentVersion?  @relation("ItemLatestVersion", fields: [latestVersionId], references: [id])
   auctionSession         AuctionSession?
   wantedResponses        WantedResponse[]
+  favorites              ItemFavorite[]
 
   @@index([communityId, status])
   @@index([sellerChildId])
@@ -899,6 +959,7 @@ model ContentVersion {
   wantedPostLatest        WantedPost[] @relation("WantedPostLatestVersion")
   wantedResponseCurrentPublic WantedResponse[] @relation("WantedResponseCurrentPublicVersion")
   wantedResponseLatest        WantedResponse[] @relation("WantedResponseLatestVersion")
+  searchIndexDocuments   SearchIndexDocument[]
 
   @@unique([targetType, targetId, versionNo])
   @@index([targetType, targetId, status])
@@ -1276,8 +1337,101 @@ model OutboxEvent {
   lockedBy       String?
   attempts       Int          @default(0)
   createdAt      DateTime     @default(now())
+  notifications  Notification[]
 
   @@index([status, availableAt])
+}
+
+model Notification {
+  id               String                     @id @default(cuid())
+  recipientUserId  String
+  recipientChildId String?
+  type             NotificationType
+  priority         NotificationPriority       @default(normal)
+  mandatory        Boolean                    @default(false)
+  title            String
+  body             String
+  relatedType      String
+  relatedId        String
+  eventId          String?
+  targetVersion    Int?
+  actionType       NotificationActionType?
+  deliveryStatus   NotificationDeliveryStatus @default(pending)
+  readAt           DateTime?
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+  recipient        User                       @relation(fields: [recipientUserId], references: [id])
+  recipientChild   ChildProfile?              @relation(fields: [recipientChildId], references: [id])
+  event            OutboxEvent?               @relation(fields: [eventId], references: [id], onDelete: SetNull)
+
+  @@index([recipientUserId, readAt, createdAt])
+  @@index([recipientUserId, recipientChildId, readAt, createdAt])
+  @@index([eventId, recipientUserId, recipientChildId, type])
+  @@index([relatedType, relatedId, createdAt])
+}
+
+model NotificationPreference {
+  id                     String   @id @default(cuid())
+  userId                 String
+  childId                String?
+  eventType              String
+  inAppEnabled           Boolean  @default(true)
+  wechatSubscribeEnabled Boolean  @default(false)
+  childVisible           Boolean  @default(false)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  user                   User     @relation(fields: [userId], references: [id])
+  child                  ChildProfile? @relation(fields: [childId], references: [id])
+
+  @@unique([userId, childId, eventType])
+  @@index([userId, eventType])
+}
+
+model SearchIndexDocument {
+  id               String                      @id @default(cuid())
+  targetType       SearchIndexTargetType
+  targetId         String
+  contentVersionId String
+  communityId      String
+  visibilityStatus SearchIndexVisibilityStatus @default(searchable)
+  searchPayload    Json
+  searchText       String
+  category         String?
+  indexedAt        DateTime                    @default(now())
+  sourceVersion    Int
+  sourceCreatedAt  DateTime
+  auctionEndAt     DateTime?
+  bidCount         Int                         @default(0)
+  favoriteCount    Int                         @default(0)
+  community        AuctionCommunity            @relation(fields: [communityId], references: [id])
+  contentVersion   ContentVersion              @relation(fields: [contentVersionId], references: [id])
+
+  @@unique([targetType, targetId])
+  @@index([communityId, visibilityStatus, indexedAt])
+  @@index([communityId, targetType, visibilityStatus, indexedAt])
+  @@index([communityId, category, visibilityStatus, indexedAt])
+  @@index([communityId, visibilityStatus, auctionEndAt])
+  @@index([communityId, visibilityStatus, bidCount])
+  @@index([communityId, visibilityStatus, favoriteCount])
+}
+
+model ItemFavorite {
+  id          String             @id @default(cuid())
+  childId     String
+  itemId      String
+  communityId String
+  status      ItemFavoriteStatus @default(active)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  removedAt   DateTime?
+  child       ChildProfile       @relation(fields: [childId], references: [id])
+  item        Item               @relation(fields: [itemId], references: [id])
+  community   AuctionCommunity   @relation(fields: [communityId], references: [id])
+
+  @@unique([childId, itemId])
+  @@index([childId, communityId, status, updatedAt])
+  @@index([itemId, status])
+  @@index([communityId, status, updatedAt])
 }
 
 model AuditLog {

@@ -21,6 +21,8 @@ import {
 import { RedactingWorkerLogger } from "./redacting-worker-logger.js";
 import { startWorkerHeartbeat } from "./worker-heartbeat.js";
 import { loadWorkerRuntimeConfig } from "./worker-config.js";
+import { PrismaNotificationSender } from "./notification-sender.js";
+import { createRedisRealtimeHintPublisher } from "./realtime-hint-publisher.js";
 
 const config = loadWorkerRuntimeConfig();
 const logger = new RedactingWorkerLogger();
@@ -38,19 +40,16 @@ const heartbeat = await startWorkerHeartbeat({
 const auctionSettlementScheduler = createBullMqAuctionSettlementScheduler({
   connection: config.redis
 });
+const notificationSender = new PrismaNotificationSender(prisma);
+const realtimePublisher = createRedisRealtimeHintPublisher({
+  connection: config.redis
+});
 const outboxDispatcher = new PrismaOutboxDispatcher(prisma, {
   workerName: config.workerName,
   leaseMs: config.outboxDispatchLeaseMs,
   settlementScheduler: auctionSettlementScheduler,
-  notificationSender: {
-    async send() {
-      return {
-        ok: false,
-        errorCode: "SUBSCRIPTION_MESSAGE_PROVIDER_NOT_CONFIGURED",
-        mutatesBusinessState: false
-      };
-    }
-  }
+  notificationSender,
+  realtimePublisher
 });
 const outboxDispatchLoop = startPeriodicOutboxDispatcher({
   dispatcher: outboxDispatcher,
@@ -82,15 +81,7 @@ const transactionTimeoutScanner = startPeriodicTransactionTimeoutScanner({
 const outboxWorker = createOutboxNotificationWorker({
   connection: config.redis,
   concurrency: config.concurrency,
-  sender: {
-    async send() {
-      return {
-        ok: false,
-        errorCode: "SUBSCRIPTION_MESSAGE_PROVIDER_NOT_CONFIGURED",
-        mutatesBusinessState: false
-      };
-    }
-  }
+  sender: notificationSender
 });
 const auctionSettlementWorker = createAuctionSettlementTriggerWorker({
   connection: config.redis,
@@ -136,6 +127,7 @@ async function shutdown() {
   await auctionSettlementWorker.close();
   await outboxWorker.close();
   await auctionSettlementScheduler.close();
+  await realtimePublisher.close();
   await prisma.$disconnect();
   process.exit(0);
 }

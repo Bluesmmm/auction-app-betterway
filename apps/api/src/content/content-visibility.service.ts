@@ -120,7 +120,7 @@ export class ContentVisibilityService {
     if (
       !item ||
       item.communityId !== input.communityId ||
-      item.status !== "approved" ||
+      !isVisibleItemStatus(item.status) ||
       !item.currentPublicVersionId
     ) {
       return { result: "rejected", errorCode: "ITEM_NOT_VISIBLE" };
@@ -375,4 +375,8 @@ export class ContentVisibilityService {
       ORDER BY cvm."sortOrder" ASC
     `;
   }
+}
+
+function isVisibleItemStatus(status: string) {
+  return status === "approved" || status === "listed";
 }

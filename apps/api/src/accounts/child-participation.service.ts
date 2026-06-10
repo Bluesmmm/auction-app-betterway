@@ -12,6 +12,7 @@ export type ChildParticipationAction =
   | "join_community"
   | "browse_community"
   | "publish"
+  | "favorite"
   | "bid"
   | "transaction_confirm"
   | "export"
@@ -59,6 +60,7 @@ type ChildParticipationContext = {
   primaryGuardianUserId: string;
   settings: {
     canPublish: boolean;
+    canFavorite: boolean;
     canBid: boolean;
     maxBidPoints: number | null;
   } | null;
@@ -139,6 +141,7 @@ export class ChildParticipationService {
         }
         return this.evaluateBrowseCommunity(input.childId, input.communityId);
       case "publish":
+      case "favorite":
         if (!input.communityId) {
           return {
             result: "rejected",
@@ -154,6 +157,15 @@ export class ChildParticipationService {
           if (membership.result === "rejected") {
             return membership;
           }
+        }
+
+        if (input.action === "favorite") {
+          return context.settings?.canFavorite
+            ? { result: "accepted" }
+            : {
+                result: "rejected",
+                errorCode: "GUARDIAN_CONTROL_DISABLED"
+              };
         }
 
         return context.settings?.canPublish
@@ -217,6 +229,7 @@ export class ChildParticipationService {
         guardianSettings: {
           select: {
             canPublish: true,
+            canFavorite: true,
             canBid: true,
             maxBidPoints: true
           }

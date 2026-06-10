@@ -350,6 +350,65 @@
 - 通知跳转、WebSocket 重连和页面恢复前台后必须 REST 拉取最新状态。
 - 搜索索引延迟、缓存过期或内容下架后，客户端不能看到不可见内容。
 
+实施顺序：
+
+1. 第一轮做站内通知闭环：新增通知事实和通知偏好，消费现有 outbox 事件派生站内通知和 fake 微信订阅消息，小程序提供通知中心、未读数、标记已读和通知跳转入口；发送前必须回源校验接收人权限和目标最新状态；不实现搜索、列表、收藏或完整 WebSocket gateway。
+2. 第二轮做搜索、列表与收藏闭环：新增搜索候选索引和收藏/关注事实，索引只收录已审核、可见、未下架内容；搜索、列表、热门、收藏和通知跳转都必须在返回前回源校验社区成员、内容版本、审核状态、下架、暂停和风险限制；小程序提供社区内容列表、搜索、分类筛选、排序和收藏/关注入口；热门排序第一版不使用个人画像。
+3. 第三轮做实时提示闭环：实现 WebSocket gateway、连接鉴权、房间权限、权限变化踢出、乱序/重复/旧版本事件处理和重连后 REST 补偿；实时提示只能触发刷新或红点，不裁决出价、拍卖结束、成交确认、交付确认或积分转移。
+
+第一轮测试矩阵：
+
+- 通知事件边界：第一轮只覆盖已有 Stage 5/6 用户可感知 outbox 事件，包括 `auction.bid_accepted`、`auction.bid_outbid`、`auction.bid_withdrawn`、`auction.settled`、`auction.unsold`、`auction.cancelled`、`transaction.guardian_confirmed`、`transaction.cancelled`、`transaction.completed`、`transaction.disputed` 和 `transaction.platform_review_required`。
+- 暂不纳入事件：`auction.session_created` 只用于结算调度，不作为用户通知；`delivery_point.created`、`delivery_point.updated` 和 `delivery_point.disabled` 先作为后台治理/审计事件；内容审核结果和积分调整通知等到对应 outbox 事件补齐后再纳入通知矩阵。
+- 收件人分层：孩子只收出价成功、被超越、撤销、流拍、拍卖取消和交易完成等轻量动态；家长收成交待确认、对方已确认、交易取消、交付争议、平台复核、交易完成和积分冻结/转移相关提醒；活动管理员只收需要一线处理的 `transaction.disputed`、`transaction.platform_review_required` 和后续申诉类待办；平台管理员第一轮只收平台复核类通知，不收普通出价或成交噪音。
+- 收件人回源：通知收件人必须从数据库回源推导有效监护关系、活动管理员授权、平台管理员角色、社区 scope、风险限制和目标状态；outbox payload 只能作为候选上下文，不能直接裁决收件人。
+- 孩子内容边界：孩子通知不得暴露对方家长、地址、电话、交付细节、申诉文本或管理员处理意见，只能展示轻量动态并提示需要家长查看的事项。
+- 偏好默认值：站内通知默认开启，覆盖家长、孩子、活动管理员和平台管理员；微信订阅消息默认只作为家长和管理员关键待办的外部触达候选，覆盖成交待确认、交付确认/争议、平台复核、申诉处理和积分异常等高优先级事件；孩子第一版不接收微信订阅消息。
+- 偏好边界：用户可以关闭非关键提醒，但不能关闭安全、合规和交易待办类站内通知；微信订阅消息受微信授权和 provider 可用性影响，失败不影响站内通知和业务事实；第一轮只实现偏好 schema 与服务端判断，不做复杂偏好 UI。
+- 通知持久化：Stage 7 用户通知中心不直接读取或动态投影 `outbox_events`；outbox 消费时生成持久化 `notifications`，通知中心的分页、未读数、已读状态、投递状态和跳转目标都只读 `notifications`。`outbox_events` 仍作为异步事件与运维排障事实，相关排障视图归入 Stage 8 后台治理。
+- 通知优先级：第一轮 `notifications` 必须包含 `priority` 和 `mandatory`；`mandatory` 表示安全、合规和交易待办类站内通知，不能被用户偏好关闭；微信订阅消息只从高优先级且符合偏好和授权的家长/管理员通知中派生。
+- 微信投递状态：第一轮不新增 `notification_deliveries` 表；outbox 消费先持久化站内通知，再对符合条件的高优先级家长/管理员通知调用 fake subscription provider，并把投递结果记录在 `notifications.delivery_status`。站内通知创建成功是主路径，微信投递失败不能影响业务事实或删除站内通知。
+- 通知动作边界：第一轮不做复杂动作按钮或任意跳转 DSL，只保留 `related_type`、`related_id` 和 `target_version`；客户端进入目标页面后 REST 拉取最新状态。
+- 通知去重：第一轮 outbox 派生通知使用 `event_id + recipient_user_id + recipient_child_id + type` 作为去重键；同一用户可能因家长和管理员角色收到不同语义的通知，不能只用 `event_id + recipient_user_id` 去重；outbox 重试命中已有通知时只能更新投递状态，不重复创建通知。
+- 通知 API：第一轮只开放 `GET /notifications`、`GET /notifications/unread-count`、`POST /notifications/:id/read` 和 `POST /notifications/read-all`；通知列表只返回摘要、时间、类型、优先级、已读状态、`related_type`、`related_id` 和 `target_version`，点击后由客户端调用目标业务 API 拉取最新状态。
+- API 身份边界：所有通知 API 必须从 token 派生当前用户身份，可按 `recipientChildId` 过滤本人相关孩子通知，但不接受客户端传入 `recipientUserId` 查询他人通知；第一轮不做删除、归档、偏好 UI API、管理员代读或通知详情业务快照。
+- 小程序入口：第一轮只新增 `pages/stage7/notifications/index` 可验证 shell，封装通知列表、未读数、单条已读、全部已读和通知跳转目标解析；不做完整 WXML/样式体验、全局红点 tab 集成、偏好设置页、复杂筛选 UI 或微信订阅授权弹窗。
+- 后台入口：第一轮不新增 Admin 通知页面或待办工作台，只保证活动管理员和平台管理员通知可由同一通知 API 按当前管理员身份读取；完整治理看板、outbox 排障和跨队列待办聚合仍归入 Stage 8。
+- Schema/contract：验证通知、通知偏好、通知类型、优先级、不可关闭标记、收件人、目标版本、已读状态、delivery status、outbox 关联和必要索引。
+- Outbox 派生：重复、乱序、延迟和重试的 outbox 事件不能重复创建等价站内通知，发送失败只能改变通知投递状态或 outbox 重试状态，不能改变拍卖、交易或积分事实。
+- 权限回源：通知创建和通知跳转前都必须校验接收人仍有权限查看目标交易、申诉、拍品、积分异常或审核待办。
+- 内容脱敏：通知标题、正文、payload、日志和测试快照不得包含儿童姓名、学校、地址、电话、二维码、微信号、快递信息、对象 key 或签名 URL。
+- 小程序 shell：通知中心只展示服务端返回的通知摘要；进入目标页面、页面恢复前台和通知跳转后必须 REST 拉取最新状态，不能用通知 payload 裁决业务状态。
+- 回归门禁：第一轮 `stage7:verify` 必须覆盖通知 schema/contract tests、outbox 派生 tests、权限回源 tests、脱敏 tests、小程序通知 shell tests、`npm run typecheck`、`npm run build` 和 `git diff --check`。
+
+第二轮测试矩阵：
+
+- Schema/contract：验证搜索候选索引、收藏/关注事实、唯一约束、排序字段、索引状态和内容版本绑定。
+- 通知动作契约：第二轮补类型化通知动作，不使用任意 JSON/DSL；动作只能从服务端枚举值产生，例如 `view_auction`、`view_transaction`、`view_appeal`、`view_points` 和 `open_search_result`，客户端执行前仍必须 REST 回源校验目标可见性和最新状态。
+- 搜索/收藏 API：第二轮开放 `GET /stage7/search`、`GET /stage7/favorites/items`、`POST /stage7/favorites/items/:itemId` 和 `POST /stage7/favorites/items/:itemId/remove`；所有接口从 token 派生 actor，只接受 `childId` 和 `communityId` 作为作用域，不能接受客户端传入 user 覆盖。
+- 通知去重扩展：第二轮如需支持非 outbox 的系统补偿通知，必须引入独立 `dedupe_key` 并保留幂等、审计和脱敏约束；不得让客户端自造通知去重键或通过本地缓存决定通知事实。
+- 通知投递扩展：第二轮如接入真实微信模板、多模板路由或多 attempt 明细，必须新增 `notification_deliveries` 记录 provider、template、attempt、error code、provider message id 和下一次重试时间；投递明细仍不能改变拍卖、交易、积分或审核事实。
+- 通知 API 扩展：第二轮新增 `GET /notifications/preferences`、`PUT /notifications/preferences/:eventType` 和通知列表 `actionType` 字段；仍不得允许客户端读取他人通知、伪造收件人、删除审计相关通知或用通知 payload 代替目标业务 API。
+- 小程序体验扩展：第二轮补 `pages/stage7/search/index`、社区内容列表、搜索、分类筛选、排序、收藏/关注入口、通知偏好入口和类型化通知动作入口；通知红点的实时刷新、WebSocket 连接状态和重连提示仍留到第三轮实时提示闭环。
+- 后台轻入口：第二轮可以在现有 Admin 壳接入轻量通知入口和类型化跳转，但不得扩展为 Stage 8 治理大屏、outbox 排障台、跨队列待办聚合或危险操作入口。
+- 搜索回源：索引延迟、脏数据、缓存陈旧、内容下架、成员移除、社区暂停、风险限制或注销后，搜索、列表、热门、收藏和详情跳转都不能返回不可见内容。
+- 收藏边界：收藏/关注必须受孩子参与能力、社区成员状态、家长控制项和内容可见性约束；收藏关系不能授予出价、成交、交付或绕过下架的权限。
+- 排序边界：最新、即将结束、出价最多和热门排序必须可解释；热门排序第一版只使用全局聚合信号，不使用个人画像。
+- 小程序 shell：搜索、分类、排序、列表和收藏入口都调用 Stage 7 API，不在本地推导权限、可见性或热度。
+- 回归门禁：第二轮 `stage7:verify` 必须覆盖搜索回源 tests、收藏权限 tests、排序契约 tests、小程序搜索 shell tests、Stage 3 内容可见性关键回归、Stage 5 拍卖状态关键回归、`npm run typecheck`、`npm run build` 和 `git diff --check`。
+
+第三轮测试矩阵：
+
+- 协议边界：API 在 `/stage7/realtime` 提供 WebSocket gateway，连接通过 Bearer session 或 `accessToken` 查询参数鉴权；客户端只能发送 `subscribe` 房间消息，服务端只返回 `subscribed`、`rejected`、`hint` 和 `subscription_revoked` 帧。
+- 房间边界：第一版房间包括 `auction:{childId}:{auctionSessionId}`、`transaction:{childId}:{transactionId}` 和 `notifications:{childId|__user__}`；加入房间必须重新回源校验孩子参与能力、社区成员、内容可见性和目标交易关系。
+- 发布边界：worker 只在 outbox 事件完成业务派发并标记 sent 后，通过 Redis channel `stage7:realtime:hints` 发布刷新提示；`auction.session_created` 仍只用于结算调度，不作为用户实时提示；实时提示发布失败不得把拍卖、交易、积分或 outbox 主路径回滚为失败。
+- 客户端边界：小程序 `pages/stage7/realtime/index` 只维护连接状态、红点和 `refreshRequired`，重连后生成通知未读、通知列表、搜索列表和交易详情等 REST 补偿请求；不得从 WebSocket payload 写入当前价格、交易状态、交付状态或积分结果。
+- 连接鉴权：WebSocket 连接和加入房间前必须校验用户、孩子档案、社区成员状态、家长控制项、风险限制和目标内容可见性。
+- 权限失效：成员移除、家长解绑、账号限制、社区暂停、内容下架或注销后，旧连接必须失去相关访问能力。
+- 事件语义：事件必须携带 event id、server time、target type、target id、target version 和 event type；乱序、重复、旧版本事件不能覆盖客户端已知较新状态。
+- 客户端补偿：WebSocket 重连、通知跳转和页面恢复前台后必须 REST 拉取最新状态；断线期间不能基于旧价直接出价。
+- 回归门禁：第三轮 `stage7:verify` 必须覆盖 realtime contract tests、gateway 权限 tests、权限失效 tests、乱序/重复事件 tests、worker realtime publisher tests、客户端补偿 shell tests、outbox 重试关键回归、`npm run typecheck`、`npm run build` 和 `git diff --check`。
+
 ### 阶段 8：后台治理与试点看板
 
 范围：

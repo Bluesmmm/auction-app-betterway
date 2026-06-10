@@ -9,9 +9,11 @@ export type OutboxJobPayload = {
 
 export type NotificationSender = {
   send(input: {
+    outboxEventId: string;
     eventType: string;
     targetType: string;
     targetId: string;
+    idempotencyKey: string;
     payloadJson: Record<string, unknown>;
   }): Promise<
     | { ok: true; providerMessageId: string; mutatesBusinessState: false }
@@ -39,9 +41,11 @@ export async function processOutboxNotification(
   sender: NotificationSender
 ): Promise<OutboxProcessingResult> {
   const sendResult = await sender.send({
+    outboxEventId: payload.outboxEventId,
     eventType: payload.eventType,
     targetType: payload.targetType,
     targetId: payload.targetId,
+    idempotencyKey: payload.idempotencyKey,
     payloadJson: payload.payloadJson
   });
 
