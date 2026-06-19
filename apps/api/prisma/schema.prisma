@@ -72,6 +72,55 @@ enum AdminScopeStatus {
   revoked
 }
 
+enum GovernanceControlScopeType {
+  platform
+  community
+}
+
+enum GovernanceControlType {
+  pause_publish
+  pause_bid
+  pause_settlement
+  force_platform_review
+}
+
+enum GovernanceControlStatus {
+  active
+  lifted
+  expired
+}
+
+enum HighRiskGovernanceReviewActionType {
+  governance_control_create
+  governance_control_lift
+}
+
+enum HighRiskGovernanceReviewDecisionState {
+  pending
+  approved
+  rejected
+  expired
+  withdrawn
+  invalidated
+}
+
+enum HighRiskGovernanceReviewExecutionState {
+  not_started
+  succeeded
+  failed
+}
+
+enum HighRiskGovernanceReviewEventType {
+  created
+  approved
+  rejected
+  withdrawn
+  expired
+  invalidated
+  execution_succeeded
+  execution_failed
+}
+
 enum ContentTargetType {
   item
   wanted_request
@@ -319,6 +368,8 @@ enum NotificationType {
   transaction_completed
   transaction_disputed
   transaction_platform_review_required
+  high_risk_governance_review_pending
+  high_risk_governance_review_result
 }
 
 enum NotificationPriority {
@@ -341,6 +392,7 @@ enum NotificationActionType {
   view_appeal
   view_points
   open_search_result
+  view_high_risk_governance_review
 }
 
 enum SearchIndexTargetType {
@@ -456,31 +508,36 @@ enum RiskRestrictionStatus {
 }
 
 model User {
-  id                                String                        @id @default(cuid())
-  status                            UserStatus                    @default(active)
-  createdAt                         DateTime                      @default(now())
-  updatedAt                         DateTime                      @updatedAt
-  wechatIdentities                  WechatIdentity[]
-  guardianProfile                   GuardianProfile?
-  adminProfile                      AdminProfile?
-  childProfile                      ChildProfile?
-  sessions                          UserSession[]
-  trustedDevices                    TrustedDevice[]
-  sensitiveOperationChallenges      SensitiveOperationChallenge[] @relation("SensitiveOperationChallengeActor")
-  reviewedCommunityRequests         CommunityCreationRequest[]    @relation("CommunityCreationRequestReviewer")
-  adminReviewedCommunityMembers     CommunityMember[]             @relation("CommunityMemberAdminReviewer")
-  reviewedRiskSignals               RiskSignal[]                  @relation("RiskSignalReviewer")
-  targetRiskSignals                 RiskSignal[]                  @relation("RiskSignalTargetUser")
-  imposedRiskRestrictions           RiskRestriction[]             @relation("RiskRestrictionImposedBy")
-  targetRiskRestrictions            RiskRestriction[]             @relation("RiskRestrictionTargetUser")
-  auditLogs                         AuditLog[]
-  createdLedgerEntries              PointLedgerEntry[]
-  createdAuctionSessions            AuctionSession[]             @relation("AuctionSessionCreatedBy")
-  requestedPointAdjustments         PointAdjustmentRequest[]      @relation("PointAdjustmentRequestedBy")
-  reviewedPointAdjustments          PointAdjustmentRequest[]      @relation("PointAdjustmentReviewedBy")
-  secondReviewedPointAdjustments    PointAdjustmentRequest[]      @relation("PointAdjustmentSecondReviewedBy")
-  manualReviewRecords               ManualReviewRecord[]          @relation("ManualReviewRecordReviewer")
-  reviewedAppeals                    Appeal[]                      @relation("AppealReviewer")
+  id                                 String                            @id @default(cuid())
+  status                             UserStatus                        @default(active)
+  createdAt                          DateTime                          @default(now())
+  updatedAt                          DateTime                          @updatedAt
+  wechatIdentities                   WechatIdentity[]
+  guardianProfile                    GuardianProfile?
+  adminProfile                       AdminProfile?
+  childProfile                       ChildProfile?
+  sessions                           UserSession[]
+  trustedDevices                     TrustedDevice[]
+  sensitiveOperationChallenges       SensitiveOperationChallenge[]     @relation("SensitiveOperationChallengeActor")
+  reviewedCommunityRequests          CommunityCreationRequest[]        @relation("CommunityCreationRequestReviewer")
+  adminReviewedCommunityMembers      CommunityMember[]                 @relation("CommunityMemberAdminReviewer")
+  reviewedRiskSignals                RiskSignal[]                      @relation("RiskSignalReviewer")
+  targetRiskSignals                  RiskSignal[]                      @relation("RiskSignalTargetUser")
+  imposedRiskRestrictions            RiskRestriction[]                 @relation("RiskRestrictionImposedBy")
+  targetRiskRestrictions             RiskRestriction[]                 @relation("RiskRestrictionTargetUser")
+  auditLogs                          AuditLog[]
+  createdLedgerEntries               PointLedgerEntry[]
+  createdAuctionSessions             AuctionSession[]                  @relation("AuctionSessionCreatedBy")
+  requestedPointAdjustments          PointAdjustmentRequest[]          @relation("PointAdjustmentRequestedBy")
+  reviewedPointAdjustments           PointAdjustmentRequest[]          @relation("PointAdjustmentReviewedBy")
+  secondReviewedPointAdjustments     PointAdjustmentRequest[]          @relation("PointAdjustmentSecondReviewedBy")
+  manualReviewRecords                ManualReviewRecord[]              @relation("ManualReviewRecordReviewer")
+  reviewedAppeals                    Appeal[]                          @relation("AppealReviewer")
+  createdGovernanceControls          GovernanceControl[]               @relation("GovernanceControlCreatedBy")
+  liftedGovernanceControls           GovernanceControl[]               @relation("GovernanceControlLiftedBy")
+  initiatedHighRiskGovernanceReviews HighRiskGovernanceReviewRequest[] @relation("HighRiskGovernanceReviewInitiator")
+  reviewedHighRiskGovernanceReviews  HighRiskGovernanceReviewRequest[] @relation("HighRiskGovernanceReviewReviewer")
+  highRiskGovernanceReviewEvents     HighRiskGovernanceReviewEvent[]   @relation("HighRiskGovernanceReviewEventActor")
   notifications                      Notification[]
   notificationPreferences            NotificationPreference[]
 }
@@ -508,7 +565,7 @@ model GuardianProfile {
   childLinks                GuardianChildLink[]
   communityCreationRequests CommunityCreationRequest[]
   submittedDisputes         GuardianDispute[]
-  submittedAppeals          Appeal[]                    @relation("GuardianSubmittedAppeals")
+  submittedAppeals          Appeal[]                   @relation("GuardianSubmittedAppeals")
   pointAdjustmentRequests   PointAdjustmentRequest[]
   riskSignals               RiskSignal[]
   riskRestrictions          RiskRestriction[]
@@ -526,33 +583,33 @@ model AdminProfile {
 }
 
 model ChildProfile {
-  id                     String              @id @default(cuid())
-  userId                 String?             @unique
-  displayName            String
-  avatarAssetId          String?
-  gradeBand              String
-  status                 ChildStatus         @default(pending_guardian)
-  createdByGuardianId    String?
-  initialPointsGrantedAt DateTime?
-  createdAt              DateTime            @default(now())
-  user                   User?               @relation(fields: [userId], references: [id])
-  guardianLinks          GuardianChildLink[]
-  guardianSettings       ChildGuardianSettings?
-  guardianDisputes       GuardianDispute[]
-  memberships            CommunityMember[]
-  riskSignals            RiskSignal[]
-  riskRestrictions       RiskRestriction[]
-  pointAccount           PointAccount?
-  ledgerEntries          PointLedgerEntry[]
+  id                      String                   @id @default(cuid())
+  userId                  String?                  @unique
+  displayName             String
+  avatarAssetId           String?
+  gradeBand               String
+  status                  ChildStatus              @default(pending_guardian)
+  createdByGuardianId     String?
+  initialPointsGrantedAt  DateTime?
+  createdAt               DateTime                 @default(now())
+  user                    User?                    @relation(fields: [userId], references: [id])
+  guardianLinks           GuardianChildLink[]
+  guardianSettings        ChildGuardianSettings?
+  guardianDisputes        GuardianDispute[]
+  memberships             CommunityMember[]
+  riskSignals             RiskSignal[]
+  riskRestrictions        RiskRestriction[]
+  pointAccount            PointAccount?
+  ledgerEntries           PointLedgerEntry[]
   pointAdjustmentRequests PointAdjustmentRequest[]
-  items                  Item[]
-  wantedPosts            WantedPost[]
-  wantedResponses        WantedResponse[]
-  bids                   Bid[]
-  guardianDecisions      GuardianDecision[]
-  notifications          Notification[]
+  items                   Item[]
+  wantedPosts             WantedPost[]
+  wantedResponses         WantedResponse[]
+  bids                    Bid[]
+  guardianDecisions       GuardianDecision[]
+  notifications           Notification[]
   notificationPreferences NotificationPreference[]
-  itemFavorites          ItemFavorite[]
+  itemFavorites           ItemFavorite[]
 }
 
 model GuardianChildLink {
@@ -570,14 +627,14 @@ model GuardianChildLink {
 }
 
 model AuctionCommunity {
-  id                            String                @id @default(cuid())
+  id                            String                            @id @default(cuid())
   name                          String
   description                   String?
   creatorGuardianId             String
-  status                        CommunityStatus       @default(draft)
+  status                        CommunityStatus                   @default(draft)
   defaultAuctionDurationMinutes Int
-  createdAt                     DateTime              @default(now())
-  creationRequest               CommunityCreationRequest? @relation("CommunityCreatedFromRequest")
+  createdAt                     DateTime                          @default(now())
+  creationRequest               CommunityCreationRequest?         @relation("CommunityCreatedFromRequest")
   inviteCodes                   CommunityInviteCode[]
   members                       CommunityMember[]
   adminScopes                   AdminCommunityScope[]
@@ -590,6 +647,8 @@ model AuctionCommunity {
   appeals                       Appeal[]
   searchIndexDocuments          SearchIndexDocument[]
   itemFavorites                 ItemFavorite[]
+  governanceControls            GovernanceControl[]
+  highRiskGovernanceReviews     HighRiskGovernanceReviewRequest[]
 }
 
 model AdminCommunityScope {
@@ -606,15 +665,15 @@ model AdminCommunityScope {
 }
 
 model CommunityInviteCode {
-  id            String               @id @default(cuid())
+  id            String                @id @default(cuid())
   communityId   String
   ruleVersionId String?
-  code          String               @unique
-  status        InviteCodeStatus     @default(active)
+  code          String                @unique
+  status        InviteCodeStatus      @default(active)
   maxUses       Int?
-  usedCount     Int                  @default(0)
+  usedCount     Int                   @default(0)
   expiresAt     DateTime?
-  community     AuctionCommunity     @relation(fields: [communityId], references: [id])
+  community     AuctionCommunity      @relation(fields: [communityId], references: [id])
   ruleVersion   CommunityRuleVersion? @relation(fields: [ruleVersionId, communityId], references: [id, communityId], onDelete: Restrict)
   members       CommunityMember[]
 
@@ -624,25 +683,25 @@ model CommunityInviteCode {
 }
 
 model CommunityMember {
-  id                      String                   @id @default(cuid())
-  communityId             String
-  childId                 String
-  inviteCodeId            String?
-  ruleVersionId           String?
-  adminReviewedByUserId   String?
-  status                  CommunityMemberStatus    @default(pending_guardian)
+  id                       String                   @id @default(cuid())
+  communityId              String
+  childId                  String
+  inviteCodeId             String?
+  ruleVersionId            String?
+  adminReviewedByUserId    String?
+  status                   CommunityMemberStatus    @default(pending_guardian)
   rosterVerificationStatus RosterVerificationStatus @default(pending)
-  guardianConfirmedAt     DateTime?
-  adminReviewedAt         DateTime?
-  joinedAt                DateTime?
-  rosterEvidenceJson      Json?
-  community               AuctionCommunity         @relation(fields: [communityId], references: [id])
-  child                   ChildProfile             @relation(fields: [childId], references: [id])
-  inviteCode              CommunityInviteCode?     @relation(fields: [inviteCodeId, communityId], references: [id, communityId], onDelete: Restrict)
-  ruleVersion             CommunityRuleVersion?    @relation(fields: [ruleVersionId, communityId], references: [id, communityId], onDelete: Restrict)
-  adminReviewedBy         User?                    @relation("CommunityMemberAdminReviewer", fields: [adminReviewedByUserId], references: [id])
-  riskSignals             RiskSignal[]             @relation("RiskSignalCommunityMember")
-  riskRestrictions        RiskRestriction[]        @relation("RiskRestrictionCommunityMember")
+  guardianConfirmedAt      DateTime?
+  adminReviewedAt          DateTime?
+  joinedAt                 DateTime?
+  rosterEvidenceJson       Json?
+  community                AuctionCommunity         @relation(fields: [communityId], references: [id])
+  child                    ChildProfile             @relation(fields: [childId], references: [id])
+  inviteCode               CommunityInviteCode?     @relation(fields: [inviteCodeId, communityId], references: [id, communityId], onDelete: Restrict)
+  ruleVersion              CommunityRuleVersion?    @relation(fields: [ruleVersionId, communityId], references: [id, communityId], onDelete: Restrict)
+  adminReviewedBy          User?                    @relation("CommunityMemberAdminReviewer", fields: [adminReviewedByUserId], references: [id])
+  riskSignals              RiskSignal[]             @relation("RiskSignalCommunityMember")
+  riskRestrictions         RiskRestriction[]        @relation("RiskRestrictionCommunityMember")
 
   @@unique([id, communityId, childId], map: "CommunityMember_id_communityId_childId_key")
   @@unique([communityId, childId])
@@ -703,18 +762,18 @@ model SensitiveOperationChallenge {
 }
 
 model ChildGuardianSettings {
-  id                         String       @id @default(cuid())
-  childId                    String       @unique
-  canPublish                 Boolean      @default(false)
-  canBid                     Boolean      @default(false)
-  canUseCourier              Boolean      @default(false)
-  canUseGuardianArrangedDelivery Boolean  @default(false)
-  canFavorite                Boolean      @default(false)
-  bidRequiresGuardianConfirmation Boolean @default(true)
-  maxBidPoints               Int?
-  createdAt                  DateTime     @default(now())
-  updatedAt                  DateTime     @updatedAt
-  child                      ChildProfile @relation(fields: [childId], references: [id])
+  id                              String       @id @default(cuid())
+  childId                         String       @unique
+  canPublish                      Boolean      @default(false)
+  canBid                          Boolean      @default(false)
+  canUseCourier                   Boolean      @default(false)
+  canUseGuardianArrangedDelivery  Boolean      @default(false)
+  canFavorite                     Boolean      @default(false)
+  bidRequiresGuardianConfirmation Boolean      @default(true)
+  maxBidPoints                    Int?
+  createdAt                       DateTime     @default(now())
+  updatedAt                       DateTime     @updatedAt
+  child                           ChildProfile @relation(fields: [childId], references: [id])
 }
 
 model GuardianDispute {
@@ -776,7 +835,7 @@ model CommunityRuleVersion {
 }
 
 model RiskSignal {
-  id                String             @id @default(cuid())
+  id                String               @id @default(cuid())
   type              RiskSignalType
   scope             RiskRestrictionScope
   targetId          String
@@ -786,19 +845,19 @@ model RiskSignal {
   childId           String?
   guardianId        String?
   evidenceJson      Json
-  status            RiskSignalStatus   @default(open)
+  status            RiskSignalStatus     @default(open)
   reviewerUserId    String?
   reviewedAt        DateTime?
   resolutionText    String?
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  targetUser        User?              @relation("RiskSignalTargetUser", fields: [targetUserId], references: [id], onDelete: Restrict)
-  communityMember   CommunityMember?   @relation("RiskSignalCommunityMember", fields: [communityMemberId, communityId, childId], references: [id, communityId, childId], onDelete: Restrict)
-  community         AuctionCommunity?  @relation(fields: [communityId], references: [id], onDelete: Restrict)
-  child             ChildProfile?      @relation(fields: [childId], references: [id], onDelete: Restrict)
-  guardian          GuardianProfile?   @relation(fields: [guardianId], references: [id], onDelete: Restrict)
-  reviewer          User?              @relation("RiskSignalReviewer", fields: [reviewerUserId], references: [id])
-  restrictions      RiskRestriction[]  @relation("RiskSignalRestrictions")
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  targetUser        User?                @relation("RiskSignalTargetUser", fields: [targetUserId], references: [id], onDelete: Restrict)
+  communityMember   CommunityMember?     @relation("RiskSignalCommunityMember", fields: [communityMemberId, communityId, childId], references: [id, communityId, childId], onDelete: Restrict)
+  community         AuctionCommunity?    @relation(fields: [communityId], references: [id], onDelete: Restrict)
+  child             ChildProfile?        @relation(fields: [childId], references: [id], onDelete: Restrict)
+  guardian          GuardianProfile?     @relation(fields: [guardianId], references: [id], onDelete: Restrict)
+  reviewer          User?                @relation("RiskSignalReviewer", fields: [reviewerUserId], references: [id])
+  restrictions      RiskRestriction[]    @relation("RiskSignalRestrictions")
 
   @@index([type, status])
   @@index([scope, targetId, status])
@@ -807,7 +866,7 @@ model RiskSignal {
 }
 
 model RiskRestriction {
-  id                String                 @id @default(cuid())
+  id                String                @id @default(cuid())
   type              RiskRestrictionType
   scope             RiskRestrictionScope
   targetId          String
@@ -817,21 +876,21 @@ model RiskRestriction {
   childId           String?
   guardianId        String?
   riskSignalId      String?
-  status            RiskRestrictionStatus  @default(active)
+  status            RiskRestrictionStatus @default(active)
   reason            String
   imposedByUserId   String?
-  startsAt          DateTime               @default(now())
+  startsAt          DateTime              @default(now())
   expiresAt         DateTime?
   resolvedAt        DateTime?
-  createdAt         DateTime               @default(now())
-  updatedAt         DateTime               @updatedAt
-  targetUser        User?                  @relation("RiskRestrictionTargetUser", fields: [targetUserId], references: [id], onDelete: Restrict)
-  communityMember   CommunityMember?       @relation("RiskRestrictionCommunityMember", fields: [communityMemberId, communityId, childId], references: [id, communityId, childId], onDelete: Restrict)
-  community         AuctionCommunity?      @relation(fields: [communityId], references: [id], onDelete: Restrict)
-  child             ChildProfile?          @relation(fields: [childId], references: [id], onDelete: Restrict)
-  guardian          GuardianProfile?       @relation(fields: [guardianId], references: [id], onDelete: Restrict)
-  riskSignal        RiskSignal?            @relation("RiskSignalRestrictions", fields: [riskSignalId], references: [id], onDelete: Restrict)
-  imposedBy         User?                  @relation("RiskRestrictionImposedBy", fields: [imposedByUserId], references: [id])
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  targetUser        User?                 @relation("RiskRestrictionTargetUser", fields: [targetUserId], references: [id], onDelete: Restrict)
+  communityMember   CommunityMember?      @relation("RiskRestrictionCommunityMember", fields: [communityMemberId, communityId, childId], references: [id, communityId, childId], onDelete: Restrict)
+  community         AuctionCommunity?     @relation(fields: [communityId], references: [id], onDelete: Restrict)
+  child             ChildProfile?         @relation(fields: [childId], references: [id], onDelete: Restrict)
+  guardian          GuardianProfile?      @relation(fields: [guardianId], references: [id], onDelete: Restrict)
+  riskSignal        RiskSignal?           @relation("RiskSignalRestrictions", fields: [riskSignalId], references: [id], onDelete: Restrict)
+  imposedBy         User?                 @relation("RiskRestrictionImposedBy", fields: [imposedByUserId], references: [id])
 
   @@index([scope, targetId, status], map: "RiskRestriction_scope_target_status_idx")
   @@index([riskSignalId, status])
@@ -841,17 +900,17 @@ model RiskRestriction {
 }
 
 model MediaAsset {
-  id                  String          @id @default(cuid())
+  id                  String               @id @default(cuid())
   ownerUserId         String
   storageBucket       String
   storageKey          String
-  visibility          MediaVisibility @default(temp_private)
+  visibility          MediaVisibility      @default(temp_private)
   mimeType            String
   sizeBytes           Int
   checksum            String
-  accessPolicyVersion Int             @default(1)
+  accessPolicyVersion Int                  @default(1)
   revokedAt           DateTime?
-  createdAt           DateTime        @default(now())
+  createdAt           DateTime             @default(now())
   contentVersionMedia ContentVersionMedia?
   appealAttachment    AppealAttachment?
 
@@ -938,28 +997,28 @@ model WantedResponse {
 }
 
 model ContentVersion {
-  id          String               @id @default(cuid())
-  targetType  ContentTargetType
-  targetId    String
-  versionNo   Int
-  status      ContentVersionStatus @default(pending_ai)
-  title       String?
-  description String?
-  payloadJson Json
-  riskLevel   String?
-  approvedAt  DateTime?
-  createdAt   DateTime             @default(now())
-  task        ModerationTask?
-  media       ContentVersionMedia[]
-  aiReviewResults AiReviewResult[]
-  manualReviewRecords ManualReviewRecord[]
-  itemCurrentPublic Item[]          @relation("ItemCurrentPublicVersion")
-  itemLatest        Item[]          @relation("ItemLatestVersion")
-  wantedPostCurrentPublic WantedPost[] @relation("WantedPostCurrentPublicVersion")
-  wantedPostLatest        WantedPost[] @relation("WantedPostLatestVersion")
-  wantedResponseCurrentPublic WantedResponse[] @relation("WantedResponseCurrentPublicVersion")
-  wantedResponseLatest        WantedResponse[] @relation("WantedResponseLatestVersion")
-  searchIndexDocuments   SearchIndexDocument[]
+  id                          String                @id @default(cuid())
+  targetType                  ContentTargetType
+  targetId                    String
+  versionNo                   Int
+  status                      ContentVersionStatus  @default(pending_ai)
+  title                       String?
+  description                 String?
+  payloadJson                 Json
+  riskLevel                   String?
+  approvedAt                  DateTime?
+  createdAt                   DateTime              @default(now())
+  task                        ModerationTask?
+  media                       ContentVersionMedia[]
+  aiReviewResults             AiReviewResult[]
+  manualReviewRecords         ManualReviewRecord[]
+  itemCurrentPublic           Item[]                @relation("ItemCurrentPublicVersion")
+  itemLatest                  Item[]                @relation("ItemLatestVersion")
+  wantedPostCurrentPublic     WantedPost[]          @relation("WantedPostCurrentPublicVersion")
+  wantedPostLatest            WantedPost[]          @relation("WantedPostLatestVersion")
+  wantedResponseCurrentPublic WantedResponse[]      @relation("WantedResponseCurrentPublicVersion")
+  wantedResponseLatest        WantedResponse[]      @relation("WantedResponseLatestVersion")
+  searchIndexDocuments        SearchIndexDocument[]
 
   @@unique([targetType, targetId, versionNo])
   @@index([targetType, targetId, status])
@@ -981,16 +1040,16 @@ model ContentVersionMedia {
 }
 
 model ModerationTask {
-  id                String               @id @default(cuid())
-  contentVersionId  String               @unique
-  status            ModerationTaskStatus @default(pending)
-  providerRiskLevel String?
-  ruleTagsJson      Json?
-  reviewerUserId    String?
-  reviewedAt        DateTime?
-  failureReason     String?
-  contentVersion    ContentVersion       @relation(fields: [contentVersionId], references: [id])
-  aiReviewResults   AiReviewResult[]
+  id                  String               @id @default(cuid())
+  contentVersionId    String               @unique
+  status              ModerationTaskStatus @default(pending)
+  providerRiskLevel   String?
+  ruleTagsJson        Json?
+  reviewerUserId      String?
+  reviewedAt          DateTime?
+  failureReason       String?
+  contentVersion      ContentVersion       @relation(fields: [contentVersionId], references: [id])
+  aiReviewResults     AiReviewResult[]
   manualReviewRecords ManualReviewRecord[]
 }
 
@@ -1081,19 +1140,19 @@ model Bid {
 }
 
 model PointAccount {
-  id                String             @id @default(cuid())
-  childId           String             @unique
-  availablePoints   Int                @default(0)
-  frozenPoints      Int                @default(0)
-  totalEarnedPoints Int                @default(0)
-  totalSpentPoints  Int                @default(0)
-  totalAwardedPoints Int               @default(0)
-  totalPenaltyPoints Int               @default(0)
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  child             ChildProfile       @relation(fields: [childId], references: [id])
-  holds             PointHold[]
-  ledgerEntries     PointLedgerEntry[]
+  id                 String             @id @default(cuid())
+  childId            String             @unique
+  availablePoints    Int                @default(0)
+  frozenPoints       Int                @default(0)
+  totalEarnedPoints  Int                @default(0)
+  totalSpentPoints   Int                @default(0)
+  totalAwardedPoints Int                @default(0)
+  totalPenaltyPoints Int                @default(0)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  child              ChildProfile       @relation(fields: [childId], references: [id])
+  holds              PointHold[]
+  ledgerEntries      PointLedgerEntry[]
   ledgerCheckDiffs   LedgerCheckDiff[]
 }
 
@@ -1115,22 +1174,22 @@ model PointHold {
 }
 
 model PointLedgerEntry {
-  id              String               @id @default(cuid())
-  accountId       String
-  childId         String
-  type            PointLedgerEntryType
-  amountPoints    Int
-  availableAfter  Int
-  frozenAfter     Int
-  relatedType     String
-  relatedId       String
-  idempotencyKey  String               @unique
-  reason          String
-  createdByUserId String?
-  createdAt       DateTime             @default(now())
-  account         PointAccount         @relation(fields: [accountId], references: [id])
-  child           ChildProfile         @relation(fields: [childId], references: [id])
-  createdBy       User?                @relation(fields: [createdByUserId], references: [id])
+  id                String                  @id @default(cuid())
+  accountId         String
+  childId           String
+  type              PointLedgerEntryType
+  amountPoints      Int
+  availableAfter    Int
+  frozenAfter       Int
+  relatedType       String
+  relatedId         String
+  idempotencyKey    String                  @unique
+  reason            String
+  createdByUserId   String?
+  createdAt         DateTime                @default(now())
+  account           PointAccount            @relation(fields: [accountId], references: [id])
+  child             ChildProfile            @relation(fields: [childId], references: [id])
+  createdBy         User?                   @relation(fields: [createdByUserId], references: [id])
   adjustmentRequest PointAdjustmentRequest? @relation("PointAdjustmentLedgerEntry")
 
   @@index([accountId, createdAt])
@@ -1191,20 +1250,20 @@ model LedgerCheckRun {
 }
 
 model LedgerCheckDiff {
-  id                       String              @id @default(cuid())
-  runId                    String
-  accountId                String?
-  childId                  String?
-  ledgerEntryId            String?
-  diffType                 LedgerCheckDiffType
-  expectedAvailablePoints  Int?
-  actualAvailablePoints    Int?
-  expectedFrozenPoints     Int?
-  actualFrozenPoints       Int?
-  evidenceJson             Json
-  createdAt                DateTime            @default(now())
-  run                      LedgerCheckRun      @relation(fields: [runId], references: [id])
-  account                  PointAccount?       @relation(fields: [accountId], references: [id])
+  id                      String              @id @default(cuid())
+  runId                   String
+  accountId               String?
+  childId                 String?
+  ledgerEntryId           String?
+  diffType                LedgerCheckDiffType
+  expectedAvailablePoints Int?
+  actualAvailablePoints   Int?
+  expectedFrozenPoints    Int?
+  actualFrozenPoints      Int?
+  evidenceJson            Json
+  createdAt               DateTime            @default(now())
+  run                     LedgerCheckRun      @relation(fields: [runId], references: [id])
+  account                 PointAccount?       @relation(fields: [accountId], references: [id])
 
   @@index([runId, diffType])
   @@index([accountId, createdAt])
@@ -1230,61 +1289,61 @@ model Transaction {
 }
 
 model GuardianDecision {
-  id            String        @id @default(cuid())
-  transactionId String
-  guardianId    String
-  phase         DecisionPhase
-  value         DecisionValue
-  side          TransactionSide?
-  childId       String?
-  guardianRole  GuardianRole?
+  id                 String           @id @default(cuid())
+  transactionId      String
+  guardianId         String
+  phase              DecisionPhase
+  value              DecisionValue
+  side               TransactionSide?
+  childId            String?
+  guardianRole       GuardianRole?
   transactionVersion Int?
-  reason        String?
-  effective     Boolean       @default(true)
-  createdAt     DateTime      @default(now())
-  transaction   Transaction   @relation(fields: [transactionId], references: [id])
-  child         ChildProfile?  @relation(fields: [childId], references: [id])
+  reason             String?
+  effective          Boolean          @default(true)
+  createdAt          DateTime         @default(now())
+  transaction        Transaction      @relation(fields: [transactionId], references: [id])
+  child              ChildProfile?    @relation(fields: [childId], references: [id])
 
   @@index([transactionId, phase, effective])
   @@index([transactionId, phase, side, effective])
 }
 
 model DeliveryRecord {
-  id               String               @id @default(cuid())
-  transactionId    String               @unique
-  deliveryMethod   DeliveryMethod
-  deliveryPointId  String?
+  id                String               @id @default(cuid())
+  transactionId     String               @unique
+  deliveryMethod    DeliveryMethod
+  deliveryPointId   String?
   sellerConfirmedAt DateTime?
   buyerConfirmedAt  DateTime?
-  status           DeliveryRecordStatus @default(pending)
-  deadlineAt       DateTime?
-  createdAt        DateTime             @default(now())
-  updatedAt        DateTime             @updatedAt
-  transaction      Transaction          @relation(fields: [transactionId], references: [id])
-  deliveryPoint    DeliveryPoint?       @relation(fields: [deliveryPointId], references: [id])
+  status            DeliveryRecordStatus @default(pending)
+  deadlineAt        DateTime?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  transaction       Transaction          @relation(fields: [transactionId], references: [id])
+  deliveryPoint     DeliveryPoint?       @relation(fields: [deliveryPointId], references: [id])
 
   @@index([deliveryMethod, status])
   @@index([deliveryPointId, status])
 }
 
 model Appeal {
-  id                    String       @id @default(cuid())
+  id                    String             @id @default(cuid())
   targetType            AppealTargetType
   targetId              String
   transactionId         String?
   submittedByGuardianId String
   communityId           String
-  status                AppealStatus @default(pending_activity_admin)
+  status                AppealStatus       @default(pending_activity_admin)
   reason                String
   resolution            String?
   reviewedByUserId      String?
-  createdAt             DateTime     @default(now())
-  updatedAt             DateTime     @updatedAt
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
   resolvedAt            DateTime?
-  transaction           Transaction? @relation(fields: [transactionId], references: [id])
-  submittedByGuardian   GuardianProfile @relation("GuardianSubmittedAppeals", fields: [submittedByGuardianId], references: [id])
-  community             AuctionCommunity @relation(fields: [communityId], references: [id])
-  reviewedBy            User?        @relation("AppealReviewer", fields: [reviewedByUserId], references: [id])
+  transaction           Transaction?       @relation(fields: [transactionId], references: [id])
+  submittedByGuardian   GuardianProfile    @relation("GuardianSubmittedAppeals", fields: [submittedByGuardianId], references: [id])
+  community             AuctionCommunity   @relation(fields: [communityId], references: [id])
+  reviewedBy            User?              @relation("AppealReviewer", fields: [reviewedByUserId], references: [id])
   attachments           AppealAttachment[]
 
   @@index([communityId, status])
@@ -1325,18 +1384,18 @@ model IdempotencyRecord {
 }
 
 model OutboxEvent {
-  id             String       @id @default(cuid())
+  id             String         @id @default(cuid())
   eventType      String
   targetType     String
   targetId       String
-  idempotencyKey String       @unique
+  idempotencyKey String         @unique
   payloadJson    Json
-  status         OutboxStatus @default(pending)
-  availableAt    DateTime     @default(now())
+  status         OutboxStatus   @default(pending)
+  availableAt    DateTime       @default(now())
   lockedAt       DateTime?
   lockedBy       String?
-  attempts       Int          @default(0)
-  createdAt      DateTime     @default(now())
+  attempts       Int            @default(0)
+  createdAt      DateTime       @default(now())
   notifications  Notification[]
 
   @@index([status, availableAt])
@@ -1371,16 +1430,16 @@ model Notification {
 }
 
 model NotificationPreference {
-  id                     String   @id @default(cuid())
+  id                     String        @id @default(cuid())
   userId                 String
   childId                String?
   eventType              String
-  inAppEnabled           Boolean  @default(true)
-  wechatSubscribeEnabled Boolean  @default(false)
-  childVisible           Boolean  @default(false)
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
-  user                   User     @relation(fields: [userId], references: [id])
+  inAppEnabled           Boolean       @default(true)
+  wechatSubscribeEnabled Boolean       @default(false)
+  childVisible           Boolean       @default(false)
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+  user                   User          @relation(fields: [userId], references: [id])
   child                  ChildProfile? @relation(fields: [childId], references: [id])
 
   @@unique([userId, childId, eventType])
@@ -1434,17 +1493,105 @@ model ItemFavorite {
   @@index([communityId, status, updatedAt])
 }
 
+model GovernanceControl {
+  id                String                     @id @default(cuid())
+  scopeType         GovernanceControlScopeType
+  scopeId           String?
+  controlType       GovernanceControlType
+  status            GovernanceControlStatus    @default(active)
+  reason            String
+  previewAuditLogId String                     @unique
+  createdByUserId   String
+  liftedByUserId    String?
+  startsAt          DateTime                   @default(now())
+  endsAt            DateTime?
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+  liftedAt          DateTime?
+  liftReason        String?
+  community         AuctionCommunity?          @relation(fields: [scopeId], references: [id], onDelete: Restrict)
+  previewAuditLog   AuditLog                   @relation("GovernanceControlPreview", fields: [previewAuditLogId], references: [id], onDelete: Restrict)
+  createdByUser     User                       @relation("GovernanceControlCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  liftedByUser      User?                      @relation("GovernanceControlLiftedBy", fields: [liftedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([scopeType, scopeId, controlType, status])
+  @@index([createdByUserId, createdAt])
+  @@index([status, startsAt, endsAt])
+}
+
+model HighRiskGovernanceReviewRequest {
+  id                      String                                 @id @default(cuid())
+  actionType              HighRiskGovernanceReviewActionType
+  decisionState           HighRiskGovernanceReviewDecisionState  @default(pending)
+  executionState          HighRiskGovernanceReviewExecutionState @default(not_started)
+  targetType              String
+  targetId                String
+  scopeType               GovernanceControlScopeType?
+  scopeId                 String?
+  controlType             GovernanceControlType?
+  sourcePreviewAuditLogId String?                                @unique
+  initiatorUserId         String
+  reviewerUserId          String?
+  idempotencyKey          String
+  requestHash             String
+  frozenPayloadJson       Json
+  evidenceJson            Json
+  decisionReason          String?
+  executionErrorCode      String?
+  expiresAt               DateTime
+  decidedAt               DateTime?
+  executedAt              DateTime?
+  createdAt               DateTime                               @default(now())
+  updatedAt               DateTime                               @updatedAt
+  community               AuctionCommunity?                      @relation(fields: [scopeId], references: [id], onDelete: Restrict)
+  sourcePreviewAuditLog   AuditLog?                              @relation("HighRiskGovernanceReviewSourcePreview", fields: [sourcePreviewAuditLogId], references: [id], onDelete: Restrict)
+  initiator               User                                   @relation("HighRiskGovernanceReviewInitiator", fields: [initiatorUserId], references: [id], onDelete: Restrict)
+  reviewer                User?                                  @relation("HighRiskGovernanceReviewReviewer", fields: [reviewerUserId], references: [id], onDelete: Restrict)
+  events                  HighRiskGovernanceReviewEvent[]
+
+  @@unique([initiatorUserId, actionType, targetType, targetId, idempotencyKey])
+  @@index([decisionState, expiresAt])
+  @@index([targetType, targetId, decisionState])
+  @@index([scopeType, scopeId, controlType, decisionState])
+  @@index([reviewerUserId, decidedAt])
+}
+
+model HighRiskGovernanceReviewEvent {
+  id                 String                                  @id @default(cuid())
+  requestId          String
+  eventType          HighRiskGovernanceReviewEventType
+  actorUserId        String?
+  reason             String?
+  errorCode          String?
+  fromDecisionState  HighRiskGovernanceReviewDecisionState?
+  toDecisionState    HighRiskGovernanceReviewDecisionState?
+  fromExecutionState HighRiskGovernanceReviewExecutionState?
+  toExecutionState   HighRiskGovernanceReviewExecutionState?
+  targetType         String
+  targetId           String
+  payloadSummaryJson Json?
+  createdAt          DateTime                                @default(now())
+  request            HighRiskGovernanceReviewRequest         @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  actor              User?                                   @relation("HighRiskGovernanceReviewEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([requestId, createdAt])
+  @@index([eventType, createdAt])
+  @@index([actorUserId, createdAt])
+}
+
 model AuditLog {
-  id          String   @id @default(cuid())
-  actorUserId String?
-  action      String
-  targetType  String
-  targetId    String
-  reason      String?
-  beforeJson  Json?
-  afterJson   Json?
-  createdAt   DateTime @default(now())
-  actor       User?    @relation(fields: [actorUserId], references: [id])
+  id                             String                           @id @default(cuid())
+  actorUserId                    String?
+  action                         String
+  targetType                     String
+  targetId                       String
+  reason                         String?
+  beforeJson                     Json?
+  afterJson                      Json?
+  createdAt                      DateTime                         @default(now())
+  actor                          User?                            @relation(fields: [actorUserId], references: [id])
+  governanceControlPreview       GovernanceControl?               @relation("GovernanceControlPreview")
+  highRiskGovernanceReviewSource HighRiskGovernanceReviewRequest? @relation("HighRiskGovernanceReviewSourcePreview")
 
   @@index([targetType, targetId, createdAt])
 }

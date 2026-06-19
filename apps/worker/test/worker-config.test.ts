@@ -33,7 +33,9 @@ describe("worker runtime config", () => {
       AUCTION_SETTLEMENT_SCAN_INTERVAL_SECONDS: "30",
       AUCTION_SETTLEMENT_SCAN_LIMIT: "25",
       TRANSACTION_TIMEOUT_SCAN_INTERVAL_SECONDS: "45",
-      TRANSACTION_TIMEOUT_SCAN_LIMIT: "15"
+      TRANSACTION_TIMEOUT_SCAN_LIMIT: "15",
+      HIGH_RISK_GOVERNANCE_REVIEW_EXPIRY_SCAN_INTERVAL_SECONDS: "75",
+      HIGH_RISK_GOVERNANCE_REVIEW_EXPIRY_SCAN_LIMIT: "9"
     });
 
     expect(config.databaseUrl).toContain("@postgres:5432/auction_app");
@@ -55,6 +57,8 @@ describe("worker runtime config", () => {
     expect(config.auctionSettlementScanLimit).toBe(25);
     expect(config.transactionTimeoutScanIntervalMs).toBe(45_000);
     expect(config.transactionTimeoutScanLimit).toBe(15);
+    expect(config.highRiskGovernanceReviewExpiryScanIntervalMs).toBe(75_000);
+    expect(config.highRiskGovernanceReviewExpiryScanLimit).toBe(9);
   });
 
   it("parses Redis URLs for BullMQ", () => {
@@ -94,6 +98,8 @@ describe("worker runtime config", () => {
     expect(config.auctionSettlementScanLimit).toBe(50);
     expect(config.transactionTimeoutScanIntervalMs).toBe(60_000);
     expect(config.transactionTimeoutScanLimit).toBe(50);
+    expect(config.highRiskGovernanceReviewExpiryScanIntervalMs).toBe(60_000);
+    expect(config.highRiskGovernanceReviewExpiryScanLimit).toBe(50);
     expect(() =>
       loadWorkerRuntimeConfig({
         DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",
@@ -162,5 +168,25 @@ describe("worker runtime config", () => {
         TRANSACTION_TIMEOUT_SCAN_LIMIT: "0"
       })
     ).toThrow("TRANSACTION_TIMEOUT_SCAN_LIMIT must be a positive integer");
+    expect(() =>
+      loadWorkerRuntimeConfig({
+        DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",
+        REDIS_URL: "redis://redis:6379/0",
+        WORKER_NAME: "auction-worker-runtime",
+        HIGH_RISK_GOVERNANCE_REVIEW_EXPIRY_SCAN_INTERVAL_SECONDS: "0"
+      })
+    ).toThrow(
+      "HIGH_RISK_GOVERNANCE_REVIEW_EXPIRY_SCAN_INTERVAL_SECONDS must be a positive integer"
+    );
+    expect(() =>
+      loadWorkerRuntimeConfig({
+        DATABASE_URL: "postgresql://auction_app:auction_app@postgres:5432/auction_app",
+        REDIS_URL: "redis://redis:6379/0",
+        WORKER_NAME: "auction-worker-runtime",
+        HIGH_RISK_GOVERNANCE_REVIEW_EXPIRY_SCAN_LIMIT: "0"
+      })
+    ).toThrow(
+      "HIGH_RISK_GOVERNANCE_REVIEW_EXPIRY_SCAN_LIMIT must be a positive integer"
+    );
   });
 });

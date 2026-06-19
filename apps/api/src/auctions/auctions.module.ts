@@ -3,6 +3,8 @@ import { AccountsModule } from "../accounts/accounts.module.js";
 import { PrismaModule } from "../prisma/prisma.module.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { FakeContentSafetyProvider } from "../providers/fake-providers.js";
+import { GovernanceControlService } from "../stage8/governance-control.service.js";
+import { Stage8Module } from "../stage8/stage8.module.js";
 import { AuctionPermissionsService } from "./auction-permissions.service.js";
 import { BiddingService } from "./bidding.service.js";
 import { AuctionSessionService } from "./auction-session.service.js";
@@ -11,7 +13,7 @@ import { TransactionAppealService } from "./transaction-appeal.service.js";
 import { TransactionDecisionService } from "./transaction-decision.service.js";
 
 @Module({
-  imports: [PrismaModule, AccountsModule],
+  imports: [PrismaModule, AccountsModule, Stage8Module],
   controllers: [AuctionsController],
   providers: [
     {
@@ -29,16 +31,24 @@ import { TransactionDecisionService } from "./transaction-decision.service.js";
     },
     {
       provide: BiddingService,
-      inject: [PrismaService],
-      useFactory: (prisma: PrismaService) => new BiddingService(prisma)
+      inject: [PrismaService, GovernanceControlService],
+      useFactory: (
+        prisma: PrismaService,
+        governanceControls: GovernanceControlService
+      ) => new BiddingService(prisma, governanceControls)
     },
     {
       provide: TransactionDecisionService,
-      inject: [PrismaService, AuctionPermissionsService],
+      inject: [
+        PrismaService,
+        AuctionPermissionsService,
+        GovernanceControlService
+      ],
       useFactory: (
         prisma: PrismaService,
-        permissions: AuctionPermissionsService
-      ) => new TransactionDecisionService(prisma, permissions)
+        permissions: AuctionPermissionsService,
+        governanceControls: GovernanceControlService
+      ) => new TransactionDecisionService(prisma, permissions, governanceControls)
     },
     {
       provide: FakeContentSafetyProvider,

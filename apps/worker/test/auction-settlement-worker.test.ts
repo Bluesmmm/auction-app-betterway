@@ -336,6 +336,53 @@ describe("auction settlement worker", () => {
     });
   });
 
+  it("skips due auctions while pause-settlement governance control is active", async () => {
+    const fixture = await createAuctionFixture("governance_pause_settlement", {
+      withHighestBid: true,
+      endAt: new Date("2026-06-03T12:30:00.000Z")
+    });
+    await createPauseSettlementControl({
+      communityId: fixture.communityId,
+      now: new Date("2026-06-03T12:25:00.000Z")
+    });
+
+    await expect(
+      runner.settleAuction({
+        auctionSessionId: fixture.auctionId,
+        workerName: "stage8-settlement-worker",
+        now: new Date("2026-06-03T12:31:00.000Z")
+      })
+    ).resolves.toEqual({
+      result: "skipped",
+      auctionSessionId: fixture.auctionId,
+      reason: "GOVERNANCE_CONTROL_ACTIVE",
+      status: "active"
+    });
+    await expect(
+      prisma.auctionSession.findUnique({
+        where: {
+          id: fixture.auctionId
+        },
+        select: {
+          status: true,
+          settlementAttemptCount: true,
+          settledAt: true
+        }
+      })
+    ).resolves.toEqual({
+      status: "active",
+      settlementAttemptCount: 0,
+      settledAt: null
+    });
+    await expect(
+      prisma.transaction.count({
+        where: {
+          auctionSessionId: fixture.auctionId
+        }
+      })
+    ).resolves.toBe(0);
+  });
+
   it("scans overdue active auctions from PostgreSQL as the fallback path", async () => {
     const settled = await createAuctionFixture("scan_settled", {
       withHighestBid: true,
@@ -669,4 +716,45 @@ async function createChild(label: string) {
   });
 
   return child.id;
+}
+
+async function createPauseSettlementControl(input: {
+  communityId: string;
+  now: Date;
+}) {
+  const actor = await prisma.user.create({
+    data: {
+      status: "active"
+    }
+  });
+  const preview = await prisma.auditLog.create({
+    data: {
+      actorUserId: actor.id,
+      action: "stage8.governance_control_preview",
+      targetType: "governance_control_scope",
+      targetId: input.communityId,
+      afterJson: {
+        scopeType: "community",
+        scopeId: input.communityId,
+        controlType: "pause_settlement",
+        expiresAt: new Date(input.now.getTime() + 5 * 60_000).toISOString(),
+        mutatesBusinessState: false
+      },
+      createdAt: input.now
+    }
+  });
+
+  return prisma.governanceControl.create({
+    data: {
+      scopeType: "community",
+      scopeId: input.communityId,
+      controlType: "pause_settlement",
+      status: "active",
+      reason: "Pause settlement while governance review is active",
+      previewAuditLogId: preview.id,
+      createdByUserId: actor.id,
+      startsAt: input.now,
+      createdAt: input.now
+    }
+  });
 }

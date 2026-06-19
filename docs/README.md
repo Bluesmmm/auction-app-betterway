@@ -10,6 +10,8 @@
 4. [MVP 路线图](./MVP_ROADMAP.md)
 5. [Stage 5 发布验收清单](./STAGE5_RELEASE_CHECKLIST.md)
 6. [Stage 5 PR 描述](./STAGE5_PR_DESCRIPTION.md)
+7. [Stage 8 3A 高风险治理复核规格草案](./STAGE8_3A_HIGH_RISK_GOVERNANCE_REVIEW_SPEC.md)
+8. [Stage 8 3A 实施任务拆分草案](./STAGE8_3A_IMPLEMENTATION_ISSUES.md)
 
 ## 当前基线
 

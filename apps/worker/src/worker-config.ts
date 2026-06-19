@@ -19,6 +19,8 @@ export type WorkerRuntimeConfig = {
   auctionSettlementScanLimit: number;
   transactionTimeoutScanIntervalMs: number;
   transactionTimeoutScanLimit: number;
+  highRiskGovernanceReviewExpiryScanIntervalMs: number;
+  highRiskGovernanceReviewExpiryScanLimit: number;
   redis: RedisConnectionConfig;
 };
 
@@ -77,6 +79,17 @@ export function loadWorkerRuntimeConfig(
       env.TRANSACTION_TIMEOUT_SCAN_LIMIT,
       50,
       "TRANSACTION_TIMEOUT_SCAN_LIMIT"
+    ),
+    highRiskGovernanceReviewExpiryScanIntervalMs:
+      parsePositiveInteger(
+        env.HIGH_RISK_GOVERNANCE_REVIEW_EXPIRY_SCAN_INTERVAL_SECONDS,
+        60,
+        "HIGH_RISK_GOVERNANCE_REVIEW_EXPIRY_SCAN_INTERVAL_SECONDS"
+      ) * 1000,
+    highRiskGovernanceReviewExpiryScanLimit: parsePositiveInteger(
+      env.HIGH_RISK_GOVERNANCE_REVIEW_EXPIRY_SCAN_LIMIT,
+      50,
+      "HIGH_RISK_GOVERNANCE_REVIEW_EXPIRY_SCAN_LIMIT"
     ),
     redis: parseRedisUrl(redisUrl)
   };

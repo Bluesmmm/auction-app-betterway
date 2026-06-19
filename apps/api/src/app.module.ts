@@ -12,6 +12,7 @@ import { PrismaModule } from "./prisma/prisma.module.js";
 import { RuntimeModule } from "./runtime/runtime.module.js";
 import { StorageModule } from "./storage/storage.module.js";
 import { Stage7Module } from "./stage7/stage7.module.js";
+import { Stage8Module } from "./stage8/stage8.module.js";
 import { RealtimeModule } from "./realtime/realtime.module.js";
 
 @Module({
@@ -25,6 +26,7 @@ import { RealtimeModule } from "./realtime/realtime.module.js";
     ContentModule,
     PointsModule,
     Stage7Module,
+    Stage8Module,
     RealtimeModule,
     NotificationsModule,
     StorageModule,

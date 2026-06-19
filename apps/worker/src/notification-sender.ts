@@ -57,6 +57,16 @@ type TransactionContext = {
   version: number;
 };
 
+type HighRiskGovernanceReviewContext = {
+  reviewRequestId: string;
+  actionType: string;
+  decisionState: string;
+  executionState: string;
+  targetType: string;
+  targetId: string;
+  initiatorUserId: string;
+};
+
 const supportedEventTypes = new Set([
   "auction.bid_accepted",
   "auction.bid_outbid",
@@ -68,7 +78,14 @@ const supportedEventTypes = new Set([
   "transaction.cancelled",
   "transaction.completed",
   "transaction.disputed",
-  "transaction.platform_review_required"
+  "transaction.platform_review_required",
+  "high_risk_governance_review.created",
+  "high_risk_governance_review.rejected",
+  "high_risk_governance_review.withdrawn",
+  "high_risk_governance_review.expired",
+  "high_risk_governance_review.invalidated",
+  "high_risk_governance_review.execution_succeeded",
+  "high_risk_governance_review.execution_failed"
 ]);
 
 export class FakeWorkerSubscriptionMessageSender
@@ -315,6 +332,23 @@ async function deriveNotificationDrafts(
         adminBody: "请打开交易详情处理平台复核待办。",
         includePlatformAdmins: true
       });
+    case "high_risk_governance_review.created":
+      return deriveHighRiskGovernanceReviewPending(
+        prisma,
+        input.targetId,
+        input.payloadJson
+      );
+    case "high_risk_governance_review.rejected":
+    case "high_risk_governance_review.withdrawn":
+    case "high_risk_governance_review.expired":
+    case "high_risk_governance_review.invalidated":
+    case "high_risk_governance_review.execution_succeeded":
+    case "high_risk_governance_review.execution_failed":
+      return deriveHighRiskGovernanceReviewResult(
+        prisma,
+        input.eventType,
+        input.targetId
+      );
     default:
       return [];
   }
@@ -716,6 +750,212 @@ async function adminNotifications(
   return dedupeDrafts(drafts);
 }
 
+async function deriveHighRiskGovernanceReviewPending(
+  prisma: PrismaClient,
+  reviewRequestId: string,
+  payload: Record<string, unknown>
+) {
+  const review = await getHighRiskGovernanceReviewContext(
+    prisma,
+    reviewRequestId
+  );
+  if (!review || review.decisionState !== "pending") {
+    return [];
+  }
+
+  const payloadReviewerUserIds = maybeStringArray(payload.eligibleReviewerUserIds);
+  const reviewerUserWhere =
+    payloadReviewerUserIds === null
+      ? {
+          not: review.initiatorUserId
+        }
+      : {
+          in: payloadReviewerUserIds.filter(
+            (userId) => userId !== review.initiatorUserId
+          )
+        };
+
+  const reviewers = await prisma.adminProfile.findMany({
+    where: {
+      role: "platform_admin",
+      status: "active",
+      mfaEnabled: true,
+      userId: reviewerUserWhere,
+      user: {
+        status: "active",
+        targetRiskRestrictions: {
+          none: {
+            status: "active",
+            type: "suspended"
+          }
+        }
+      }
+    },
+    select: {
+      userId: true
+    }
+  });
+
+  return dedupeDrafts(
+    await Promise.all(
+      reviewers.map((reviewer) =>
+        highRiskGovernanceReviewNotificationDraft(prisma, {
+          recipientUserId: reviewer.userId,
+          type: "high_risk_governance_review_pending",
+          priority: "urgent",
+          title: "有高风险治理复核待处理",
+          body: "请打开高风险治理复核详情处理待办。",
+          review
+        })
+      )
+    )
+  );
+}
+
+async function deriveHighRiskGovernanceReviewResult(
+  prisma: PrismaClient,
+  eventType: string,
+  reviewRequestId: string
+) {
+  const review = await getHighRiskGovernanceReviewContext(
+    prisma,
+    reviewRequestId
+  );
+  if (!review || !isHighRiskGovernanceReviewResultEvent(eventType)) {
+    return [];
+  }
+
+  const initiator = await prisma.user.findFirst({
+    where: {
+      id: review.initiatorUserId,
+      status: "active",
+      targetRiskRestrictions: {
+        none: {
+          status: "active",
+          type: "suspended"
+        }
+      }
+    },
+    select: {
+      id: true
+    }
+  });
+  if (!initiator) {
+    return [];
+  }
+
+  return [
+    await highRiskGovernanceReviewNotificationDraft(prisma, {
+      recipientUserId: initiator.id,
+      type: "high_risk_governance_review_result",
+      priority:
+        eventType === "high_risk_governance_review.execution_failed"
+          ? "urgent"
+          : "high",
+      title: highRiskGovernanceReviewResultTitle(eventType),
+      body:
+        eventType === "high_risk_governance_review.execution_failed"
+          ? "请打开高风险治理复核详情查看失败原因。"
+          : "请打开高风险治理复核详情查看结果。",
+      review
+    })
+  ];
+}
+
+async function highRiskGovernanceReviewNotificationDraft(
+  prisma: PrismaClient,
+  input: {
+    recipientUserId: string;
+    type: NotificationType;
+    priority: NotificationPriority;
+    title: string;
+    body: string;
+    review: HighRiskGovernanceReviewContext;
+  }
+): Promise<NotificationDraft> {
+  return {
+    recipientUserId: input.recipientUserId,
+    recipientChildId: null,
+    type: input.type,
+    priority: input.priority,
+    mandatory: true,
+    title: input.title,
+    body: input.body,
+    relatedType: "high_risk_governance_review_request",
+    relatedId: input.review.reviewRequestId,
+    targetVersion: null,
+    actionType: "view_high_risk_governance_review",
+    deliveryStatus: (await shouldAttemptSubscription(prisma, {
+      userId: input.recipientUserId,
+      childId: null,
+      eventType: input.type,
+      priority: input.priority
+    }))
+      ? "pending"
+      : "suppressed"
+  };
+}
+
+async function getHighRiskGovernanceReviewContext(
+  prisma: PrismaClient,
+  reviewRequestId: string
+): Promise<HighRiskGovernanceReviewContext | null> {
+  const review = await prisma.highRiskGovernanceReviewRequest.findUnique({
+    where: {
+      id: reviewRequestId
+    },
+    select: {
+      id: true,
+      actionType: true,
+      decisionState: true,
+      executionState: true,
+      targetType: true,
+      targetId: true,
+      initiatorUserId: true
+    }
+  });
+
+  return review
+    ? {
+        reviewRequestId: review.id,
+        actionType: review.actionType,
+        decisionState: review.decisionState,
+        executionState: review.executionState,
+        targetType: review.targetType,
+        targetId: review.targetId,
+        initiatorUserId: review.initiatorUserId
+      }
+    : null;
+}
+
+function isHighRiskGovernanceReviewResultEvent(eventType: string) {
+  return (
+    eventType === "high_risk_governance_review.rejected" ||
+    eventType === "high_risk_governance_review.withdrawn" ||
+    eventType === "high_risk_governance_review.expired" ||
+    eventType === "high_risk_governance_review.invalidated" ||
+    eventType === "high_risk_governance_review.execution_succeeded" ||
+    eventType === "high_risk_governance_review.execution_failed"
+  );
+}
+
+function highRiskGovernanceReviewResultTitle(eventType: string) {
+  switch (eventType) {
+    case "high_risk_governance_review.rejected":
+      return "高风险治理复核已拒绝";
+    case "high_risk_governance_review.withdrawn":
+      return "高风险治理复核已撤回";
+    case "high_risk_governance_review.expired":
+      return "高风险治理复核已过期";
+    case "high_risk_governance_review.invalidated":
+      return "高风险治理复核已失效";
+    case "high_risk_governance_review.execution_failed":
+      return "高风险治理复核执行失败";
+    default:
+      return "高风险治理复核已批准";
+  }
+}
+
 async function childUserRecipients(
   prisma: PrismaClient,
   childIds: string[],
@@ -982,6 +1222,8 @@ function actionTypeForRelatedType(
       return "view_points";
     case "search_result":
       return "open_search_result";
+    case "high_risk_governance_review_request":
+      return "view_high_risk_governance_review";
     default:
       return null;
   }
@@ -1007,6 +1249,12 @@ function expectString(value: unknown) {
 
 function maybeString(value: unknown) {
   return typeof value === "string" && value ? value : null;
+}
+
+function maybeStringArray(value: unknown) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? value
+    : null;
 }
 
 export type NotificationSenderPrisma = PrismaClient;

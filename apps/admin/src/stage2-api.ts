@@ -91,7 +91,8 @@ const sensitiveOperationTypeSchema = z.enum([
   "revoke_activity_admin",
   "apply_risk_restriction",
   "resolve_risk_restriction",
-  "review_risk_signal"
+  "review_risk_signal",
+  "manage_governance_control"
 ]);
 const highRiskSensitiveChallengeErrorCodes = [
   "SENSITIVE_CHALLENGE_REQUIRED",

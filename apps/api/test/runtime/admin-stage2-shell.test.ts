@@ -64,9 +64,12 @@ describe("admin Stage 2 shell", () => {
       })
     ]);
 
-    expect(adminShellNavigationItems.map((item) => item.label)).toEqual([
-      "Runtime",
-      "Security",
+    const stage2Start = stage1AdminNavigationItems.length;
+    expect(
+      adminShellNavigationItems
+        .slice(stage2Start, stage2Start + stage2AdminViewDefinitions.length)
+        .map((item) => item.label)
+    ).toEqual([
       "Community Requests",
       "Activity Admins",
       "Member Review",

@@ -8,6 +8,8 @@ import { CommunityAdminAuthorizationService } from "../communities/community-adm
 import { PrismaModule } from "../prisma/prisma.module.js";
 import { PrismaService } from "../prisma/prisma.service.js";
 import { FakeContentSafetyProvider } from "../providers/fake-providers.js";
+import { GovernanceControlService } from "../stage8/governance-control.service.js";
+import { Stage8Module } from "../stage8/stage8.module.js";
 import { ContentController } from "./content.controller.js";
 import { ContentFileAccessService } from "./content-file-access.service.js";
 import { ContentReviewService } from "./content-review.service.js";
@@ -17,7 +19,7 @@ import { MediaUploadService } from "./media-upload.service.js";
 const stage3ObjectGrantSigningKey = "stage3-object-grant-key";
 
 @Module({
-  imports: [PrismaModule, AccountsModule, CommunitiesModule],
+  imports: [PrismaModule, AccountsModule, CommunitiesModule, Stage8Module],
   controllers: [ContentController],
   providers: [
     {
@@ -35,19 +37,22 @@ const stage3ObjectGrantSigningKey = "stage3-object-grant-key";
         PrismaService,
         ChildParticipationService,
         CommunityAdminAuthorizationService,
-        FakeContentSafetyProvider
+        FakeContentSafetyProvider,
+        GovernanceControlService
       ],
       useFactory: (
         prisma: PrismaService,
         participation: ChildParticipationService,
         adminAuthorizations: CommunityAdminAuthorizationService,
-        contentSafety: FakeContentSafetyProvider
+        contentSafety: FakeContentSafetyProvider,
+        governanceControls: GovernanceControlService
       ) =>
         new ContentReviewService(
           prisma,
           participation,
           adminAuthorizations,
-          contentSafety
+          contentSafety,
+          governanceControls
         )
     },
     {

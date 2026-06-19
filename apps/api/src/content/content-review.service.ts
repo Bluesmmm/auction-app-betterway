@@ -14,6 +14,7 @@ import type {
   ContentSafetyProvider,
   RiskLevel
 } from "../providers/provider-contracts.js";
+import type { GovernanceControlService } from "../stage8/governance-control.service.js";
 import { PrivateObjectStorageService } from "../storage/private-object-storage.service.js";
 
 export type ItemImageInput = {
@@ -80,6 +81,7 @@ export type SubmitItemResult =
       errorCode:
         | "COMMUNITY_MEMBER_REQUIRED"
         | "GUARDIAN_CONTROL_DISABLED"
+        | "GOVERNANCE_CONTROL_ACTIVE"
         | "PUBLISH_NOT_ALLOWED"
         | "IMAGE_COUNT_INVALID"
         | "IMAGE_ROLES_INVALID"
@@ -105,6 +107,7 @@ export type SubmitWantedPostResult =
       errorCode:
         | "COMMUNITY_MEMBER_REQUIRED"
         | "GUARDIAN_CONTROL_DISABLED"
+        | "GOVERNANCE_CONTROL_ACTIVE"
         | "PUBLISH_NOT_ALLOWED"
         | "IMAGE_COUNT_INVALID"
         | "IMAGE_ROLES_INVALID"
@@ -131,6 +134,7 @@ export type SubmitWantedResponseResult =
       errorCode:
         | "COMMUNITY_MEMBER_REQUIRED"
         | "GUARDIAN_CONTROL_DISABLED"
+        | "GOVERNANCE_CONTROL_ACTIVE"
         | "PUBLISH_NOT_ALLOWED"
         | "IMAGE_COUNT_INVALID"
         | "IMAGE_ROLES_INVALID"
@@ -184,6 +188,7 @@ export type ModerationActionResult =
         | "FAILED_TASK_REQUIRES_RETRY"
         | "PLATFORM_ADMIN_REQUIRED"
         | "PLATFORM_DECISION_INVALID"
+        | "PLATFORM_REVIEW_REQUIRED"
         | "REASON_REQUIRED";
     };
 
@@ -353,6 +358,7 @@ export class ContentReviewService {
     private readonly participation: ChildParticipationService,
     private readonly adminAuthorizations: CommunityAdminAuthorizationService,
     private readonly contentSafety: ContentSafetyProvider,
+    private readonly governanceControls?: GovernanceControlService,
     reviewGrantSigningKey = "stage3-object-grant-key"
   ) {
     this.reviewStorage = new PrivateObjectStorageService(reviewGrantSigningKey);
@@ -1066,6 +1072,19 @@ export class ContentReviewService {
     }
 
     if (input.decision === "approve") {
+      const forcedPlatformReview =
+        await this.governanceControls?.checkActiveControl({
+          controlType: "force_platform_review",
+          communityId: target.communityId,
+          now
+        });
+      if (forcedPlatformReview?.result === "blocked") {
+        return {
+          result: "rejected",
+          errorCode: "PLATFORM_REVIEW_REQUIRED"
+        };
+      }
+
       await this.approveContentVersion({
         task,
         target,
@@ -1403,6 +1422,7 @@ export class ContentReviewService {
         errorCode:
           | "GUARDIAN_CONTROL_DISABLED"
           | "COMMUNITY_MEMBER_REQUIRED"
+          | "GOVERNANCE_CONTROL_ACTIVE"
           | "PUBLISH_NOT_ALLOWED";
       }
   > {
@@ -1414,6 +1434,18 @@ export class ContentReviewService {
       now
     });
     if (participation.result === "accepted") {
+      const paused = await this.governanceControls?.checkActiveControl({
+        controlType: "pause_publish",
+        communityId: input.communityId,
+        now
+      });
+      if (paused?.result === "blocked") {
+        return {
+          result: "rejected",
+          errorCode: "GOVERNANCE_CONTROL_ACTIVE"
+        };
+      }
+
       return participation;
     }
 

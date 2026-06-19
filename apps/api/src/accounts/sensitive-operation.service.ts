@@ -16,7 +16,8 @@ export const SensitiveOperationType = {
   applyRiskRestriction: "apply_risk_restriction",
   resolveRiskRestriction: "resolve_risk_restriction",
   reviewRiskSignal: "review_risk_signal",
-  adjustPoints: "adjust_points"
+  adjustPoints: "adjust_points",
+  manageGovernanceControl: "manage_governance_control"
 } as const;
 
 export type SensitiveOperationType =
@@ -28,6 +29,8 @@ const CHALLENGE_TTL_SECONDS = CHALLENGE_TTL_MS / 1000;
 const SENSITIVE_DEVICE_COOLDOWN_MS = 2 * 60 * 1000;
 export const ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE =
   "admin_community_scope_request";
+export const GOVERNANCE_CONTROL_CHALLENGE_TARGET_TYPE =
+  "governance_control_scope";
 
 export type CreateSensitiveOperationChallengeInput = {
   actorUserId: string;
@@ -762,6 +765,14 @@ export class SensitiveOperationService {
               (input.targetType === "point_adjustment_request" &&
                 (await this.sensitiveTargetExists(input.targetType, input.targetId))))
         );
+      case SensitiveOperationType.manageGovernanceControl:
+        return this.acceptIf(
+          input.targetType === GOVERNANCE_CONTROL_CHALLENGE_TARGET_TYPE &&
+            (await this.canRequestGovernanceControlChallenge({
+              actorUserId: input.actorUserId,
+              targetId: input.targetId
+            }))
+        );
       default:
         return {
           result: "rejected",
@@ -1152,9 +1163,65 @@ export class SensitiveOperationService {
         );
       case ADMIN_COMMUNITY_SCOPE_CHALLENGE_TARGET_TYPE:
         return Boolean(parseAdminCommunityScopeChallengeTargetId(targetId));
+      case GOVERNANCE_CONTROL_CHALLENGE_TARGET_TYPE:
+        return targetId === "platform"
+          ? true
+          : Boolean(
+              await this.prisma.auctionCommunity.findUnique({
+                where: { id: targetId },
+                select: { id: true }
+              })
+            );
       default:
         return false;
     }
+  }
+
+  private async canRequestGovernanceControlChallenge(input: {
+    actorUserId: string;
+    targetId: string;
+  }) {
+    const admin = await this.prisma.adminProfile.findFirst({
+      where: {
+        userId: input.actorUserId,
+        status: "active",
+        mfaEnabled: true,
+        user: {
+          status: "active"
+        }
+      },
+      select: {
+        role: true,
+        communityScopes: {
+          where: {
+            status: "active"
+          },
+          select: {
+            communityId: true
+          }
+        }
+      }
+    });
+    if (!admin) {
+      return false;
+    }
+
+    if (admin.role === "platform_admin") {
+      return input.targetId === "platform"
+        ? true
+        : Boolean(
+            await this.prisma.auctionCommunity.findUnique({
+              where: { id: input.targetId },
+              select: { id: true }
+            })
+          );
+    }
+
+    return (
+      admin.role === "activity_admin" &&
+      input.targetId !== "platform" &&
+      admin.communityScopes.some((scope) => scope.communityId === input.targetId)
+    );
   }
 
   private async activeRiskRestrictionExists(restrictionId: string): Promise<boolean> {

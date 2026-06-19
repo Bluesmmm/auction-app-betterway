@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import type { BidStatus, PrismaClient, RiskRestrictionType } from "@prisma/client";
 import { createHash, randomUUID } from "node:crypto";
 import { runCriticalTransaction } from "../prisma/critical-transaction.js";
+import type { GovernanceControlService } from "../stage8/governance-control.service.js";
 
 type IdempotencyReservation<T> =
   | { result: "reserved"; id: string }
@@ -27,6 +28,7 @@ type PlaceBidRejectedErrorCode =
   | "GUARDIAN_CONTROL_DISABLED"
   | "MAX_BID_POINTS_EXCEEDED"
   | "GUARDIAN_DISPUTE_FROZEN"
+  | "GOVERNANCE_CONTROL_ACTIVE"
   | "RISK_RESTRICTED";
 
 type PlaceBidUnknownErrorCode = "TRANSACTION_RESULT_UNKNOWN";
@@ -156,7 +158,10 @@ type CurrentHighestBidContext = {
 const WITHDRAW_CURRENT_HIGHEST_BID_WINDOW_MS = 60_000;
 
 export class BiddingService {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly governanceControls?: GovernanceControlService
+  ) {}
 
   async placeBid(input: {
     actorUserId: string;
@@ -252,6 +257,21 @@ export class BiddingService {
         return completeIdempotency(tx, idempotency.id, {
           result: "rejected",
           errorCode: "AUCTION_NOT_FOUND"
+        });
+      }
+
+      const pausedBid = await this.governanceControls?.checkActiveControl(
+        {
+          controlType: "pause_bid",
+          communityId: item.communityId,
+          now
+        },
+        tx
+      );
+      if (pausedBid?.result === "blocked") {
+        return completeIdempotency(tx, idempotency.id, {
+          result: "rejected",
+          errorCode: "GOVERNANCE_CONTROL_ACTIVE"
         });
       }
 

@@ -22,6 +22,7 @@ import { stage2AdminViewDefinitions } from "./stage2-nav.js";
 import { stage3AdminViewDefinitions } from "./stage3-nav.js";
 import { stage4AdminViewDefinitions } from "./stage4-nav.js";
 import { stage6AdminViewDefinitions } from "./stage6-nav.js";
+import { stage8AdminViewDefinitions } from "./stage8-nav.js";
 
 const { Content, Header } = Layout;
 
@@ -60,6 +61,11 @@ const PointsLedgerView = lazy(() =>
 const Stage6TransactionClosureView = lazy(() =>
   import("./stage6-views.js").then((module) => ({
     default: module.Stage6TransactionClosureView
+  }))
+);
+const Stage8GovernanceView = lazy(() =>
+  import("./stage8-views.js").then((module) => ({
+    default: module.Stage8GovernanceView
   }))
 );
 
@@ -124,6 +130,11 @@ export const adminShellNavigationItems = [
     key: view.key,
     label: view.label,
     path: view.path
+  })),
+  ...stage8AdminViewDefinitions.map((view) => ({
+    key: view.key,
+    label: view.label,
+    path: view.path
   }))
 ];
 
@@ -165,6 +176,7 @@ function Shell() {
           <Tag color="green">Stage 3</Tag>
           <Tag color="gold">Stage 4</Tag>
           <Tag color="purple">Stage 6</Tag>
+          <Tag color="volcano">Stage 8</Tag>
         </Space>
         <nav className="admin-nav" aria-label="Admin views">
           {adminShellNavigationItems.map((item) => (
@@ -237,6 +249,14 @@ function Shell() {
             element={
               <Stage2RouteFallback>
                 <Stage6TransactionClosureView apiBaseUrl={apiBaseUrl} />
+              </Stage2RouteFallback>
+            }
+          />
+          <Route
+            path="/stage8/governance"
+            element={
+              <Stage2RouteFallback>
+                <Stage8GovernanceView apiBaseUrl={apiBaseUrl} />
               </Stage2RouteFallback>
             }
           />

@@ -34,6 +34,7 @@ export type AuctionSettlementResult =
         | "AUCTION_NOT_FOUND"
         | "AUCTION_NOT_ACTIVE"
         | "AUCTION_NOT_DUE"
+        | "GOVERNANCE_CONTROL_ACTIVE"
         | "SETTLED_TRANSACTION_NOT_FOUND";
       status?: string;
     }
@@ -164,6 +165,20 @@ export class PrismaAuctionSettlementRunner implements AuctionSettlementRunner {
         });
         if (!item) {
           throw new Error(`Auction ${auction.id} item is missing`);
+        }
+
+        if (
+          await hasActivePauseSettlementControl(tx, {
+            communityId: item.communityId,
+            now: input.now
+          })
+        ) {
+          return {
+            result: "skipped",
+            auctionSessionId: auction.id,
+            reason: "GOVERNANCE_CONTROL_ACTIVE",
+            status: auction.status
+          };
         }
 
         const currentHighest =
@@ -731,6 +746,53 @@ function getStringProperty(value: unknown, property: string) {
 
 function buildSettledOutboxIdempotencyKey(auctionSessionId: string) {
   return `auction.settled:${createStableHash({ auctionSessionId })}`;
+}
+
+async function hasActivePauseSettlementControl(
+  tx: Prisma.TransactionClient,
+  input: {
+    communityId: string;
+    now: Date;
+  }
+) {
+  const control = await tx.governanceControl.findFirst({
+    where: {
+      status: "active",
+      controlType: "pause_settlement",
+      startsAt: {
+        lte: input.now
+      },
+      OR: [
+        {
+          endsAt: null
+        },
+        {
+          endsAt: {
+            gt: input.now
+          }
+        }
+      ],
+      AND: [
+        {
+          OR: [
+            {
+              scopeType: "platform",
+              scopeId: null
+            },
+            {
+              scopeType: "community",
+              scopeId: input.communityId
+            }
+          ]
+        }
+      ]
+    },
+    select: {
+      id: true
+    }
+  });
+
+  return Boolean(control);
 }
 
 function buildUnsoldOutboxIdempotencyKey(auctionSessionId: string) {

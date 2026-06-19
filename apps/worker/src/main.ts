@@ -18,6 +18,7 @@ import {
   PrismaTransactionTimeoutRunner,
   startPeriodicTransactionTimeoutScanner
 } from "./transaction-timeout-worker.js";
+import { startPeriodicHighRiskGovernanceReviewExpiryScanner } from "./high-risk-governance-review-expiry-worker.js";
 import { RedactingWorkerLogger } from "./redacting-worker-logger.js";
 import { startWorkerHeartbeat } from "./worker-heartbeat.js";
 import { loadWorkerRuntimeConfig } from "./worker-config.js";
@@ -81,6 +82,12 @@ const transactionTimeoutScanner = startPeriodicTransactionTimeoutScanner({
   intervalMs: config.transactionTimeoutScanIntervalMs,
   limit: config.transactionTimeoutScanLimit
 });
+const highRiskGovernanceReviewExpiryScanner =
+  startPeriodicHighRiskGovernanceReviewExpiryScanner({
+    prisma,
+    intervalMs: config.highRiskGovernanceReviewExpiryScanIntervalMs,
+    limit: config.highRiskGovernanceReviewExpiryScanLimit
+  });
 
 const outboxWorker = createOutboxNotificationWorker({
   connection: config.redis,
@@ -124,6 +131,7 @@ process.on("SIGTERM", () => {
 
 async function shutdown() {
   await outboxDispatchLoop.stop();
+  await highRiskGovernanceReviewExpiryScanner.stop();
   await transactionTimeoutScanner.stop();
   await auctionSettlementScanner.stop();
   await ledgerChecks.stop();

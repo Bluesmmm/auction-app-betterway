@@ -9,6 +9,7 @@ import type {
 } from "@prisma/client";
 import { createHash, randomUUID } from "node:crypto";
 import { runCriticalTransaction } from "../prisma/critical-transaction.js";
+import type { GovernanceControlService } from "../stage8/governance-control.service.js";
 import { AuctionPermissionsService } from "./auction-permissions.service.js";
 
 type DecisionSide = "buyer" | "seller";
@@ -35,7 +36,8 @@ type TransactionDecisionRejectedErrorCode =
   | "DELIVERY_METHOD_REQUIRED"
   | "DELIVERY_METHOD_NOT_ALLOWED"
   | "DELIVERY_POINT_NOT_AVAILABLE"
-  | "GUARDIAN_ARRANGED_DELIVERY_NOT_ALLOWED";
+  | "GUARDIAN_ARRANGED_DELIVERY_NOT_ALLOWED"
+  | "GOVERNANCE_CONTROL_ACTIVE";
 
 type AdminDisputeResolutionRejectedErrorCode =
   | "IDEMPOTENCY_KEY_REQUIRED"
@@ -184,7 +186,8 @@ const DELIVERY_CONFIRM_WINDOW_MS = 72 * 60 * 60 * 1000;
 export class TransactionDecisionService {
   constructor(
     private readonly prisma: PrismaClient,
-    private readonly permissions = new AuctionPermissionsService(prisma)
+    private readonly permissions = new AuctionPermissionsService(prisma),
+    private readonly governanceControls?: GovernanceControlService
   ) {}
 
   async getTransactionDetail(input: {
@@ -597,6 +600,32 @@ export class TransactionDecisionService {
       );
       if (phaseValidation.result === "rejected") {
         return completeIdempotency(tx, idempotency.id, phaseValidation);
+      }
+
+      const communityId = await loadTransactionCommunityId(
+        tx,
+        transaction.auctionSessionId
+      );
+      if (!communityId) {
+        return completeIdempotency(tx, idempotency.id, {
+          result: "rejected",
+          errorCode: "TRANSACTION_NOT_FOUND"
+        });
+      }
+
+      const pausedSettlement = await this.governanceControls?.checkActiveControl(
+        {
+          controlType: "pause_settlement",
+          communityId,
+          now
+        },
+        tx
+      );
+      if (pausedSettlement?.result === "blocked") {
+        return completeIdempotency(tx, idempotency.id, {
+          result: "rejected",
+          errorCode: "GOVERNANCE_CONTROL_ACTIVE"
+        });
       }
 
       const authorization = await loadGuardianAuthorization(tx, {
