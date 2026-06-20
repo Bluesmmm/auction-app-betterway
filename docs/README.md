@@ -12,6 +12,7 @@
 6. [Stage 5 PR 描述](./STAGE5_PR_DESCRIPTION.md)
 7. [Stage 8 3A 高风险治理复核规格草案](./STAGE8_3A_HIGH_RISK_GOVERNANCE_REVIEW_SPEC.md)
 8. [Stage 8 3A 实施任务拆分草案](./STAGE8_3A_IMPLEMENTATION_ISSUES.md)
+9. [Stage 9 试点前验证门禁](./STAGE9_PREPILOT_VERIFICATION.md)
 
 ## 当前基线
 
