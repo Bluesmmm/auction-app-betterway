@@ -100,6 +100,28 @@ Stage 9 gate 不允许通过删除或弱化路线图门槛来提升通过率。�
 3. 治理暂停与高风险治理复核：证明治理控制、暂停恢复和高风险操作复核能作为试点刹车。
 4. outbox、worker 幂等和故障恢复：重复、乱序、租约过期、worker 崩溃和重试不能改写业务事实。
 
+当前 `ledger-recompute-clean` 已进入 `automated`：`npm run stage9:ledger`
+会为 Stage 9 ledger gate 部署本次运行专用的隔离 schema，运行
+`ledger-check.service` 的 clean / mismatch / negative replay / missing account
+回归、`transaction-decision.service` 的 release / transfer / dispute / admin
+close 回归、`ledger-check-worker` 的周期触发与幂等 key 回归，并在 ledger
+与 transaction schema 上各执行一次 `stage4:ledger-check`。这个 gate 只证明
+账本重算和交易账本流的试点前自动化证据，不替代最终 `stage9:verify:full`
+对 Stage 1-8 的串行复核。
+
+当前 `file-search-notification-regression` 已进入 `automated`：
+`npm run stage9:file-search-notification` 会部署本次运行专用的隔离 schema，
+运行私有对象 grant 过期/篡改回归、realtime 订阅权限回归、stale search index
+回源过滤与分页补偿回归、通知只读当前用户回归、worker 端 stale transaction
+通知抑制回归，以及 refresh-only realtime hint 发布回归。这个 gate 证明文件、
+搜索、通知和实时提示不会依赖旧索引、旧授权或旧业务状态继续放行。
+
+当前 `privacy-content-hard-stop` 已进入 `automated`：
+`npm run stage9:privacy-content` 会部署本次运行专用的隔离 schema，运行内容
+安全 provider failure fail-closed、OCR/contact/QR 风险标签、SVG/格式风险拒绝、
+未人工审核内容不公开、review 原图 grant 仅在 active review task 中有效，以及
+人工审核完成后旧 grant 失效的回归。这个 gate 证明内容与媒体默认失败关闭。
+
 真实供应商、法务复核、试点运营材料和人工培训第一版可以保留为 `manual_gate` 或 `not_covered`，但必须有后续推进到 `rehearsed` 或人工证据归档的路径。
 
 ## 5. 第一版 gate 分类
@@ -133,13 +155,15 @@ Stage 1-8 完成度证据拆成两个 gate：
   category: "ledger",
   title: "Ledger recomputation has no anomalies before pilot",
   gateType: "hard",
-  maturity: "mapped",
+  maturity: "automated",
   defaultMode: "verify",
   fullMode: "verify",
   evidence: [
     {
       kind: "command",
-      command: "npm run stage4:ledger-check",
+      command: "npm run stage9:ledger",
+      binary: "npm",
+      args: ["run", "stage9:ledger"],
       requiredFor: ["verify", "full"]
     }
   ],

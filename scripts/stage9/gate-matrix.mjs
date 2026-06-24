@@ -199,21 +199,16 @@ export const stage9Gates = [
     category: "ledger",
     title: "Ledger recomputation has no anomalies before pilot",
     gateType: "hard",
-    maturity: "mapped",
-    defaultMode: "discover",
+    maturity: "automated",
+    defaultMode: "verify",
     fullMode: "verify",
     evidence: [
       {
         kind: "command",
-        command: "npm run stage4:ledger-check",
+        command: "npm run stage9:ledger",
         binary: "npm",
-        args: ["run", "stage4:ledger-check"],
-        requiredFor: ["full"]
-      },
-      {
-        kind: "gap",
-        reason:
-          "Default Stage 9 still needs a lightweight ledger regression that does not require running the full Stage 4 database check on every iteration."
+        args: ["run", "stage9:ledger"],
+        requiredFor: ["verify", "full"]
       }
     ],
     roadmapRefs: [
@@ -272,14 +267,16 @@ export const stage9Gates = [
     title:
       "Unreviewed content, sensitive text, unsafe images, and high-risk content fail closed",
     gateType: "hard",
-    maturity: "declared",
+    maturity: "automated",
     defaultMode: "verify",
     fullMode: "verify",
     evidence: [
       {
-        kind: "gap",
-        reason:
-          "Stage 9 needs a privacy/content regression that covers unreviewed media, rejected media, contact text, QR/OCR findings, and high-risk manual review boundaries."
+        kind: "command",
+        command: "npm run stage9:privacy-content",
+        binary: "npm",
+        args: ["run", "stage9:privacy-content"],
+        requiredFor: ["verify", "full"]
       }
     ],
     roadmapRefs: [
@@ -294,14 +291,16 @@ export const stage9Gates = [
     title:
       "File authorization, search source-of-truth checks, and notification refresh semantics hold under stale data",
     gateType: "hard",
-    maturity: "declared",
+    maturity: "automated",
     defaultMode: "verify",
     fullMode: "verify",
     evidence: [
       {
-        kind: "gap",
-        reason:
-          "Stage 9 needs stale signed URL, stale search index, notification re-entry, and realtime hint compensation regressions."
+        kind: "command",
+        command: "npm run stage9:file-search-notification",
+        binary: "npm",
+        args: ["run", "stage9:file-search-notification"],
+        requiredFor: ["verify", "full"]
       }
     ],
     roadmapRefs: [
