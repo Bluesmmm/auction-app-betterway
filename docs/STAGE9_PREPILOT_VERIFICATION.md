@@ -122,6 +122,34 @@ close 回归、`ledger-check-worker` 的周期触发与幂等 key 回归，并�
 未人工审核内容不公开、review 原图 grant 仅在 active review task 中有效，以及
 人工审核完成后旧 grant 失效的回归。这个 gate 证明内容与媒体默认失败关闭。
 
+当前 `authorization-privacy-cross-community` 已进入 `automated`：
+`npm run stage9:authorization` 会部署本次运行专用的隔离 schema，运行孩子参与
+能力、监护关系、社区成员资格、活动管理员社区 scope、平台管理员授权、管理员
+MFA、高危操作 challenge、家长敏感操作 challenge、Bearer actor 派生，以及
+Stage 6 交付点和申诉 API 的跨社区拒绝回归。这个 gate 证明主要服务端入口不会
+接受客户端伪造身份、旧 scope 或跨社区管理员越权。
+
+当前 `outbox-worker-failure-recovery` 已进入 `automated`：
+`npm run stage9:outbox-worker` 会部署本次运行专用的隔离 schema，运行 outbox
+到期和过期 lease 领取、通知发送失败 retry、通知处理不改业务状态、realtime
+hint 失败不回滚 outbox 送达、结算 worker 幂等、交易超时 worker 幂等、
+PostgreSQL 到期扫描兜底，以及通知 API 当前用户隔离回归。这个 gate 证明
+outbox、worker 和通知失败不会伪造业务成功或改写交易事实。
+
+当前 `governance-pause-and-review-recovery` 已进入 `automated`：
+`npm run stage9:governance` 会部署本次运行专用的隔离 schema，运行治理控制
+预览不变更业务状态、pause-bid / pause-publish / pause-settlement 创建与解除、
+重复和过期控制处理、高风险治理复核路由和过期、跨社区活动管理员拒绝、风险
+限制与平台复核，以及 settlement worker 在 pause-settlement 下停止结算的回归。
+这个 gate 证明治理控制可以作为试点刹车，并且恢复、复核和作用域边界有自动化证据。
+
+当前 `minimal-auction-state-machine-e2e` 已进入 `automated`：
+`npm run stage9:state-machine` 会部署本次运行专用的隔离 schema，运行服务级
+状态机闭环回归，覆盖内容提交和人工审核、拍卖场次创建、出价和撤回、结算
+worker 成交和流拍、家长成交确认、交付确认、交易申诉、管理员裁决、超时补偿、
+取消和异常路径。这个 gate 证明核心服务状态机和持久化事实闭环可重复验证；
+它不是前端 UI E2E，也不替代最终试点前 `stage9:verify:full`。
+
 真实供应商、法务复核、试点运营材料和人工培训第一版可以保留为 `manual_gate` 或 `not_covered`，但必须有后续推进到 `rehearsed` 或人工证据归档的路径。
 
 ## 5. 第一版 gate 分类

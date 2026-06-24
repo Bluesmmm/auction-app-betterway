@@ -176,21 +176,27 @@ export const stage9Gates = [
     id: "minimal-auction-state-machine-e2e",
     category: "state-machine",
     title:
-      "Minimal auction loop and abnormal state paths have pre-pilot E2E evidence",
+      "Minimal auction loop and abnormal state paths have service-level pre-pilot state-machine evidence",
     gateType: "hard",
-    maturity: "declared",
+    maturity: "automated",
     defaultMode: "verify",
     fullMode: "verify",
     evidence: [
       {
-        kind: "gap",
-        reason:
-          "Stage 9 needs a cross-stage E2E that covers content approval, auction creation, bidding, settlement, guardian confirmation, delivery or appeal closure, and abnormal cancellation paths."
+        kind: "command",
+        command: "npm run stage9:state-machine",
+        binary: "npm",
+        args: ["run", "stage9:state-machine"],
+        requiredFor: ["verify", "full"]
       }
     ],
     roadmapRefs: [
       "docs/MVP_ROADMAP.md:472",
-      "docs/MVP_ROADMAP.md:487"
+      "docs/MVP_ROADMAP.md:473",
+      "docs/MVP_ROADMAP.md:478",
+      "docs/MVP_ROADMAP.md:487",
+      "docs/MVP_ROADMAP.md:493",
+      "docs/MVP_ROADMAP.md:676"
     ],
     manual: null
   },
@@ -223,18 +229,21 @@ export const stage9Gates = [
     title:
       "Outbox duplicate consumption, worker crash, and lease expiry do not change business facts",
     gateType: "hard",
-    maturity: "declared",
+    maturity: "automated",
     defaultMode: "verify",
     fullMode: "verify",
     evidence: [
       {
-        kind: "gap",
-        reason:
-          "Stage 9 needs a focused regression for duplicate outbox claims, worker crash recovery, lease expiry, and retry idempotency across settlement and notification paths."
+        kind: "command",
+        command: "npm run stage9:outbox-worker",
+        binary: "npm",
+        args: ["run", "stage9:outbox-worker"],
+        requiredFor: ["verify", "full"]
       }
     ],
     roadmapRefs: [
       "docs/MVP_ROADMAP.md:523",
+      "docs/MVP_ROADMAP.md:525",
       "docs/MVP_ROADMAP.md:593"
     ],
     manual: null
@@ -245,19 +254,23 @@ export const stage9Gates = [
     title:
       "Parents, children, activity admins, and platform admins cannot cross current scope boundaries",
     gateType: "hard",
-    maturity: "declared",
+    maturity: "automated",
     defaultMode: "verify",
     fullMode: "verify",
     evidence: [
       {
-        kind: "gap",
-        reason:
-          "Stage 9 needs a cross-stage authorization regression for child participation, guardian relationships, activity-admin community scope, platform-admin exceptions, MFA, and sensitive operation challenges."
+        kind: "command",
+        command: "npm run stage9:authorization",
+        binary: "npm",
+        args: ["run", "stage9:authorization"],
+        requiredFor: ["verify", "full"]
       }
     ],
     roadmapRefs: [
       "docs/MVP_ROADMAP.md:531",
-      "docs/MVP_ROADMAP.md:542"
+      "docs/MVP_ROADMAP.md:542",
+      "docs/MVP_ROADMAP.md:543",
+      "docs/MVP_ROADMAP.md:678"
     ],
     manual: null
   },
@@ -315,19 +328,23 @@ export const stage9Gates = [
     title:
       "Governance pause, recovery, preview, and high-risk review paths work as pilot brakes",
     gateType: "hard",
-    maturity: "declared",
+    maturity: "automated",
     defaultMode: "verify",
     fullMode: "verify",
     evidence: [
       {
-        kind: "gap",
-        reason:
-          "Stage 9 needs an end-to-end governance rehearsal for pause publish, pause bid, pause settlement, recovery, impact preview expiry, and high-risk governance review."
+        kind: "command",
+        command: "npm run stage9:governance",
+        binary: "npm",
+        args: ["run", "stage9:governance"],
+        requiredFor: ["verify", "full"]
       }
     ],
     roadmapRefs: [
       "docs/MVP_ROADMAP.md:476",
-      "docs/MVP_ROADMAP.md:579"
+      "docs/MVP_ROADMAP.md:579",
+      "docs/MVP_ROADMAP.md:659",
+      "docs/MVP_ROADMAP.md:683"
     ],
     manual: null
   },
