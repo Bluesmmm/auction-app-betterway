@@ -39,6 +39,7 @@
     "stage9:ledger": "node scripts/stage9/run-ledger-gate.mjs",
     "stage9:outbox-worker": "node scripts/stage9/run-outbox-worker-gate.mjs",
     "stage9:privacy-content": "node scripts/stage9/run-privacy-content-gate.mjs",
+    "stage9:runtime-rehearsal": "node scripts/stage9/run-runtime-rehearsal-gate.mjs",
     "stage9:state-machine": "node scripts/stage9/run-state-machine-gate.mjs",
     "stage9:verify": "node scripts/stage9/verify-stage9.mjs --mode=verify",
     "stage9:verify:full": "node scripts/stage9/verify-stage9.mjs --mode=full",

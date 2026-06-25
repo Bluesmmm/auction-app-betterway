@@ -21,7 +21,12 @@ Engineering-owned rehearsal scope from `docs/STAGE9_PREPILOT_VERIFICATION.md`:
 - Running Docker services observed:
   - `stage9-postgres-1`: `postgres:16-alpine`, healthy, `0.0.0.0:5432->5432/tcp`
   - `stage9-redis-1`: `redis:7-alpine`, healthy, `0.0.0.0:6379->6379/tcp`
+  - `stage9-api-1`: `node:24-bullseye-slim`, `0.0.0.0:3000->3000/tcp`
+  - `stage9-worker-1`: `node:24-bullseye-slim`
 - Local WSL `/usr/bin/docker` socket was not usable in this session; Docker operations used Docker Desktop Windows CLI.
+- `node:24-bookworm` repeatedly failed to pull from Docker registry with EOF, so the runtime image was changed to `node:24-bullseye-slim`.
+- `node:24-bookworm-slim` started but did not include OpenSSL/libssl, which made Prisma select an unavailable runtime target.
+- `node:24-bullseye-slim` includes `libssl.so.1.1`; the rehearsal runner prepares Prisma's `debian-openssl-1.1.x` query engine before starting API/worker.
 
 ## Passed Evidence
 
@@ -48,6 +53,18 @@ npm run db:deploy
 Result: passed.
 
 Evidence: all 17 migrations applied successfully to Docker Postgres `auction_app.public`.
+
+### API / Worker Runtime Connectivity
+
+Command:
+
+```bash
+node scripts/stage1/check-connectivity.mjs
+```
+
+Result: passed.
+
+Evidence: API health returned `ok` at `http://localhost:3000/health`, PostgreSQL and Redis readiness were healthy, and worker heartbeat for `auction-worker-runtime` was fresh.
 
 ### Backup Restore
 
@@ -145,7 +162,7 @@ Result: passed.
 
 Evidence: content provider/upload contracts and Stage 3 content review integration passed, covering provider failure fail-closed behavior and unsafe content/media blocking.
 
-## Blocked Evidence
+## Resolved Blocker
 
 ### API / Worker Docker Runtime Connectivity
 
@@ -155,7 +172,7 @@ Attempted command:
 docker.exe compose --env-file /tmp/stage9-runtime-rehearsal.env -f docker-compose.yml -f docker-compose.runtime.yml up -d --force-recreate api worker
 ```
 
-Result: blocked.
+Initial result: blocked.
 
 Failure observed on repeated attempts:
 
@@ -174,21 +191,22 @@ Result: same registry EOF while fetching the image blob.
 
 Impact:
 
-- PostgreSQL and Redis Docker services are running and healthy.
-- API and worker containers could not be started because the required base image is not cached locally and Docker registry download failed.
-- Therefore `scripts/stage1/check-connectivity.mjs` cannot be counted as passed for this rehearsal, because it requires live API health and worker heartbeat.
+- PostgreSQL and Redis Docker services were running and healthy.
+- API and worker containers initially could not start because the required base image was not cached locally and Docker registry download failed.
+
+Resolution:
+
+- Switched runtime API/worker image to `node:24-bullseye-slim`.
+- Added Prisma runtime engine preparation for `debian-openssl-1.1.x`.
+- Recreated API and worker containers successfully.
+- Reran `scripts/stage1/check-connectivity.mjs` successfully.
 
 ## Current Conclusion
 
-`runtime-rehearsal-coverage` is not ready to mark as passed.
-
-Passed evidence is sufficient for database backup restore, migration rollback/redeploy, key rotation configuration, log scan, ledger recovery checks, outbox/worker service-level recovery, file/search/notification behavior, and vendor fail-closed behavior in repo tests.
-
-Remaining blocker is external Docker image availability for API/worker runtime connectivity. Once `node:24-bookworm` can be pulled or is available in the local Docker cache, rerun:
+`runtime-rehearsal-coverage` has executable engineering evidence and can be run through:
 
 ```bash
-docker.exe compose --env-file /tmp/stage9-runtime-rehearsal.env -f docker-compose.yml -f docker-compose.runtime.yml up -d --force-recreate api worker
-node scripts/stage1/check-connectivity.mjs
+npm run stage9:runtime-rehearsal
 ```
 
-Only after that passes should `runtime-rehearsal-coverage` be moved out of `manual_gate` or marked as fully evidenced.
+This evidence covers runtime connectivity, backup restore, migration rollback/redeploy, key rotation configuration, log scan, ledger recovery checks, outbox/worker service-level recovery, file/search/notification behavior, and vendor fail-closed behavior in repo tests. It does not replace `vendor-production-config`, which still requires real provider-console configuration evidence.

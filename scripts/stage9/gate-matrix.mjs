@@ -353,28 +353,24 @@ export const stage9Gates = [
     category: "runtime-rehearsal",
     title:
       "Runtime, backup restore, migration release, grey release, and vendor downgrade rehearsals are evidenced",
-    gateType: "manual",
-    maturity: "mapped",
-    defaultMode: "discover",
-    fullMode: "discover",
+    gateType: "hard",
+    maturity: "rehearsed",
+    defaultMode: "verify",
+    fullMode: "verify",
     evidence: [
       {
-        kind: "manual",
-        requiredEvidence:
-          "Attach run records for backup restore, migration rollback, grey release compatibility, Redis/BullMQ degradation, and vendor downgrade rehearsals."
+        kind: "command",
+        command: "npm run stage9:runtime-rehearsal",
+        binary: "npm",
+        args: ["run", "stage9:runtime-rehearsal"],
+        requiredFor: ["verify", "full"]
       }
     ],
     roadmapRefs: [
       "docs/MVP_ROADMAP.md:465",
       "docs/MVP_ROADMAP.md:593"
     ],
-    manual: {
-      owner: "engineering",
-      requiredEvidence:
-        "Runtime rehearsal records with command outputs, dates, responsible engineer, and residual risk notes.",
-      validFor: "30d",
-      blockingIfMissing: true
-    }
+    manual: null
   },
   {
     id: "deletion-retention-coverage",

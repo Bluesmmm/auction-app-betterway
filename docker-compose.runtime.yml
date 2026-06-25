@@ -1,6 +1,6 @@
 services:
   api:
-    image: node:24-bookworm
+    image: node:24-bullseye-slim
     working_dir: /workspace
     command: ["npm", "run", "start:api"]
     environment:
@@ -29,7 +29,7 @@ services:
         condition: service_healthy
 
   worker:
-    image: node:24-bookworm
+    image: node:24-bullseye-slim
     working_dir: /workspace
     command: ["npm", "run", "start:worker"]
     environment:

@@ -15,6 +15,7 @@ describe("stage9 verification scripts", () => {
     expect(pkg).toContain('"stage9:ledger"');
     expect(pkg).toContain('"stage9:outbox-worker"');
     expect(pkg).toContain('"stage9:privacy-content"');
+    expect(pkg).toContain('"stage9:runtime-rehearsal"');
     expect(pkg).toContain('"stage9:state-machine"');
     expect(pkg).toContain('"stage9:verify"');
     expect(pkg).toContain('"stage9:verify:full"');
@@ -31,6 +32,12 @@ describe("stage9 verification scripts", () => {
     expect(existsSync("scripts/stage9/run-ledger-gate.mjs")).toBe(true);
     expect(existsSync("scripts/stage9/run-outbox-worker-gate.mjs")).toBe(true);
     expect(existsSync("scripts/stage9/run-privacy-content-gate.mjs")).toBe(true);
+    expect(existsSync("scripts/stage9/run-runtime-rehearsal-gate.mjs")).toBe(
+      true
+    );
+    expect(existsSync("scripts/stage9/ensure-prisma-runtime-engine.mjs")).toBe(
+      true
+    );
     expect(existsSync("scripts/stage9/run-state-machine-gate.mjs")).toBe(true);
 
     const matrix = readFileSync(matrixPath, "utf8");
@@ -58,6 +65,10 @@ describe("stage9 verification scripts", () => {
     );
     const privacyContentGate = readFileSync(
       "scripts/stage9/run-privacy-content-gate.mjs",
+      "utf8"
+    );
+    const runtimeRehearsalGate = readFileSync(
+      "scripts/stage9/run-runtime-rehearsal-gate.mjs",
       "utf8"
     );
     const stateMachineGate = readFileSync(
@@ -128,6 +139,7 @@ describe("stage9 verification scripts", () => {
     expect(matrix).toContain("npm run stage9:ledger");
     expect(matrix).toContain("npm run stage9:outbox-worker");
     expect(matrix).toContain("npm run stage9:privacy-content");
+    expect(matrix).toContain("npm run stage9:runtime-rehearsal");
     expect(matrix).toContain("npm run stage9:state-machine");
     expect(matrix).toContain('maturity: "automated"');
 
@@ -237,6 +249,18 @@ describe("stage9 verification scripts", () => {
     expect(privacyContentGate).toContain(
       "apps/api/test/integration/stage3-content-review-flow.test.ts"
     );
+
+    expect(runtimeRehearsalGate).toContain(
+      "scripts/stage9/ensure-prisma-runtime-engine.mjs"
+    );
+    expect(runtimeRehearsalGate).toContain("db:generate");
+    expect(runtimeRehearsalGate).toContain("scripts/stage1/check-connectivity.mjs");
+    expect(runtimeRehearsalGate).toContain("scripts/stage1/rehearse-migration.mjs");
+    expect(runtimeRehearsalGate).toContain(
+      "scripts/stage1/rehearse-backup-restore.mjs"
+    );
+    expect(runtimeRehearsalGate).toContain("stage9:ledger");
+    expect(runtimeRehearsalGate).toContain("stage9:outbox-worker");
 
     expect(stateMachineGate).toContain("stage9_state_machine");
     expect(stateMachineGate).toContain(
