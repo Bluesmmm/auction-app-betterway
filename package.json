@@ -35,6 +35,7 @@
     "stage9:authorization": "node scripts/stage9/run-authorization-gate.mjs",
     "stage9:deletion-retention": "node scripts/stage9/run-deletion-retention-gate.mjs",
     "stage9:file-search-notification": "node scripts/stage9/run-file-search-notification-gate.mjs",
+    "stage9:grey-release": "node scripts/stage9/run-grey-release-gate.mjs",
     "stage9:governance": "node scripts/stage9/run-governance-gate.mjs",
     "stage9:ledger": "node scripts/stage9/run-ledger-gate.mjs",
     "stage9:outbox-worker": "node scripts/stage9/run-outbox-worker-gate.mjs",

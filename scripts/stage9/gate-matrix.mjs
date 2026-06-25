@@ -352,7 +352,7 @@ export const stage9Gates = [
     id: "runtime-rehearsal-coverage",
     category: "runtime-rehearsal",
     title:
-      "Runtime, backup restore, migration release, grey release, and vendor downgrade rehearsals are evidenced",
+      "Runtime connectivity, backup restore, migration release, and recovery rehearsals are evidenced",
     gateType: "hard",
     maturity: "rehearsed",
     defaultMode: "verify",
@@ -369,6 +369,30 @@ export const stage9Gates = [
     roadmapRefs: [
       "docs/MVP_ROADMAP.md:465",
       "docs/MVP_ROADMAP.md:593"
+    ],
+    manual: null
+  },
+  {
+    id: "grey-release-compatibility",
+    category: "runtime-rehearsal",
+    title:
+      "Grey release API and worker rolling recreate compatibility smoke is evidenced",
+    gateType: "hard",
+    maturity: "rehearsed",
+    defaultMode: "verify",
+    fullMode: "verify",
+    evidence: [
+      {
+        kind: "command",
+        command: "npm run stage9:grey-release",
+        binary: "npm",
+        args: ["run", "stage9:grey-release"],
+        requiredFor: ["verify", "full"]
+      }
+    ],
+    roadmapRefs: [
+      "docs/MVP_ROADMAP.md:593",
+      "docs/MVP_ROADMAP.md:679"
     ],
     manual: null
   },

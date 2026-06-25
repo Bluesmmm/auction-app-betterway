@@ -66,6 +66,18 @@ Result: passed.
 
 Evidence: API health returned `ok` at `http://localhost:3000/health`, PostgreSQL and Redis readiness were healthy, and worker heartbeat for `auction-worker-runtime` was fresh.
 
+### Grey Release Compatibility Smoke
+
+Command:
+
+```bash
+npm run stage9:grey-release
+```
+
+Result: passed.
+
+Evidence: the rehearsal built API/worker, started Docker PostgreSQL/Redis/API/worker, verified initial runtime connectivity, recreated API with `--no-deps --force-recreate`, verified connectivity again, recreated worker with `--no-deps --force-recreate`, verified connectivity again, then reran migration rollback/replay rehearsal. This is local runtime compatibility smoke; it does not replace immutable image verification, real traffic splitting, production rollback, or provider-console downgrade review.
+
 ### Backup Restore
 
 Command:
@@ -210,3 +222,11 @@ npm run stage9:runtime-rehearsal
 ```
 
 This evidence covers runtime connectivity, backup restore, migration rollback/redeploy, key rotation configuration, log scan, ledger recovery checks, outbox/worker service-level recovery, file/search/notification behavior, and vendor fail-closed behavior in repo tests. It does not replace `vendor-production-config`, which still requires real provider-console configuration evidence.
+
+`grey-release-compatibility` also has executable engineering evidence through:
+
+```bash
+npm run stage9:grey-release
+```
+
+This evidence covers local API and worker rolling recreate compatibility on the same Docker PostgreSQL/Redis runtime plus migration rollback/replay. It does not replace immutable candidate image validation, real traffic splitting, or production rollback rehearsal.

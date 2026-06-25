@@ -11,6 +11,7 @@ describe("stage9 verification scripts", () => {
     expect(pkg).toContain('"stage9:authorization"');
     expect(pkg).toContain('"stage9:deletion-retention"');
     expect(pkg).toContain('"stage9:file-search-notification"');
+    expect(pkg).toContain('"stage9:grey-release"');
     expect(pkg).toContain('"stage9:governance"');
     expect(pkg).toContain('"stage9:ledger"');
     expect(pkg).toContain('"stage9:outbox-worker"');
@@ -28,6 +29,7 @@ describe("stage9 verification scripts", () => {
     expect(existsSync("scripts/stage9/run-file-search-notification-gate.mjs")).toBe(
       true
     );
+    expect(existsSync("scripts/stage9/run-grey-release-gate.mjs")).toBe(true);
     expect(existsSync("scripts/stage9/run-governance-gate.mjs")).toBe(true);
     expect(existsSync("scripts/stage9/run-ledger-gate.mjs")).toBe(true);
     expect(existsSync("scripts/stage9/run-outbox-worker-gate.mjs")).toBe(true);
@@ -56,6 +58,10 @@ describe("stage9 verification scripts", () => {
     );
     const governanceGate = readFileSync(
       "scripts/stage9/run-governance-gate.mjs",
+      "utf8"
+    );
+    const greyReleaseGate = readFileSync(
+      "scripts/stage9/run-grey-release-gate.mjs",
       "utf8"
     );
     const ledgerGate = readFileSync("scripts/stage9/run-ledger-gate.mjs", "utf8");
@@ -117,6 +123,7 @@ describe("stage9 verification scripts", () => {
       "minimal-auction-state-machine-e2e",
       "ledger-recompute-clean",
       "authorization-privacy-cross-community",
+      "grey-release-compatibility",
       "governance-pause-and-review-recovery",
       "outbox-worker-failure-recovery",
       "legal-prepilot-review"
@@ -135,6 +142,7 @@ describe("stage9 verification scripts", () => {
     expect(matrix).toContain("npm run stage9:authorization");
     expect(matrix).toContain("npm run stage9:deletion-retention");
     expect(matrix).toContain("npm run stage9:file-search-notification");
+    expect(matrix).toContain("npm run stage9:grey-release");
     expect(matrix).toContain("npm run stage9:governance");
     expect(matrix).toContain("npm run stage9:ledger");
     expect(matrix).toContain("npm run stage9:outbox-worker");
@@ -189,6 +197,14 @@ describe("stage9 verification scripts", () => {
     expect(fileSearchNotificationGate).toContain(
       "apps/worker/test/realtime-hint-publisher.test.ts"
     );
+
+    expect(greyReleaseGate).toContain(
+      "scripts/stage9/ensure-prisma-runtime-engine.mjs"
+    );
+    expect(greyReleaseGate).toContain("--no-deps");
+    expect(greyReleaseGate).toContain("--force-recreate");
+    expect(greyReleaseGate).toContain("scripts/stage1/check-connectivity.mjs");
+    expect(greyReleaseGate).toContain("scripts/stage1/rehearse-migration.mjs");
 
     expect(governanceGate).toContain("stage9_governance");
     expect(governanceGate).toContain(

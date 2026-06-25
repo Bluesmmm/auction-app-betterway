@@ -159,6 +159,15 @@ key rotation 配置、日志扫描、ledger、outbox/worker、file/search/notifi
 `docs/STAGE9_RUNTIME_REHEARSAL_EVIDENCE_2026-06-25.md`；该 gate 只证明
 仓库可执行 runtime 演练，不替代真实生产供应商后台配置复核。
 
+当前 `grey-release-compatibility` 已进入 `rehearsed`：
+`npm run stage9:grey-release` 会准备 Docker runtime 需要的 Prisma query
+engine，构建 API/worker，启动 PostgreSQL、Redis、API 和 worker，先验证初始
+runtime connectivity，再分别对 API 和 worker 执行 `--no-deps --force-recreate`
+滚动重建，并在每一步后验证 API health、PostgreSQL、Redis 和 worker heartbeat。
+最后它会运行迁移回滚/重放演练。该 gate 是本地灰度兼容 smoke，用于证明当前
+workspace 的 API/worker 可以在同一 runtime 数据库和 Redis 上独立重建；它不替代
+不可变 candidate image 验证、真实流量切分、真实生产回滚或供应商后台降级复核。
+
 当前 `deletion-retention-coverage` 已进入 `automated`：
 `npm run stage9:deletion-retention` 会部署本次运行专用的隔离 schema，运行孩子
 注销/删除 readiness 阻断和执行回归，覆盖 active auction、active point hold、
@@ -184,7 +193,7 @@ Stage 9 gate matrix 至少覆盖以下分类：
 - `privacy-content`：内容审核、未审核文件访问、敏感字段脱敏和高风险内容收口。
 - `file-search-notification`：文件授权、搜索回源、通知乱序和实时提示补偿。
 - `governance`：治理控制、危险操作预览、高风险治理复核、暂停和恢复演练。
-- `runtime-rehearsal`：Redis/BullMQ 故障、备份恢复、迁移发布、灰度兼容和供应商降级。
+- `runtime-rehearsal`：Redis/BullMQ runtime readiness、备份恢复、迁移发布、本地灰度兼容 smoke 和恢复演练。
 - `deletion-retention`：注销、删除、匿名化、导出文件过期和缓存/通知/对象存储覆盖。
 - `manual-pilot`：法务、运营、真实供应商后台配置、试点社区和家长说明材料。
 
