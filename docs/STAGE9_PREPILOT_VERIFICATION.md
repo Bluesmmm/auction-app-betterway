@@ -150,6 +150,13 @@ worker 成交和流拍、家长成交确认、交付确认、交易申诉、管�
 取消和异常路径。这个 gate 证明核心服务状态机和持久化事实闭环可重复验证；
 它不是前端 UI E2E，也不替代最终试点前 `stage9:verify:full`。
 
+`runtime-rehearsal-coverage` 当前仍是 `manual_gate`。2026-06-25 的工程演练
+记录在 `docs/STAGE9_RUNTIME_REHEARSAL_EVIDENCE_2026-06-25.md`：备份恢复、
+迁移回滚/重放、key rotation 配置、日志扫描、ledger、outbox/worker、
+file/search/notification 和 privacy/content fail-closed 证据已通过；API/worker
+Docker runtime connectivity 因 `node:24-bookworm` registry pull EOF 被阻塞，
+因此该 gate 不能声明通过。
+
 当前 `deletion-retention-coverage` 已进入 `automated`：
 `npm run stage9:deletion-retention` 会部署本次运行专用的隔离 schema，运行孩子
 注销/删除 readiness 阻断和执行回归，覆盖 active auction、active point hold、
