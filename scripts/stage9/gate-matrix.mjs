@@ -382,19 +382,22 @@ export const stage9Gates = [
     title:
       "Deletion and anonymization cover primary database, search, object storage, exports, cache, notifications, and backups",
     gateType: "hard",
-    maturity: "declared",
+    maturity: "automated",
     defaultMode: "verify",
     fullMode: "verify",
     evidence: [
       {
-        kind: "gap",
-        reason:
-          "Stage 9 needs deletion and retention verification across primary storage, search index, object storage, export files, cache, notifications, and backup retention policy."
+        kind: "command",
+        command: "npm run stage9:deletion-retention",
+        binary: "npm",
+        args: ["run", "stage9:deletion-retention"],
+        requiredFor: ["verify", "full"]
       }
     ],
     roadmapRefs: [
       "docs/MVP_ROADMAP.md:595",
-      "docs/MVP_ROADMAP.md:681"
+      "docs/MVP_ROADMAP.md:681",
+      "docs/TECHNICAL_ARCHITECTURE.md:375"
     ],
     manual: null
   },

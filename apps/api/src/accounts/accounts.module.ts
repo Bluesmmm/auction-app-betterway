@@ -6,6 +6,7 @@ import {
   FakeSensitiveOperationVerificationProvider,
   FakeWechatAuthProvider
 } from "../providers/fake-providers.js";
+import { ChildDataRetentionService } from "./child-data-retention.service.js";
 import { ChildParticipationService } from "./child-participation.service.js";
 import { GuardianManagementService } from "./guardian-management.service.js";
 import { OnboardingService } from "./onboarding.service.js";
@@ -85,6 +86,11 @@ import { AccountsController } from "./accounts.controller.js";
         prisma: PrismaService,
         sensitiveOperations: SensitiveOperationService
       ) => new RiskGovernanceService(prisma, sensitiveOperations)
+    },
+    {
+      provide: ChildDataRetentionService,
+      inject: [PrismaService],
+      useFactory: (prisma: PrismaService) => new ChildDataRetentionService(prisma)
     }
   ],
   exports: [
@@ -94,7 +100,8 @@ import { AccountsController } from "./accounts.controller.js";
     SensitiveOperationService,
     GuardianManagementService,
     ChildParticipationService,
-    RiskGovernanceService
+    RiskGovernanceService,
+    ChildDataRetentionService
   ]
 })
 export class AccountsModule {}

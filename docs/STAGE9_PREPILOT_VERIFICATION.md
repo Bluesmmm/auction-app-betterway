@@ -150,6 +150,17 @@ worker 成交和流拍、家长成交确认、交付确认、交易申诉、管�
 取消和异常路径。这个 gate 证明核心服务状态机和持久化事实闭环可重复验证；
 它不是前端 UI E2E，也不替代最终试点前 `stage9:verify:full`。
 
+当前 `deletion-retention-coverage` 已进入 `automated`：
+`npm run stage9:deletion-retention` 会部署本次运行专用的隔离 schema，运行孩子
+注销/删除 readiness 阻断和执行回归，覆盖 active auction、active point hold、
+unresolved transaction、open appeal、guardian dispute 阻断，以及通过
+`ChildDataRetentionService` 对 child profile、可选 child user、微信身份、session、
+trusted device、challenge、guardian link、community membership、settings、
+item/content/media/search/notification/outbox/idempotency/risk/audit 记录进行关闭、
+匿名化、隐藏、抑制或 redaction。这个 gate 会用真实私有对象 grant 验证删除后
+旧媒体授权失效；导出文件、cache 和 backup retention 通过仓库内策略证据与审计
+tombstone 覆盖，不代表已经直接操作生产备份或外部供应商后台。
+
 真实供应商、法务复核、试点运营材料和人工培训第一版可以保留为 `manual_gate` 或 `not_covered`，但必须有后续推进到 `rehearsed` 或人工证据归档的路径。
 
 ## 5. 第一版 gate 分类

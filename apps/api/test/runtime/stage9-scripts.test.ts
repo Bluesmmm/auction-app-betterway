@@ -9,6 +9,7 @@ describe("stage9 verification scripts", () => {
 
     expect(pkg).toContain('"stage9:discover"');
     expect(pkg).toContain('"stage9:authorization"');
+    expect(pkg).toContain('"stage9:deletion-retention"');
     expect(pkg).toContain('"stage9:file-search-notification"');
     expect(pkg).toContain('"stage9:governance"');
     expect(pkg).toContain('"stage9:ledger"');
@@ -20,6 +21,9 @@ describe("stage9 verification scripts", () => {
     expect(existsSync(matrixPath)).toBe(true);
     expect(existsSync(verifierPath)).toBe(true);
     expect(existsSync("scripts/stage9/run-authorization-gate.mjs")).toBe(true);
+    expect(existsSync("scripts/stage9/run-deletion-retention-gate.mjs")).toBe(
+      true
+    );
     expect(existsSync("scripts/stage9/run-file-search-notification-gate.mjs")).toBe(
       true
     );
@@ -33,6 +37,10 @@ describe("stage9 verification scripts", () => {
     const verifier = readFileSync(verifierPath, "utf8");
     const authorizationGate = readFileSync(
       "scripts/stage9/run-authorization-gate.mjs",
+      "utf8"
+    );
+    const deletionRetentionGate = readFileSync(
+      "scripts/stage9/run-deletion-retention-gate.mjs",
       "utf8"
     );
     const fileSearchNotificationGate = readFileSync(
@@ -114,6 +122,7 @@ describe("stage9 verification scripts", () => {
     expect(matrix).toContain("artifacts/stage9/prepilot-verification-report.md");
     expect(matrix).toContain("npm run db:generate");
     expect(matrix).toContain("npm run stage9:authorization");
+    expect(matrix).toContain("npm run stage9:deletion-retention");
     expect(matrix).toContain("npm run stage9:file-search-notification");
     expect(matrix).toContain("npm run stage9:governance");
     expect(matrix).toContain("npm run stage9:ledger");
@@ -143,6 +152,11 @@ describe("stage9 verification scripts", () => {
     );
     expect(authorizationGate).toContain(
       "apps/api/test/integration/stage6-api-flow.test.ts"
+    );
+
+    expect(deletionRetentionGate).toContain("stage9_deletion_retention");
+    expect(deletionRetentionGate).toContain(
+      "apps/api/test/integration/child-data-retention.service.test.ts"
     );
 
     expect(fileSearchNotificationGate).toContain(
