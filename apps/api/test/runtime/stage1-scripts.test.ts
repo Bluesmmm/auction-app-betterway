@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const scripts = [
+  "scripts/runtime/with-docker-runtime-env.mjs",
   "scripts/stage1/check-connectivity.mjs",
   "scripts/stage1/scan-logs.mjs",
   "scripts/stage1/rehearse-migration.mjs",
@@ -92,8 +93,24 @@ describe("stage 1 rehearsal scripts", () => {
       "scripts/stage1/rehearse-key-rotation.mjs",
       "utf8"
     );
+    const runtimeWrapper = readFileSync(
+      "scripts/runtime/with-docker-runtime-env.mjs",
+      "utf8"
+    );
 
     expect(existsSync("docker-compose.runtime.yml")).toBe(true);
+    expect(rootPackage).toContain("scripts/runtime/with-docker-runtime-env.mjs");
+    expect(rootPackage).toContain("runtime:verify:inner");
+    expect(rootPackage).toContain("stage1:verify:inner");
+    expect(rootPackage).toContain("stage1:rehearse:inner");
+    expect(rootPackage).toContain("stage1:test");
+    expect(rootPackage).toContain("apps/api/test/runtime/client-connectivity.test.ts");
+    expect(rootPackage).toContain("apps/worker/test/worker-config.test.ts");
+    expect(rootPackage).toContain("npm run stage1:test");
+    expect(rootPackage).not.toContain("db:status && npm test && npm run typecheck");
+    expect(runtimeWrapper).toContain("AUTH_TOKEN_SIGNING_KEY");
+    expect(runtimeWrapper).toContain("AUCTION_DOCKER_BIN");
+    expect(runtimeWrapper).toContain("STAGE9_DOCKER_BIN");
     expect(rootPackage).toContain("docker-compose.runtime.yml");
     expect(connectivity).toContain("docker-compose.runtime.yml");
     const forbiddenEnvFile = [".env", "staging", "example"].join(".");

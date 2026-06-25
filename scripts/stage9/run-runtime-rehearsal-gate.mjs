@@ -8,6 +8,7 @@ import {
 
 const composeFiles = ["-f", "docker-compose.yml", "-f", "docker-compose.runtime.yml"];
 const dockerBin =
+  process.env.AUCTION_DOCKER_BIN ??
   process.env.STAGE9_DOCKER_BIN ??
   (existsSync("/mnt/c/Program Files/Docker/Docker/resources/bin/docker.exe")
     ? "/mnt/c/Program Files/Docker/Docker/resources/bin/docker.exe"
