@@ -11,6 +11,7 @@ Engineering-owned rehearsal scope from `docs/STAGE9_PREPILOT_VERIFICATION.md`:
 - Migration rollback/redeploy rehearsal.
 - Redis/BullMQ degradation and worker recovery behavior.
 - Grey release compatibility signals for API/worker state handling.
+- Candidate image runtime signal for API/worker image packaging without bind mounts.
 - Vendor downgrade/fail-closed behavior that can be proven in repo tests.
 
 ## Environment
@@ -77,6 +78,18 @@ npm run stage9:grey-release
 Result: passed.
 
 Evidence: the rehearsal built API/worker, started Docker PostgreSQL/Redis/API/worker, verified initial runtime connectivity, recreated API with `--no-deps --force-recreate`, verified connectivity again, recreated worker with `--no-deps --force-recreate`, verified connectivity again, then reran migration rollback/replay rehearsal. This is local runtime compatibility smoke; it does not replace immutable image verification, real traffic splitting, production rollback, or provider-console downgrade review.
+
+### Candidate Image Runtime Smoke
+
+Command:
+
+```bash
+npm run stage9:candidate-image
+```
+
+Result: passed.
+
+Evidence: the rehearsal generated Prisma client, prepared the Docker runtime Prisma query engine, built API/worker, built the local `auction-app-betterway:stage9-candidate` image from `Dockerfile.candidate`, started API and worker through `docker-compose.candidate.yml` without workspace bind mounts, verified both containers were running the newly built image id, checked runtime connectivity, then recreated API and worker independently with `--no-deps --force-recreate` and repeated connectivity checks. All three connectivity checks passed with API health `ok`, PostgreSQL and Redis ready, and fresh `auction-worker-runtime` heartbeat. This is local candidate image smoke; it does not replace registry publish, production orchestrator rollout, real traffic splitting, or production rollback rehearsal.
 
 ### Backup Restore
 
@@ -230,3 +243,11 @@ npm run stage9:grey-release
 ```
 
 This evidence covers local API and worker rolling recreate compatibility on the same Docker PostgreSQL/Redis runtime plus migration rollback/replay. It does not replace immutable candidate image validation, real traffic splitting, or production rollback rehearsal.
+
+`candidate-image-runtime` also has executable engineering evidence through:
+
+```bash
+npm run stage9:candidate-image
+```
+
+This evidence covers local candidate API/worker image packaging without workspace bind mounts, candidate image identity checks, and independent API/worker recreate compatibility. It does not replace registry publish, production orchestrator rollout, real traffic splitting, or production rollback rehearsal.

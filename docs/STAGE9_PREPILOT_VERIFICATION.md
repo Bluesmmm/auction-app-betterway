@@ -44,9 +44,31 @@ Stage 9 交付一个试点前验证门禁，包含：
 - `owner`：`legal`、`operations`、`platform_admin`、`engineering` 或 `vendor_owner`。
 - `requiredEvidence`：需要归档的人工证据。
 - `validFor` 或 `expiresAt`：人工证据有效期。
+- `evidencePath`：本地或 CI 归档的机器可读证据 JSON，默认位于 `artifacts/stage9/manual-evidence/`。
+- `templatePath`：提交到仓库的证据模板，默认位于 `docs/stage9/manual-evidence/`。
+- `requiredFields`：证据 JSON 必须包含的字段。
 - `blockingIfMissing`：必须为 `true`。
 
-缺少人工证据时，最终结论不能高于 `blocked`；人工证据存在但仍需外部确认时，最终结论不能高于 `ready_with_manual_gates`。
+缺少人工证据、证据 JSON 无法解析、证据字段不完整、`gateId` / `owner`
+不匹配或 `expiresAt` 已过期时，最终结论不能高于 `blocked`；人工证据存在
+但仍需外部确认时，最终结论不能高于 `ready_with_manual_gates`。
+
+manual gate 的真实证据默认不提交到 Git。证据文件应写入
+`artifacts/stage9/manual-evidence/<gate-id>.json`，字段至少包含：
+
+```json
+{
+  "gateId": "legal-prepilot-review",
+  "owner": "legal",
+  "approvedAt": "2026-06-26T00:00:00.000Z",
+  "expiresAt": "2026-09-24T00:00:00.000Z",
+  "evidenceUri": "internal://legal/review-record-id",
+  "summary": "Non-sensitive summary of the approved review scope."
+}
+```
+
+`STAGE9_MANUAL_EVIDENCE_DIR` 可用于在 CI 或本地审查时临时指定证据目录。
+该目录中的文件名必须与默认 `evidencePath` 的文件名一致。
 
 ## 3. 第一版策略
 
@@ -168,6 +190,17 @@ runtime connectivity，再分别对 API 和 worker 执行 `--no-deps --force-rec
 workspace 的 API/worker 可以在同一 runtime 数据库和 Redis 上独立重建；它不替代
 不可变 candidate image 验证、真实流量切分、真实生产回滚或供应商后台降级复核。
 
+当前 `candidate-image-runtime` 已进入 `rehearsed`：
+`npm run stage9:candidate-image` 会生成 Prisma client，准备 Docker runtime 需要的
+Prisma query engine，构建 API/worker，打包本地 `Dockerfile.candidate` 候选镜像，
+再通过 `docker-compose.candidate.yml` 用同一镜像启动 API 和 worker，且不挂载
+workspace bind mount。该 gate 会断言 API/worker 容器实际运行的 image id 与刚构建
+的候选镜像一致，验证初始 runtime connectivity，再分别对 API 和 worker 执行
+`--no-deps --force-recreate` 重建并重复 connectivity 检查。它是本地 immutable-ish
+candidate image smoke，不替代镜像仓库发布、生产 orchestrator、真实流量切分或真实
+生产回滚演练。该 gate 需要可访问的 Docker daemon；若 Docker Desktop WSL integration
+未启用或 Docker daemon 未启动，脚本会在构建前失败并报告环境阻塞。
+
 当前 `deletion-retention-coverage` 已进入 `automated`：
 `npm run stage9:deletion-retention` 会部署本次运行专用的隔离 schema，运行孩子
 注销/删除 readiness 阻断和执行回归，覆盖 active auction、active point hold、
@@ -193,7 +226,7 @@ Stage 9 gate matrix 至少覆盖以下分类：
 - `privacy-content`：内容审核、未审核文件访问、敏感字段脱敏和高风险内容收口。
 - `file-search-notification`：文件授权、搜索回源、通知乱序和实时提示补偿。
 - `governance`：治理控制、危险操作预览、高风险治理复核、暂停和恢复演练。
-- `runtime-rehearsal`：Redis/BullMQ runtime readiness、备份恢复、迁移发布、本地灰度兼容 smoke 和恢复演练。
+- `runtime-rehearsal`：Redis/BullMQ runtime readiness、备份恢复、迁移发布、本地灰度兼容 smoke、候选镜像 smoke 和恢复演练。
 - `deletion-retention`：注销、删除、匿名化、导出文件过期和缓存/通知/对象存储覆盖。
 - `manual-pilot`：法务、运营、真实供应商后台配置、试点社区和家长说明材料。
 
@@ -240,4 +273,4 @@ Stage 1-8 完成度证据拆成两个 gate：
 - `fullMode`：`skip`、`discover` 或 `verify`。
 - `evidence`：命令、测试、文档或人工证据。
 - `roadmapRefs`：指向路线图或上线前检查清单来源。
-- `manual`：manual gate 的 owner、evidence 和 validity 信息；hard gate 必须为 `null`。
+- `manual`：manual gate 的 owner、evidence path、template path、required fields 和 validity 信息；hard gate 必须为 `null`。

@@ -397,6 +397,30 @@ export const stage9Gates = [
     manual: null
   },
   {
+    id: "candidate-image-runtime",
+    category: "runtime-rehearsal",
+    title:
+      "Candidate API and worker image runtime smoke is evidenced without bind mounts",
+    gateType: "hard",
+    maturity: "rehearsed",
+    defaultMode: "verify",
+    fullMode: "verify",
+    evidence: [
+      {
+        kind: "command",
+        command: "npm run stage9:candidate-image",
+        binary: "npm",
+        args: ["run", "stage9:candidate-image"],
+        requiredFor: ["verify", "full"]
+      }
+    ],
+    roadmapRefs: [
+      "docs/MVP_ROADMAP.md:593",
+      "docs/MVP_ROADMAP.md:679"
+    ],
+    manual: null
+  },
+  {
     id: "deletion-retention-coverage",
     category: "deletion-retention",
     title:
@@ -445,6 +469,18 @@ export const stage9Gates = [
       requiredEvidence:
         "Approved legal review record covering user agreement, privacy policy, children information protection rules, and pilot consent materials.",
       validFor: "90d",
+      evidencePath:
+        "artifacts/stage9/manual-evidence/legal-prepilot-review.json",
+      templatePath:
+        "docs/stage9/manual-evidence/legal-prepilot-review.example.json",
+      requiredFields: [
+        "gateId",
+        "owner",
+        "approvedAt",
+        "expiresAt",
+        "evidenceUri",
+        "summary"
+      ],
       blockingIfMissing: true
     }
   },
@@ -469,6 +505,18 @@ export const stage9Gates = [
       requiredEvidence:
         "Pilot community setup checklist, administrator training record, parent instructions, and pause/recovery rehearsal notes.",
       validFor: "30d",
+      evidencePath:
+        "artifacts/stage9/manual-evidence/operations-pilot-materials.json",
+      templatePath:
+        "docs/stage9/manual-evidence/operations-pilot-materials.example.json",
+      requiredFields: [
+        "gateId",
+        "owner",
+        "approvedAt",
+        "expiresAt",
+        "evidenceUri",
+        "summary"
+      ],
       blockingIfMissing: true
     }
   },
@@ -497,6 +545,18 @@ export const stage9Gates = [
       requiredEvidence:
         "Provider configuration review covering data minimization, key rotation, downgrade behavior, field allowlist, and audit logging.",
       validFor: "60d",
+      evidencePath:
+        "artifacts/stage9/manual-evidence/vendor-production-config.json",
+      templatePath:
+        "docs/stage9/manual-evidence/vendor-production-config.example.json",
+      requiredFields: [
+        "gateId",
+        "owner",
+        "approvedAt",
+        "expiresAt",
+        "evidenceUri",
+        "summary"
+      ],
       blockingIfMissing: true
     }
   }

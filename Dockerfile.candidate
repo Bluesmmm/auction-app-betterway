@@ -1,0 +1,17 @@
+FROM node:24-bullseye-slim
+
+WORKDIR /workspace
+ENV NODE_ENV=runtime
+
+COPY package.json package-lock.json ./
+COPY apps/api/package.json ./apps/api/package.json
+COPY apps/api/node_modules ./apps/api/node_modules
+COPY apps/api/dist ./apps/api/dist
+COPY apps/api/prisma ./apps/api/prisma
+COPY apps/worker/package.json ./apps/worker/package.json
+COPY apps/worker/dist ./apps/worker/dist
+COPY packages/shared/package.json ./packages/shared/package.json
+COPY packages/shared/src ./packages/shared/src
+COPY node_modules ./node_modules
+
+CMD ["npm", "run", "start:api"]

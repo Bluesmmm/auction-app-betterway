@@ -1,0 +1,8 @@
+{
+  "gateId": "vendor-production-config",
+  "owner": "vendor_owner",
+  "approvedAt": "2026-06-26T00:00:00.000Z",
+  "expiresAt": "2026-08-25T00:00:00.000Z",
+  "evidenceUri": "internal://vendor/config-review-record-id",
+  "summary": "Vendor owners reviewed production provider configuration for data minimization, key rotation, downgrade behavior, field allowlist, and audit logging."
+}

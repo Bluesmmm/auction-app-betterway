@@ -9,6 +9,7 @@ describe("stage9 verification scripts", () => {
 
     expect(pkg).toContain('"stage9:discover"');
     expect(pkg).toContain('"stage9:authorization"');
+    expect(pkg).toContain('"stage9:candidate-image"');
     expect(pkg).toContain('"stage9:deletion-retention"');
     expect(pkg).toContain('"stage9:file-search-notification"');
     expect(pkg).toContain('"stage9:grey-release"');
@@ -23,6 +24,9 @@ describe("stage9 verification scripts", () => {
     expect(existsSync(matrixPath)).toBe(true);
     expect(existsSync(verifierPath)).toBe(true);
     expect(existsSync("scripts/stage9/run-authorization-gate.mjs")).toBe(true);
+    expect(existsSync("scripts/stage9/run-candidate-image-gate.mjs")).toBe(
+      true
+    );
     expect(existsSync("scripts/stage9/run-deletion-retention-gate.mjs")).toBe(
       true
     );
@@ -41,11 +45,45 @@ describe("stage9 verification scripts", () => {
       true
     );
     expect(existsSync("scripts/stage9/run-state-machine-gate.mjs")).toBe(true);
+    expect(existsSync("Dockerfile.candidate")).toBe(true);
+    expect(existsSync("docker-compose.candidate.yml")).toBe(true);
+    expect(existsSync(".dockerignore")).toBe(true);
+    expect(existsSync("docs/stage9/manual-evidence/README.md")).toBe(true);
+    expect(
+      existsSync("docs/stage9/manual-evidence/legal-prepilot-review.example.json")
+    ).toBe(true);
+    expect(
+      existsSync(
+        "docs/stage9/manual-evidence/operations-pilot-materials.example.json"
+      )
+    ).toBe(true);
+    expect(
+      existsSync(
+        "docs/stage9/manual-evidence/vendor-production-config.example.json"
+      )
+    ).toBe(true);
 
     const matrix = readFileSync(matrixPath, "utf8");
     const verifier = readFileSync(verifierPath, "utf8");
+    const dockerignore = readFileSync(".dockerignore", "utf8");
+    const legalManualTemplate = readFileSync(
+      "docs/stage9/manual-evidence/legal-prepilot-review.example.json",
+      "utf8"
+    );
+    const operationsManualTemplate = readFileSync(
+      "docs/stage9/manual-evidence/operations-pilot-materials.example.json",
+      "utf8"
+    );
+    const vendorManualTemplate = readFileSync(
+      "docs/stage9/manual-evidence/vendor-production-config.example.json",
+      "utf8"
+    );
     const authorizationGate = readFileSync(
       "scripts/stage9/run-authorization-gate.mjs",
+      "utf8"
+    );
+    const candidateImageGate = readFileSync(
+      "scripts/stage9/run-candidate-image-gate.mjs",
       "utf8"
     );
     const deletionRetentionGate = readFileSync(
@@ -124,6 +162,7 @@ describe("stage9 verification scripts", () => {
       "ledger-recompute-clean",
       "authorization-privacy-cross-community",
       "grey-release-compatibility",
+      "candidate-image-runtime",
       "governance-pause-and-review-recovery",
       "outbox-worker-failure-recovery",
       "legal-prepilot-review"
@@ -135,11 +174,17 @@ describe("stage9 verification scripts", () => {
     expect(matrix).toContain('owner: "operations"');
     expect(matrix).toContain('owner: "vendor_owner"');
     expect(matrix).toContain("blockingIfMissing: true");
+    expect(matrix).toContain("evidencePath");
+    expect(matrix).toContain("templatePath");
+    expect(matrix).toContain("requiredFields");
+    expect(matrix).toContain("artifacts/stage9/manual-evidence");
+    expect(matrix).toContain("docs/stage9/manual-evidence");
     expect(matrix).toContain("docs/MVP_ROADMAP.md");
     expect(matrix).toContain("artifacts/stage9/prepilot-verification-report.json");
     expect(matrix).toContain("artifacts/stage9/prepilot-verification-report.md");
     expect(matrix).toContain("npm run db:generate");
     expect(matrix).toContain("npm run stage9:authorization");
+    expect(matrix).toContain("npm run stage9:candidate-image");
     expect(matrix).toContain("npm run stage9:deletion-retention");
     expect(matrix).toContain("npm run stage9:file-search-notification");
     expect(matrix).toContain("npm run stage9:grey-release");
@@ -205,6 +250,33 @@ describe("stage9 verification scripts", () => {
     expect(greyReleaseGate).toContain("--force-recreate");
     expect(greyReleaseGate).toContain("scripts/stage1/check-connectivity.mjs");
     expect(greyReleaseGate).toContain("scripts/stage1/rehearse-migration.mjs");
+
+    expect(candidateImageGate).toContain("Dockerfile.candidate");
+    expect(candidateImageGate).toContain("docker-compose.candidate.yml");
+    expect(candidateImageGate).toContain("STAGE9_CANDIDATE_IMAGE");
+    expect(candidateImageGate).toContain('"build"');
+    expect(candidateImageGate).toContain('"image"');
+    expect(candidateImageGate).toContain('"inspect"');
+    expect(candidateImageGate).toContain("assertDockerAvailable");
+    expect(candidateImageGate).toContain("requires a reachable Docker daemon");
+    expect(candidateImageGate).toContain("assertServiceImage");
+    expect(candidateImageGate).toContain("--no-deps");
+    expect(candidateImageGate).toContain("--force-recreate");
+    expect(candidateImageGate).toContain("scripts/stage1/check-connectivity.mjs");
+    expect(dockerignore).toContain("node_modules/.bin");
+    expect(dockerignore).toContain("node_modules/.bin/**");
+    expect(dockerignore).toContain("node_modules/@auction");
+    expect(dockerignore).toContain("node_modules/@auction/**");
+    expect(dockerignore).toContain("!apps/api/node_modules");
+    expect(dockerignore).toContain("!apps/api/node_modules/**");
+    expect(legalManualTemplate).toContain('"gateId": "legal-prepilot-review"');
+    expect(legalManualTemplate).toContain('"owner": "legal"');
+    expect(operationsManualTemplate).toContain(
+      '"gateId": "operations-pilot-materials"'
+    );
+    expect(operationsManualTemplate).toContain('"owner": "operations"');
+    expect(vendorManualTemplate).toContain('"gateId": "vendor-production-config"');
+    expect(vendorManualTemplate).toContain('"owner": "vendor_owner"');
 
     expect(governanceGate).toContain("stage9_governance");
     expect(governanceGate).toContain(
@@ -306,8 +378,12 @@ describe("stage9 verification scripts", () => {
 
     expect(verifier).toContain("parseMode");
     expect(verifier).toContain("evaluateGate");
+    expect(verifier).toContain("evaluateManualGateEvidence");
+    expect(verifier).toContain("resolveManualEvidencePath");
     expect(verifier).toContain("computeOverallStatus");
     expect(verifier).toContain("writeReports");
+    expect(verifier).toContain("STAGE9_MANUAL_EVIDENCE_DIR");
+    expect(verifier).toContain("expiresAt must be later");
     expect(verifier).toContain("stage9:discover");
     expect(verifier).toContain("stage9 verification blocked");
   });

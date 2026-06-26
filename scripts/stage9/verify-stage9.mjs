@@ -5,7 +5,7 @@ import {
   readFileSync,
   writeFileSync
 } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   stage9GateCategories,
   stage9GateMaturities,
@@ -53,15 +53,19 @@ function evaluateGate(gate, currentMode) {
   const activeMode = currentMode === "full" ? gate.fullMode : gate.defaultMode;
 
   if (gate.gateType === "manual") {
+    const manualEvidence = evaluateManualGateEvidence(gate);
     return {
       ...baseGateResult(gate, currentMode, activeMode),
       status: "manual_gate",
-      missingManualEvidence: gate.manual?.blockingIfMissing === true,
+      missingManualEvidence:
+        gate.manual?.blockingIfMissing === true &&
+        manualEvidence.status !== "present",
       evidence: gate.evidence.map((evidence) => ({
         ...evidence,
         status: "manual_gate"
       })),
-      manual: gate.manual
+      manual: gate.manual,
+      manualEvidence
     };
   }
 
@@ -120,6 +124,20 @@ function validateGate(gate) {
   }
   if (gate.gateType === "manual" && !gate.manual?.blockingIfMissing) {
     throw new Error(`stage9 manual gate ${gate.id} must block when evidence is missing`);
+  }
+  if (gate.gateType === "manual") {
+    if (!gate.manual?.owner || !gate.manual?.requiredEvidence) {
+      throw new Error(`stage9 manual gate ${gate.id} must define owner and requiredEvidence`);
+    }
+    if (!gate.manual?.validFor && !gate.manual?.expiresAt) {
+      throw new Error(`stage9 manual gate ${gate.id} must define validFor or expiresAt`);
+    }
+    if (!gate.manual?.evidencePath || !gate.manual?.templatePath) {
+      throw new Error(`stage9 manual gate ${gate.id} must define evidencePath and templatePath`);
+    }
+    if (!Array.isArray(gate.manual?.requiredFields)) {
+      throw new Error(`stage9 manual gate ${gate.id} must define requiredFields`);
+    }
   }
 }
 
@@ -239,6 +257,92 @@ function evaluateDiscoverEvidence(evidence) {
   };
 }
 
+function evaluateManualGateEvidence(gate) {
+  const evidencePath = resolveManualEvidencePath(gate.manual.evidencePath);
+  if (!existsSync(evidencePath)) {
+    return {
+      status: "missing",
+      path: evidencePath,
+      templatePath: gate.manual.templatePath,
+      message: "Manual evidence file is missing."
+    };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(evidencePath, "utf8"));
+  } catch (error) {
+    return {
+      status: "invalid",
+      path: evidencePath,
+      templatePath: gate.manual.templatePath,
+      problems: [`Manual evidence JSON could not be parsed: ${error.message}`]
+    };
+  }
+
+  const problems = [];
+  for (const field of gate.manual.requiredFields) {
+    if (typeof parsed[field] !== "string" || parsed[field].trim() === "") {
+      problems.push(`Missing required string field: ${field}`);
+    }
+  }
+  if (parsed.gateId !== gate.id) {
+    problems.push(`gateId must be ${gate.id}`);
+  }
+  if (parsed.owner !== gate.manual.owner) {
+    problems.push(`owner must be ${gate.manual.owner}`);
+  }
+
+  const approvedAt = parseEvidenceDate(parsed.approvedAt, "approvedAt", problems);
+  const expiresAt = parseEvidenceDate(parsed.expiresAt, "expiresAt", problems);
+  if (approvedAt && approvedAt.getTime() > Date.parse(generatedAt)) {
+    problems.push("approvedAt must not be in the future");
+  }
+  if (expiresAt && expiresAt.getTime() <= Date.parse(generatedAt)) {
+    problems.push("expiresAt must be later than the report generation time");
+  }
+
+  if (problems.length > 0) {
+    return {
+      status: "invalid",
+      path: evidencePath,
+      templatePath: gate.manual.templatePath,
+      problems
+    };
+  }
+
+  return {
+    status: "present",
+    path: evidencePath,
+    templatePath: gate.manual.templatePath,
+    gateId: parsed.gateId,
+    owner: parsed.owner,
+    approvedAt: parsed.approvedAt,
+    expiresAt: parsed.expiresAt,
+    evidenceUri: parsed.evidenceUri,
+    summary: parsed.summary
+  };
+}
+
+function resolveManualEvidencePath(defaultPath) {
+  if (!process.env.STAGE9_MANUAL_EVIDENCE_DIR) {
+    return defaultPath;
+  }
+  return join(process.env.STAGE9_MANUAL_EVIDENCE_DIR, basename(defaultPath));
+}
+
+function parseEvidenceDate(value, field, problems) {
+  if (typeof value !== "string" || value.trim() === "") {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) {
+    problems.push(`${field} must be an ISO-8601 timestamp`);
+    return null;
+  }
+  return new Date(timestamp);
+}
+
 function evidenceRequiredForMode(evidence, currentMode) {
   const modeKey = currentMode === "full" ? "full" : "verify";
   return !evidence.requiredFor || evidence.requiredFor.includes(modeKey);
@@ -311,6 +415,23 @@ function renderMarkdownReport(report) {
       lines.push(`- Owner: ${gate.manual.owner}`);
       lines.push(`- Required evidence: ${gate.manual.requiredEvidence}`);
       lines.push(`- Valid for: ${gate.manual.validFor}`);
+      lines.push(`- Evidence path: ${gate.manual.evidencePath}`);
+      lines.push(`- Evidence template: ${gate.manual.templatePath}`);
+    }
+    if (gate.manualEvidence) {
+      lines.push(`- Manual evidence status: ${gate.manualEvidence.status}`);
+      lines.push(`- Manual evidence checked path: ${gate.manualEvidence.path}`);
+      if (gate.manualEvidence.expiresAt) {
+        lines.push(`- Manual evidence expires at: ${gate.manualEvidence.expiresAt}`);
+      }
+      if (gate.manualEvidence.evidenceUri) {
+        lines.push(`- Manual evidence URI: ${gate.manualEvidence.evidenceUri}`);
+      }
+      if (gate.manualEvidence.problems?.length > 0) {
+        for (const problem of gate.manualEvidence.problems) {
+          lines.push(`- Manual evidence problem: ${problem}`);
+        }
+      }
     }
     lines.push("");
   }

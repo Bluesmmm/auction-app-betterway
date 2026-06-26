@@ -39,6 +39,7 @@
     "stage8:verify": "node scripts/stage8/verify-stage8.mjs",
     "stage9:discover": "node scripts/stage9/verify-stage9.mjs --mode=discover",
     "stage9:authorization": "node scripts/stage9/run-authorization-gate.mjs",
+    "stage9:candidate-image": "node scripts/stage9/run-candidate-image-gate.mjs",
     "stage9:deletion-retention": "node scripts/stage9/run-deletion-retention-gate.mjs",
     "stage9:file-search-notification": "node scripts/stage9/run-file-search-notification-gate.mjs",
     "stage9:grey-release": "node scripts/stage9/run-grey-release-gate.mjs",

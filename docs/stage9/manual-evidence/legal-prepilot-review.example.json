@@ -1,0 +1,8 @@
+{
+  "gateId": "legal-prepilot-review",
+  "owner": "legal",
+  "approvedAt": "2026-06-26T00:00:00.000Z",
+  "expiresAt": "2026-09-24T00:00:00.000Z",
+  "evidenceUri": "internal://legal/review-record-id",
+  "summary": "Legal approved the pilot user agreement, privacy policy, children information protection rules, and consent materials."
+}

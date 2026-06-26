@@ -1,0 +1,8 @@
+{
+  "gateId": "operations-pilot-materials",
+  "owner": "operations",
+  "approvedAt": "2026-06-26T00:00:00.000Z",
+  "expiresAt": "2026-07-26T00:00:00.000Z",
+  "evidenceUri": "internal://operations/pilot-materials-record-id",
+  "summary": "Operations approved the pilot community setup checklist, administrator training record, parent instructions, and pause/recovery rehearsal notes."
+}

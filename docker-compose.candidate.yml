@@ -1,0 +1,58 @@
+services:
+  api:
+    image: ${STAGE9_CANDIDATE_IMAGE:?STAGE9_CANDIDATE_IMAGE must be configured}
+    working_dir: /workspace
+    command: ["npm", "run", "start:api"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-runtime}
+      PORT: ${PORT:-3000}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://auction_app:auction_app@postgres:5432/auction_app?schema=public}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      WORKER_NAME: ${WORKER_NAME:-auction-worker-runtime}
+      WORKER_HEARTBEAT_STALE_AFTER_SECONDS: ${WORKER_HEARTBEAT_STALE_AFTER_SECONDS:-30}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+      AUTH_TOKEN_SIGNING_KEY: ${AUTH_TOKEN_SIGNING_KEY:?AUTH_TOKEN_SIGNING_KEY must be configured}
+      OBJECT_STORAGE_KEY_CURRENT: ${OBJECT_STORAGE_KEY_CURRENT:-runtime-object-storage-current}
+      OBJECT_STORAGE_KEY_NEXT: ${OBJECT_STORAGE_KEY_NEXT:-runtime-object-storage-next}
+      SUBSCRIPTION_MESSAGE_SECRET_CURRENT: ${SUBSCRIPTION_MESSAGE_SECRET_CURRENT:-runtime-subscription-current}
+      SUBSCRIPTION_MESSAGE_SECRET_NEXT: ${SUBSCRIPTION_MESSAGE_SECRET_NEXT:-runtime-subscription-next}
+      LOG_EXPORT_SIGNING_KEY_CURRENT: ${LOG_EXPORT_SIGNING_KEY_CURRENT:-runtime-log-export-current}
+      LOG_EXPORT_SIGNING_KEY_NEXT: ${LOG_EXPORT_SIGNING_KEY_NEXT:-runtime-log-export-next}
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: ${STAGE9_CANDIDATE_IMAGE:?STAGE9_CANDIDATE_IMAGE must be configured}
+    working_dir: /workspace
+    command: ["npm", "run", "start:worker"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-runtime}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://auction_app:auction_app@postgres:5432/auction_app?schema=public}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      WORKER_NAME: ${WORKER_NAME:-auction-worker-runtime}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-5}
+      WORKER_HEARTBEAT_STALE_AFTER_SECONDS: ${WORKER_HEARTBEAT_STALE_AFTER_SECONDS:-30}
+      LEDGER_CHECK_INTERVAL_SECONDS: ${LEDGER_CHECK_INTERVAL_SECONDS:-300}
+      OUTBOX_DISPATCH_INTERVAL_SECONDS: ${OUTBOX_DISPATCH_INTERVAL_SECONDS:-10}
+      OUTBOX_DISPATCH_LIMIT: ${OUTBOX_DISPATCH_LIMIT:-50}
+      OUTBOX_DISPATCH_LEASE_SECONDS: ${OUTBOX_DISPATCH_LEASE_SECONDS:-300}
+      AUCTION_SETTLEMENT_SCAN_INTERVAL_SECONDS: ${AUCTION_SETTLEMENT_SCAN_INTERVAL_SECONDS:-60}
+      AUCTION_SETTLEMENT_SCAN_LIMIT: ${AUCTION_SETTLEMENT_SCAN_LIMIT:-50}
+      TRANSACTION_TIMEOUT_SCAN_INTERVAL_SECONDS: ${TRANSACTION_TIMEOUT_SCAN_INTERVAL_SECONDS:-60}
+      TRANSACTION_TIMEOUT_SCAN_LIMIT: ${TRANSACTION_TIMEOUT_SCAN_LIMIT:-50}
+      OBJECT_STORAGE_KEY_CURRENT: ${OBJECT_STORAGE_KEY_CURRENT:-runtime-object-storage-current}
+      OBJECT_STORAGE_KEY_NEXT: ${OBJECT_STORAGE_KEY_NEXT:-runtime-object-storage-next}
+      SUBSCRIPTION_MESSAGE_SECRET_CURRENT: ${SUBSCRIPTION_MESSAGE_SECRET_CURRENT:-runtime-subscription-current}
+      SUBSCRIPTION_MESSAGE_SECRET_NEXT: ${SUBSCRIPTION_MESSAGE_SECRET_NEXT:-runtime-subscription-next}
+      LOG_EXPORT_SIGNING_KEY_CURRENT: ${LOG_EXPORT_SIGNING_KEY_CURRENT:-runtime-log-export-current}
+      LOG_EXPORT_SIGNING_KEY_NEXT: ${LOG_EXPORT_SIGNING_KEY_NEXT:-runtime-log-export-next}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
